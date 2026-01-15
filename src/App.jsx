@@ -200,8 +200,8 @@ export default function App() {
     let unlistenError = null;
 
     (async () => {
-      unlistenProgress = await listen("check_update://progress", (event) => {
-        console.log("check_update://progress", event.payload);
+      unlistenProgress = await listen("download://progress", (event) => {
+        console.log("download://progress", event.payload);
         setTask((t) => ({
           ...t,
           status: "working",
@@ -209,7 +209,7 @@ export default function App() {
           error: null,
         }));
       });
-      unlistenFinished = await listen("check_update://finished", (event) => {
+      unlistenFinished = await listen("download://finished", (event) => {
         setTask((t) => ({
           ...t,
           status: "done",
@@ -220,7 +220,7 @@ export default function App() {
           .then((v) => setInstalledVersions(Array.isArray(v) ? v : []))
           .catch(() => {});
       });
-      unlistenError = await listen("check_update://error", (event) => {
+      unlistenError = await listen("download://error", (event) => {
         setTask((t) => ({
           ...t,
           status: "error",
