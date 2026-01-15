@@ -39,7 +39,11 @@ function valueLabel(v) {
   if (v.type === "Int") return String(v.data?.value ?? "");
   if (v.type === "Float") return String(v.data?.value ?? "");
   if (v.type === "Enum") return v.data?.options?.[v.data?.index ?? 0] ?? "";
-  if (v.type === "Flags") return (v.data?.indicies ?? []).map((i) => v.data?.options?.[i]).filter(Boolean).join(", ");
+  if (v.type === "Flags")
+    return (v.data?.indicies ?? [])
+      .map((i) => v.data?.options?.[i])
+      .filter(Boolean)
+      .join(", ");
   return "";
 }
 
@@ -55,7 +59,10 @@ export default function App() {
   const [disabledMods, setDisabledMods] = useState([]); // [{dev,name}] normalized by backend
 
   // Download confirm modal (for non-installed versions)
-  const [downloadPrompt, setDownloadPrompt] = useState({ open: false, version: null });
+  const [downloadPrompt, setDownloadPrompt] = useState({
+    open: false,
+    version: null,
+  });
 
   // Config editor state (shared config via junction) - BepInEx cfg UI
   const [configFiles, setConfigFiles] = useState([]);
@@ -79,6 +86,16 @@ export default function App() {
     error: null,
   });
 
+  const [checkUpdateTask, setCheckUpdateTask] = useState({
+    status: "idle", // idle | working | done | error
+    version: null,
+    step_name: null,
+    steps_total: null,
+    step: null,
+    overall_percent: null,
+    detail: null,
+  });
+
   const [gameStatus, setGameStatus] = useState({ running: false, pid: null });
 
   const isInstalled = useMemo(() => {
@@ -92,7 +109,7 @@ export default function App() {
     if (!q) return mods;
     return mods.filter((m) => {
       const hay = `${m.dev} ${m.name}`.toLowerCase();
-      return hay.includes(q);
+      return hay.includes(q) && m.name !== "ShipLootCruiser";
     });
   }, [manifest.mods, query]);
 
@@ -104,10 +121,16 @@ export default function App() {
 
   const statusText = useMemo(() => {
     const base =
-      task.status === "error" ? "Error" : task.status === "done" ? "Done" : "Working";
+      task.status === "error"
+        ? "Error"
+        : task.status === "done"
+        ? "Done"
+        : "Working";
     const v = task.version != null ? ` v${task.version}` : "";
     const step =
-      task.steps_total && task.step ? ` • Step ${task.step}/${task.steps_total}` : "";
+      task.steps_total && task.step
+        ? ` • Step ${task.step}/${task.steps_total}`
+        : "";
     const name = task.step_name ? ` • ${task.step_name}` : "";
     return `${base}${v}${step}${name}`.trim();
   }, [task.status, task.step, task.step_name, task.steps_total, task.version]);
@@ -115,7 +138,8 @@ export default function App() {
   const bytesText = useMemo(() => {
     if (typeof task.downloaded_bytes !== "number") return "";
     const d = fmtBytes(task.downloaded_bytes);
-    if (typeof task.total_bytes === "number") return `${d} / ${fmtBytes(task.total_bytes)}`;
+    if (typeof task.total_bytes === "number")
+      return `${d} / ${fmtBytes(task.total_bytes)}`;
     return d;
   }, [task.downloaded_bytes, task.total_bytes]);
 
@@ -176,7 +200,8 @@ export default function App() {
     let unlistenError = null;
 
     (async () => {
-      unlistenProgress = await listen("download://progress", (event) => {
+      unlistenProgress = await listen("check_update://progress", (event) => {
+        console.log("check_update://progress", event.payload);
         setTask((t) => ({
           ...t,
           status: "working",
@@ -184,7 +209,7 @@ export default function App() {
           error: null,
         }));
       });
-      unlistenFinished = await listen("download://finished", (event) => {
+      unlistenFinished = await listen("check_update://finished", (event) => {
         setTask((t) => ({
           ...t,
           status: "done",
@@ -195,7 +220,7 @@ export default function App() {
           .then((v) => setInstalledVersions(Array.isArray(v) ? v : []))
           .catch(() => {});
       });
-      unlistenError = await listen("download://error", (event) => {
+      unlistenError = await listen("check_update://error", (event) => {
         setTask((t) => ({
           ...t,
           status: "error",
@@ -203,6 +228,58 @@ export default function App() {
           error: event.payload?.message ?? "Unknown error",
         }));
       });
+    })();
+
+    return () => {
+      if (typeof unlistenProgress === "function") unlistenProgress();
+      if (typeof unlistenFinished === "function") unlistenFinished();
+      if (typeof unlistenError === "function") unlistenError();
+    };
+  }, []);
+
+  // listen to backend check mods update events
+  useEffect(() => {
+    let unlistenCheckUpdateProgress = null;
+    let unlistenCheckUpdateFinished = null;
+    let unlistenCheckUpdateError = null;
+
+    (async () => {
+      unlistenCheckUpdateProgress = await listen(
+        "check_update://progress",
+        (event) => {
+          setCheckUpdateTask((t) => ({
+            ...t,
+            status: "working",
+            ...event.payload,
+            error: null,
+          }));
+        }
+      );
+      unlistenCheckUpdateFinished = await listen(
+        "check_update://finished",
+        (event) => {
+          setCheckUpdateTask((t) => ({
+            ...t,
+            status: "done",
+            ...event.payload,
+          }));
+          // refresh installed versions list after install
+          invoke("list_installed_versions")
+            .then((v) => setInstalledVersions(Array.isArray(v) ? v : []))
+            .catch(() => {});
+        }
+      );
+      unlistenCheckUpdateError = await listen(
+        "check_update://error",
+        (event) => {
+          setCheckUpdateTask((t) => ({
+            ...t,
+            status: "error",
+            version: event.payload?.version ?? t.version,
+            error: event.payload?.message ?? "Unknown error",
+          }));
+        }
+      );
     })();
 
     return () => {
@@ -226,7 +303,9 @@ export default function App() {
 
     (async () => {
       // enabled state is global (disablemod file) and applies to all versions
-      const key = `${String(selectedMod.dev).toLowerCase()}::${String(selectedMod.name).toLowerCase()}`;
+      const key = `${String(selectedMod.dev).toLowerCase()}::${String(
+        selectedMod.name
+      ).toLowerCase()}`;
       setModEnabled(!disabledSet.has(key));
 
       const files = await invoke("list_config_files_for_mod", {
@@ -234,7 +313,7 @@ export default function App() {
         name: selectedMod.name,
       });
       const list = (Array.isArray(files) ? files : []).filter((p) =>
-        String(p).toLowerCase().endsWith(".cfg"),
+        String(p).toLowerCase().endsWith(".cfg")
       );
       setConfigFiles(list);
       const next = list[0] ?? "";
@@ -253,7 +332,9 @@ export default function App() {
 
     (async () => {
       setCfgError("");
-      const parsed = await invoke("read_bepinex_cfg", { relPath: activeConfigPath });
+      const parsed = await invoke("read_bepinex_cfg", {
+        relPath: activeConfigPath,
+      });
       setCfgFile(parsed ?? null);
       const firstSection = parsed?.sections?.[0]?.name ?? "";
       setActiveSection(firstSection);
@@ -286,6 +367,27 @@ export default function App() {
     }
   }
 
+  async function checkModUpdates(v) {
+    setCheckUpdateTask((t) => ({
+      ...t,
+      status: "working",
+      version: v,
+      overall_percent: 0,
+      error: null,
+    }));
+    try {
+      await invoke("check_mod_updates", { version: v });
+    } catch (e) {
+      // Backend also emits download://error, but ensure UI reacts if invoke fails early.
+      setCheckUpdateTask((t) => ({
+        ...t,
+        status: "error",
+        version: v,
+        error: e?.message ?? String(e),
+      }));
+    }
+  }
+
   function openDownloadPrompt(v) {
     setDownloadPrompt({ open: true, version: v });
   }
@@ -293,6 +395,7 @@ export default function App() {
   async function setCfgEntry(sectionName, entryName, nextValue) {
     if (!activeConfigPath) return;
     const key = `${sectionName}/${entryName}`;
+
     setSavingEntry(key);
     // optimistic update
     setCfgFile((f) => {
@@ -304,7 +407,7 @@ export default function App() {
           return {
             ...s,
             entries: (s.entries ?? []).map((e) =>
-              e.name === entryName ? { ...e, value: nextValue } : e,
+              e.name === entryName ? { ...e, value: nextValue } : e
             ),
           };
         }),
@@ -321,12 +424,30 @@ export default function App() {
           value: nextValue,
         },
       });
+      if (
+        manifest.chain_config.find((paths) => paths.includes(activeConfigPath))
+      ) {
+        let chainPath = manifest.chain_config
+          .find((paths) => paths.includes(activeConfigPath))
+          .filter((path) => path !== activeConfigPath)[0];
+        console.log(activeConfigPath, "=>", chainPath);
+        await invoke("set_bepinex_cfg_entry", {
+          args: {
+            rel_path: chainPath,
+            section: sectionName,
+            entry: entryName,
+            value: nextValue,
+          },
+        });
+      }
     } catch (e) {
       console.error(e);
       setCfgError(e?.message ?? String(e));
       // re-parse to resync
       try {
-        const parsed = await invoke("read_bepinex_cfg", { relPath: activeConfigPath });
+        const parsed = await invoke("read_bepinex_cfg", {
+          relPath: activeConfigPath,
+        });
         setCfgFile(parsed ?? null);
       } catch {}
     } finally {
@@ -371,11 +492,17 @@ export default function App() {
   const selectedInstalled = isInstalled(selectedVersion);
   const promptVersion = downloadPrompt.version;
   const promptIsWorking =
-    downloadPrompt.open && task.status === "working" && task.version === promptVersion;
+    downloadPrompt.open &&
+    task.status === "working" &&
+    task.version === promptVersion;
   const promptIsDone =
-    downloadPrompt.open && task.status === "done" && task.version === promptVersion;
+    downloadPrompt.open &&
+    task.status === "done" &&
+    task.version === promptVersion;
   const promptIsError =
-    downloadPrompt.open && task.status === "error" && task.version === promptVersion;
+    downloadPrompt.open &&
+    task.status === "error" &&
+    task.version === promptVersion;
 
   async function startRun() {
     if (gameStatus.running) {
@@ -392,7 +519,10 @@ export default function App() {
     }
     try {
       const pid = await invoke("launch_game", { version: selectedVersion });
-      setGameStatus({ running: true, pid: typeof pid === "number" ? pid : null });
+      setGameStatus({
+        running: true,
+        pid: typeof pid === "number" ? pid : null,
+      });
     } catch (e) {
       console.error(e);
       // Reuse the download modal error area for now
@@ -427,7 +557,9 @@ export default function App() {
                 if (isInstalled(nextV)) {
                   setSelectedVersion(nextV);
                   // Apply global disablemod list to the selected version.
-                  invoke("apply_disabled_mods", { version: nextV }).catch(() => {});
+                  invoke("apply_disabled_mods", { version: nextV }).catch(
+                    () => {}
+                  );
                 } else {
                   openDownloadPrompt(nextV);
                 }
@@ -435,7 +567,9 @@ export default function App() {
             >
               <SelectTrigger className="h-11 px-3">
                 <div className="flex items-center gap-2 mr-2">
-                  <div className="text-sm font-semibold">v{selectedVersion}</div>
+                  <div className="text-sm font-semibold">
+                    v{selectedVersion}
+                  </div>
                   {selectedInstalled ? (
                     <CheckCircle2 className="h-4 w-4 text-emerald-400" />
                   ) : (
@@ -450,7 +584,9 @@ export default function App() {
                     key={v}
                     value={String(v)}
                     marker={
-                      isInstalled(v) ? null : <Download className="h-4 w-4 text-amber-300" />
+                      isInstalled(v) ? null : (
+                        <Download className="h-4 w-4 text-amber-300" />
+                      )
                     }
                   >
                     <span className="inline-flex items-center gap-2">
@@ -487,6 +623,14 @@ export default function App() {
               className="h-11 pl-10"
             />
           </div>
+
+          <Button
+            variant="secondary"
+            className="h-11"
+            onClick={() => checkModUpdates(selectedVersion)}
+          >
+            <Download className="h-4 w-4" />
+          </Button>
         </div>
 
         {/* Main grid */}
@@ -495,16 +639,24 @@ export default function App() {
           <div className="min-h-0 rounded-2xl border border-white/10 bg-white/5 p-3">
             <div className="mb-3 flex items-center justify-between px-1">
               <div className="text-sm font-semibold text-white/80">
-                Mods {manifest.version != null ? `(manifest v${manifest.version})` : ""}
+                Mods{" "}
+                {manifest.version != null
+                  ? `(manifest v${manifest.version})`
+                  : ""}
               </div>
-              <div className="text-xs text-white/40">{filteredMods.length} items</div>
+              <div className="text-xs text-white/40">
+                {filteredMods.length} items
+              </div>
             </div>
 
             <div className="h-[calc(100%-2.25rem)] overflow-auto pr-1">
               <div className="flex flex-col gap-2">
                 {filteredMods.map((m) => {
-                  const selected = selectedMod && modKey(selectedMod) === modKey(m);
-                  const initials = `${m.dev?.[0] ?? "M"}${m.name?.[0] ?? "M"}`.toUpperCase();
+                  const selected =
+                    selectedMod && modKey(selectedMod) === modKey(m);
+                  const initials = `${m.dev?.[0] ?? "M"}${
+                    m.name?.[0] ?? "M"
+                  }`.toUpperCase();
                   return (
                     <button
                       key={modKey(m)}
@@ -512,7 +664,7 @@ export default function App() {
                         "group flex w-full items-start gap-3 rounded-2xl border px-3 py-3 text-left transition",
                         selected
                           ? "border-white/20 bg-white/10"
-                          : "border-white/10 bg-black/10 hover:bg-white/10",
+                          : "border-white/10 bg-black/10 hover:bg-white/10"
                       )}
                       onClick={() => setSelectedMod(m)}
                     >
@@ -521,8 +673,12 @@ export default function App() {
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-baseline gap-2">
-                          <div className="truncate text-base font-semibold">{m.name}</div>
-                          <div className="truncate text-sm text-white/40">{m.dev}</div>
+                          <div className="truncate text-base font-semibold">
+                            {m.name}
+                          </div>
+                          <div className="truncate text-sm text-white/40">
+                            {m.dev}
+                          </div>
                         </div>
                         <div className="mt-1 line-clamp-1 text-sm text-white/50">
                           Click to edit config
@@ -545,13 +701,16 @@ export default function App() {
           {!selectedMod ? (
             <></>
           ) : (
-          
-          <div className="min-h-0 rounded-2xl border border-white/10 bg-white/5 p-4">
+            <div className="min-h-0 rounded-2xl border border-white/10 bg-white/5 p-4">
               <div className="flex h-full flex-col gap-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="truncate text-lg font-semibold">{selectedMod.name}</div>
-                    <div className="truncate text-sm text-white/40">{selectedMod.dev}</div>
+                    <div className="truncate text-lg font-semibold">
+                      {selectedMod.name}
+                    </div>
+                    <div className="truncate text-sm text-white/40">
+                      {selectedMod.dev}
+                    </div>
                   </div>
                   <Button
                     variant="secondary"
@@ -565,10 +724,16 @@ export default function App() {
                 </div>
 
                 <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-black/10 px-3 py-2">
-                  <div className="text-sm font-semibold text-white/80">Enabled</div>
+                  <div className="text-sm font-semibold text-white/80">
+                    Enabled
+                  </div>
                   <div className="flex items-center gap-2">
                     <div className="text-xs text-white/50">
-                      {modToggleBusy ? "Applying..." : modEnabled ? "On" : "Off"}
+                      {modToggleBusy
+                        ? "Applying..."
+                        : modEnabled
+                        ? "On"
+                        : "Off"}
                     </div>
                     <Checkbox
                       checked={modEnabled}
@@ -579,12 +744,16 @@ export default function App() {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <div className="text-xs font-semibold text-white/50">Section</div>
+                  <div className="text-xs font-semibold text-white/50">
+                    Section
+                  </div>
                   <div className="flex-1">
                     <Select
                       value={activeSection}
                       onValueChange={(v) => setActiveSection(v)}
-                      disabled={!cfgFile || (cfgFile.sections ?? []).length === 0}
+                      disabled={
+                        !cfgFile || (cfgFile.sections ?? []).length === 0
+                      }
                     >
                       <SelectTrigger className="h-9">
                         <SelectValue placeholder="(no sections)" />
@@ -602,7 +771,22 @@ export default function App() {
 
                 {activeConfigPath && (
                   <div className="px-1 text-[11px] text-white/35">
-                    File: <span className="text-white/50">{activeConfigPath}</span>
+                    File:{" "}
+                    <span className="text-white/50">{activeConfigPath}</span>
+                    {manifest.chain_config.find((paths) =>
+                      paths.includes(activeConfigPath)
+                    ) && (
+                      <span className="text-white/50">
+                        {" "}
+                        (also affects{" "}
+                        {
+                          manifest.chain_config
+                            .find((paths) => paths.includes(activeConfigPath))
+                            .filter((path) => path !== activeConfigPath)[0]
+                        }
+                        )
+                      </span>
+                    )}
                   </div>
                 )}
 
@@ -624,8 +808,10 @@ export default function App() {
                   <div className="min-h-0 flex flex-1 overflow-hidden">
                     <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-white/10 bg-black/10 p-3">
                       {(() => {
-                        const s = (cfgFile.sections ?? []).find((x) => x.name === activeSection) ??
-                          cfgFile.sections?.[0];
+                        const s =
+                          (cfgFile.sections ?? []).find(
+                            (x) => x.name === activeSection
+                          ) ?? cfgFile.sections?.[0];
                         if (!s) return null;
                         return (
                           <div className="flex flex-col gap-3">
@@ -639,7 +825,9 @@ export default function App() {
                                 >
                                   <div className="flex items-start justify-between gap-3">
                                     <div className="min-w-0">
-                                      <div className="truncate text-sm font-semibold">{e.name}</div>
+                                      <div className="truncate text-sm font-semibold">
+                                        {e.name}
+                                      </div>
                                       {e.description && (
                                         <div className="mt-1 whitespace-pre-wrap text-xs text-white/50">
                                           {e.description}
@@ -647,7 +835,9 @@ export default function App() {
                                       )}
                                     </div>
                                     <div className="shrink-0 text-[10px] text-white/40">
-                                      {savingEntry === id ? "Saving..." : v?.type ?? ""}
+                                      {savingEntry === id
+                                        ? "Saving..."
+                                        : v?.type ?? ""}
                                     </div>
                                   </div>
 
@@ -663,13 +853,16 @@ export default function App() {
                                             })
                                           }
                                         />
-                                        <span className="text-white/80">Enabled</span>
+                                        <span className="text-white/80">
+                                          Enabled
+                                        </span>
                                       </label>
                                     ) : v?.type === "Int" ? (
                                       v.data?.range ? (
                                         <div className="flex items-center gap-3">
                                           <div className="w-20 shrink-0 text-xs text-white/50">
-                                            {v.data.range.start}-{v.data.range.end}
+                                            {v.data.range.start}-
+                                            {v.data.range.end}
                                           </div>
                                           <Slider
                                             value={[v.data.value ?? 0]}
@@ -709,13 +902,18 @@ export default function App() {
                                       v.data?.range ? (
                                         <div className="flex items-center gap-3">
                                           <div className="w-24 shrink-0 text-xs text-white/50">
-                                            {v.data.range.start}-{v.data.range.end}
+                                            {v.data.range.start}-
+                                            {v.data.range.end}
                                           </div>
                                           <Slider
                                             value={[v.data.value ?? 0]}
                                             min={v.data.range.start}
                                             max={v.data.range.end}
-                                            step={(v.data.range.end - v.data.range.start) / 200 || 0.01}
+                                            step={
+                                              (v.data.range.end -
+                                                v.data.range.start) /
+                                                200 || 0.01
+                                            }
                                             onValueChange={([val]) =>
                                               setCfgEntry(s.name, e.name, {
                                                 type: "Float",
@@ -726,7 +924,7 @@ export default function App() {
                                               })
                                             }
                                           />
-                                            {/* <div className="w-20 shrink-0 text-right text-sm text-white/80 tabular-nums">
+                                          {/* <div className="w-20 shrink-0 text-right text-sm text-white/80 tabular-nums">
                                               {Number(v.data.value ?? 0).toFixed(3)}
                                             </div> */}
 
@@ -738,7 +936,9 @@ export default function App() {
                                               setCfgEntry(s.name, e.name, {
                                                 type: "Float",
                                                 data: {
-                                                  value: Number(ev.target.value),
+                                                  value: Number(
+                                                    ev.target.value
+                                                  ),
                                                   range: v.data?.range ?? null,
                                                 },
                                               })
@@ -778,41 +978,65 @@ export default function App() {
                                           <SelectValue placeholder="Select..." />
                                         </SelectTrigger>
                                         <SelectContent>
-                                          {(v.data?.options ?? []).map((opt, idx) => (
-                                            <SelectItem key={opt} value={String(idx)}>
-                                              {opt}
-                                            </SelectItem>
-                                          ))}
+                                          {(v.data?.options ?? []).map(
+                                            (opt, idx) => (
+                                              <SelectItem
+                                                key={opt}
+                                                value={String(idx)}
+                                              >
+                                                {opt}
+                                              </SelectItem>
+                                            )
+                                          )}
                                         </SelectContent>
                                       </Select>
                                     ) : v?.type === "Flags" ? (
                                       <div className="flex flex-col gap-2">
-                                        {(v.data?.options ?? []).map((opt, idx) => {
-                                          const checked = (v.data?.indicies ?? []).includes(idx);
-                                          return (
-                                            <label
-                                              key={opt}
-                                              className="flex cursor-pointer items-center gap-2 text-sm text-white/80"
-                                            >
-                                              <Checkbox
-                                                checked={checked}
-                                                onCheckedChange={(nextChecked) => {
-                                                  const set = new Set(v.data?.indicies ?? []);
-                                                  if (nextChecked) set.add(idx);
-                                                  else set.delete(idx);
-                                                  setCfgEntry(s.name, e.name, {
-                                                    type: "Flags",
-                                                    data: {
-                                                      indicies: Array.from(set).sort((a, b) => a - b),
-                                                      options: v.data?.options ?? [],
-                                                    },
-                                                  });
-                                                }}
-                                              />
-                                              <span>{opt}</span>
-                                            </label>
-                                          );
-                                        })}
+                                        {(v.data?.options ?? []).map(
+                                          (opt, idx) => {
+                                            const checked = (
+                                              v.data?.indicies ?? []
+                                            ).includes(idx);
+                                            return (
+                                              <label
+                                                key={opt}
+                                                className="flex cursor-pointer items-center gap-2 text-sm text-white/80"
+                                              >
+                                                <Checkbox
+                                                  checked={checked}
+                                                  onCheckedChange={(
+                                                    nextChecked
+                                                  ) => {
+                                                    const set = new Set(
+                                                      v.data?.indicies ?? []
+                                                    );
+                                                    if (nextChecked)
+                                                      set.add(idx);
+                                                    else set.delete(idx);
+                                                    setCfgEntry(
+                                                      s.name,
+                                                      e.name,
+                                                      {
+                                                        type: "Flags",
+                                                        data: {
+                                                          indicies: Array.from(
+                                                            set
+                                                          ).sort(
+                                                            (a, b) => a - b
+                                                          ),
+                                                          options:
+                                                            v.data?.options ??
+                                                            [],
+                                                        },
+                                                      }
+                                                    );
+                                                  }}
+                                                />
+                                                <span>{opt}</span>
+                                              </label>
+                                            );
+                                          }
+                                        )}
                                       </div>
                                     ) : (
                                       <Input
@@ -836,11 +1060,9 @@ export default function App() {
                   </div>
                 )}
               </div>
-          </div>
-          
+            </div>
           )}
         </div>
-
       </div>
 
       {/* Download confirm modal */}
@@ -849,7 +1071,8 @@ export default function App() {
           <button
             className="absolute inset-0 bg-black/60"
             onClick={() => {
-              if (!promptIsWorking) setDownloadPrompt({ open: false, version: null });
+              if (!promptIsWorking)
+                setDownloadPrompt({ open: false, version: null });
             }}
             aria-label="Close"
           />
@@ -861,7 +1084,8 @@ export default function App() {
                   Download v{promptVersion}?
                 </div>
                 <div className="mt-1 text-sm text-white/55">
-                  This version is not downloaded yet. Do you want to download it now?
+                  This version is not downloaded yet. Do you want to download it
+                  now?
                 </div>
               </div>
             </div>
@@ -871,21 +1095,35 @@ export default function App() {
               <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold">{statusText}</div>
-                    <div className="truncate text-xs text-white/50">
-                      {task.detail || (bytesText ? `Downloaded: ${bytesText}` : "")}
+                    <div className="truncate text-sm font-semibold">
+                      {statusText}
                     </div>
-                    {task.error && <div className="mt-1 text-xs text-red-300">{task.error}</div>}
+                    <div className="truncate text-xs text-white/50">
+                      {task.detail ||
+                        (bytesText ? `Downloaded: ${bytesText}` : "")}
+                    </div>
+                    {task.error && (
+                      <div className="mt-1 text-xs text-red-300">
+                        {task.error}
+                      </div>
+                    )}
                   </div>
-                  <div className="shrink-0 text-sm text-white/70">{progressText}</div>
+                  <div className="shrink-0 text-sm text-white/70">
+                    {progressText}
+                  </div>
                 </div>
                 <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-white/10">
                   <div
                     className={cn(
                       "h-full rounded-full transition-[width]",
-                      task.status === "error" ? "bg-red-400" : "bg-emerald-400",
+                      task.status === "error" ? "bg-red-400" : "bg-emerald-400"
                     )}
-                    style={{ width: `${Math.max(0, Math.min(100, task.overall_percent ?? 0))}%` }}
+                    style={{
+                      width: `${Math.max(
+                        0,
+                        Math.min(100, task.overall_percent ?? 0)
+                      )}%`,
+                    }}
                   />
                 </div>
               </div>
@@ -893,7 +1131,11 @@ export default function App() {
 
             <div className="mt-5 flex items-center justify-end gap-2">
               {promptIsWorking ? (
-                <Button variant="default" disabled className="h-10 min-w-[120px]">
+                <Button
+                  variant="default"
+                  disabled
+                  className="h-10 min-w-[120px]"
+                >
                   <Download className="h-4 w-4" />
                   Downloading...
                 </Button>
@@ -901,7 +1143,9 @@ export default function App() {
                 <Button
                   variant="default"
                   className="h-10 min-w-[120px]"
-                  onClick={() => setDownloadPrompt({ open: false, version: null })}
+                  onClick={() =>
+                    setDownloadPrompt({ open: false, version: null })
+                  }
                 >
                   Close
                 </Button>
@@ -909,7 +1153,9 @@ export default function App() {
                 <Button
                   variant="default"
                   className="h-10 min-w-[120px]"
-                  onClick={() => setDownloadPrompt({ open: false, version: null })}
+                  onClick={() =>
+                    setDownloadPrompt({ open: false, version: null })
+                  }
                 >
                   Close
                 </Button>
@@ -917,7 +1163,9 @@ export default function App() {
                 <>
                   <Button
                     variant="secondary"
-                    onClick={() => setDownloadPrompt({ open: false, version: null })}
+                    onClick={() =>
+                      setDownloadPrompt({ open: false, version: null })
+                    }
                     className="h-10"
                   >
                     Cancel
@@ -943,4 +1191,4 @@ export default function App() {
       )}
     </div>
   );
- }
+}

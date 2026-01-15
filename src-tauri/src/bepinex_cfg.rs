@@ -1,4 +1,4 @@
-use std::io::BufRead;
+use std::{io::BufRead, path::Path};
 use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
@@ -219,6 +219,34 @@ impl EntryBuilder {
             _ => Ok(SimpleValue::String(value)),
         }
     }
+}
+
+
+// {
+//     "name": "WebSocketSharp_netstandard",
+//     "description": "NuGet WebSocketSharp-netstandard package re-bundled for convenient consumption and dependency management.",
+//     "version_number": "1.0.100",
+//     "dependencies": [],
+//     "website_url": "https://nuget.org/packages/WebSocketSharp-netstandard/1.0.1",
+// }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BepInExManifest {
+    pub name: String,
+    pub description: String,
+    pub version_number: String,
+    pub dependencies: Vec<String>,
+    pub website_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct InstallerEntry {
+    identifier: String,
+}
+
+pub fn read_manifest(path: &Path) -> Result<BepInExManifest, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    serde_json::from_str::<BepInExManifest>(&text).map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Clone)]

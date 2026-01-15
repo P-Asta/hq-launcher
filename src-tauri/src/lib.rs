@@ -11,9 +11,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{Manager, State};
 
+use crate::{mod_config::ModsConfig, progress::{TaskCheckUpdateProgressPayload}};
+
 #[derive(Debug, Clone, Serialize)]
 struct ManifestDto {
     version: u32,
+    chain_config: Vec<Vec<String>>,
     mods: Vec<mod_config::ModEntry>,
 }
 
@@ -214,6 +217,41 @@ async fn download(app: tauri::AppHandle, version: u32) -> Result<bool, String> {
 }
 
 #[tauri::command]
+async fn check_mod_updates(app: tauri::AppHandle, version: u32) -> Result<bool, String> {
+    let client = reqwest::Client::new();
+
+    let dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("failed to resolve app data dir: {e}"))?
+            .join("versions");
+    let extract_dir = dir.join(format!("v{version}"));
+    let (_, mods_cfg, _) = ModsConfig::fetch_manifest(&client).await?;
+
+    let mut updatable_mods: Vec<String> = vec![];
+
+
+    mods::update_mods_with_progress(
+        &extract_dir,
+        version,
+        &mods_cfg,
+        |checked, total, detail, mod_name| {
+            if let Some(mod_name) = mod_name {
+                updatable_mods.push(mod_name.clone());
+            }
+            
+            progress::emit_check_update_progress(
+                &app,
+                TaskCheckUpdateProgressPayload { total,  checked, updatable_mods: updatable_mods.clone(), detail }
+            );
+        },
+    )
+    .await?;
+
+    Ok(true)
+}
+
+#[tauri::command]
 fn launch_game(app: tauri::AppHandle, version: u32, state: State<'_, GameState>) -> Result<u32, String> {
     let dir = version_dir(&app, version)?;
     if !dir.exists() {
@@ -329,9 +367,10 @@ fn set_mod_enabled(app: tauri::AppHandle, version: u32, dev: String, name: Strin
 #[tauri::command]
 async fn get_manifest() -> Result<ManifestDto, String> {
     let client = reqwest::Client::new();
-    let (version, cfg) = mod_config::ModsConfig::fetch_manifest(&client).await?;
+    let (version, cfg, chain_config) = mod_config::ModsConfig::fetch_manifest(&client).await?;
     Ok(ManifestDto {
         version,
+        chain_config,
         mods: cfg.mods,
     })
 }
@@ -462,6 +501,9 @@ struct SetBepInExEntryArgs {
 fn set_bepinex_cfg_entry(app: tauri::AppHandle, args: SetBepInExEntryArgs) -> Result<bool, String> {
     let base = shared_config_dir(&app)?;
     let rel = std::path::Path::new(&args.rel_path);
+
+    log::info!("set_bepinex_cfg_entry: {:?}", args);
+
     if !is_safe_rel_path(rel) {
         return Err("invalid path".to_string());
     }
@@ -525,11 +567,18 @@ pub fn run() {
                 }
             });
 
+            // tauri::async_runtime::spawn(async move {
+            //     if let Err(e) = mods::update_mods_with_progress(&app, version).await {
+            //         log::error!("mod update failed: {e}");
+            //     }
+            // });
+
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             download,
+            check_mod_updates,
             launch_game,
             get_game_status,
             stop_game,

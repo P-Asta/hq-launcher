@@ -23,6 +23,15 @@ pub struct TaskProgressPayload {
     pub total_files: Option<u64>,
 }
 
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskCheckUpdateProgressPayload {
+    pub total: u64,
+    pub checked: u64,
+    pub updatable_mods: Vec<String>,
+    pub detail: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskFinishedPayload {
     pub version: u32,
@@ -36,7 +45,7 @@ pub struct TaskErrorPayload {
 }
 
 pub fn emit_progress(app: &AppHandle, payload: TaskProgressPayload) {
-    let _ = app.emit("download://progress", payload);
+    let _ = app.emit(&format!("download://progress"), payload);
 }
 
 pub fn emit_finished(app: &AppHandle, payload: TaskFinishedPayload) {
@@ -47,3 +56,15 @@ pub fn emit_error(app: &AppHandle, payload: TaskErrorPayload) {
     let _ = app.emit("download://error", payload);
 }
 
+
+pub fn emit_check_update_progress(app: &AppHandle, payload: TaskCheckUpdateProgressPayload) {
+    let _ = app.emit("check_update://progress", payload);
+}
+
+pub fn emit_check_update_finished(app: &AppHandle, payload: TaskFinishedPayload) {
+    let _ = app.emit("check_update://finished", payload);
+} 
+
+pub fn emit_check_update_error(app: &AppHandle, payload: TaskFinishedPayload) {
+    let _ = app.emit("check_update://error", payload);
+}

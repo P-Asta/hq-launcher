@@ -62,42 +62,14 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Deserialize)]
 pub struct RemoteManifest {
     pub version: u32,
+    pub chain_config: Vec<Vec<String>>,
     pub mods: Vec<ModEntry>,
 }
 
 impl ModsConfig {
-    #[allow(dead_code)]
-    pub fn default_for_lethal_company() -> Self {
-        Self {
-            // low_cap 이상, high_cap 이하 버전에 설치
-            mods: vec![
-                ModEntry { dev: "HQHQTeam".into(), name: "VLog".into(), enabled: true, low_cap: None, high_cap: None, version_config: BTreeMap::new() },
-                ModEntry { dev: "Chboo1".into(), name: "High_Quota_Fixes".into(), enabled: true, low_cap: None, high_cap: None, version_config: BTreeMap::new() },
-                ModEntry { dev: "tinyhoot".into(), name: "ShipLoot".into(), enabled: true, low_cap: None, high_cap: None, version_config: BTreeMap::new() },
-                ModEntry { dev: "Drakorle".into(), name: "MoreItems".into(), enabled: true, low_cap: None, high_cap: None, version_config: BTreeMap::new() },
-                ModEntry { dev: "mattymatty".into(), name: "TooManyItems".into(), enabled: true, low_cap: None, high_cap: None, version_config: BTreeMap::new() },
-                ModEntry { dev: "Zaggy1024".into(), name: "PathfindingLagFix".into(), enabled: true, low_cap: None, high_cap: None, version_config: BTreeMap::new() },
-                ModEntry { dev: "LeKAKiD".into(), name: "FontPatcher".into(), enabled: true, low_cap: None, high_cap: None, version_config: BTreeMap::new() },
-                ModEntry { dev: "ViVKo".into(), name: "NoSellLimit".into(), enabled: true, low_cap: None, high_cap: None, version_config: BTreeMap::new() },
-                ModEntry { dev: "quackandcheese".into(), name: "ToggleMute".into(), enabled: true, low_cap: None, high_cap: None, version_config: BTreeMap::new() },
-                ModEntry { dev: "Pooble".into(), name: "LCBetterSaves".into(), enabled: true, low_cap: None, high_cap: None, version_config: BTreeMap::new() },
-                ModEntry { dev: "fumiko".into(), name: "CullFactory".into(), enabled: true, low_cap: None, high_cap: None, version_config: BTreeMap::new() },
-                ModEntry { dev: "AdiBTW".into(), name: "Loadstone".into(), enabled: true, low_cap: None, high_cap: None, version_config: BTreeMap::new() },
-                ModEntry { dev: "mrov".into(), name: "LightsOut".into(), enabled: true, low_cap: None, high_cap: None, version_config: BTreeMap::new() },
-                ModEntry { dev: "Zehs".into(), name: "StreamOverlays".into(), enabled: true, low_cap: None, high_cap: None, version_config: BTreeMap::new() },
-                ModEntry { dev: "MysticDEV".into(), name: "BetterCruiserSync".into(), enabled: true, low_cap: Some(56), high_cap: None, version_config: BTreeMap::new() },
-                // Thunderstore: Hardy-LCMaxSoundsFix
-                ModEntry { dev: "Hardy".into(), name: "LCMaxSoundsFix".into(), enabled: true, low_cap: None, high_cap: None, version_config: BTreeMap::new() },
-                ModEntry { dev: "Scoops".into(), name: "LethalSpongeLegacy".into(), enabled: true, low_cap: None, high_cap: None, version_config: BTreeMap::new() },
-            ],
-        }
-    }
-
-    /// Load remote `manifest.json` (in-memory only; no file IO).
-    ///
-    /// New format:
-    /// `{ "version": 1, "mods": [...] }`
-    pub async fn fetch_manifest(client: &reqwest::Client) -> Result<(u32, Self), String> {
+    /// you can check json in https://f.asta.rs/hq-launcher/manifest.json
+    /// output: (version, cfg, chain_config)
+    pub async fn fetch_manifest(client: &reqwest::Client) -> Result<(u32, Self, Vec<Vec<String>>), String> {
         let url = "https://f.asta.rs/hq-launcher/manifest.json";
         log::info!("Fetching manifest from {url}");
 
@@ -114,7 +86,7 @@ impl ModsConfig {
 
         let mut cfg = ModsConfig { mods: manifest.mods };
         let _ = normalize_aliases(&mut cfg);
-        Ok((manifest.version, cfg))
+        Ok((manifest.version, cfg, manifest.chain_config))
     }
 }
 

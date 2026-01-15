@@ -244,6 +244,8 @@ where
     on_progress(0, total_entries, Some("Starting...".to_string()));
 
     let base_dir = plugins_dir.join(folder_name);
+    let _ = std::fs::remove_dir_all(&base_dir).map_err(|e| e.to_string());
+    
     std::fs::create_dir_all(&base_dir).map_err(|e| e.to_string())?;
 
     log::info!("Extracting Thunderstore mod zip into: {}", base_dir.to_string_lossy());

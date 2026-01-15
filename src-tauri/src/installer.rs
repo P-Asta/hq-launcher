@@ -213,7 +213,7 @@ pub async fn sync_latest_install_from_manifest(app: tauri::AppHandle) -> Result<
 
     let client = reqwest::Client::new();
     let remote = ModsConfig::fetch_manifest(&client).await?;
-    let (remote_manifest_version, mods_cfg) = remote;
+    let (remote_manifest_version, mods_cfg, chain_config) = remote;
 
     let local_state = read_manifest_state(&app)?;
     if local_state.manifest_version == remote_manifest_version {
@@ -627,7 +627,9 @@ pub async fn download_and_setup(app: tauri::AppHandle, version: u32) -> Result<b
         .map_err(|e| e.to_string())??;
 
         // Step 5: install mods from remote manifest (in-memory only)
-        let (remote_manifest_version, mods_cfg) = ModsConfig::fetch_manifest(&client).await?;
+        let (remote_manifest_version, mods_cfg, _) = ModsConfig::fetch_manifest(&client).await?;
+
+
         let total_mods = mods_cfg.mods.len() as u64;
         log::info!("Installing {} mods into {}", total_mods, extract_dir.to_string_lossy());
 
@@ -714,4 +716,3 @@ pub async fn download_and_setup(app: tauri::AppHandle, version: u32) -> Result<b
 
     res
 }
-
