@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+/* App defaults */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #0b0c10;
+}
+
+::-webkit-scrollbar {
+  display: none;
+}
