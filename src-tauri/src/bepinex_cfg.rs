@@ -116,10 +116,23 @@ fn parse_orphaned_entry_line(line: &str) -> Option<(&str, &str)> {
         .map(|(name, value)| (name.trim(), value.trim()))
 }
 
+fn check_value_type(value: &str) -> String {
+    let first_char = value.chars().next().unwrap_or_default();
+    match first_char {
+        '0'..='9' => "Int32".to_string(),
+        't' | 'f' => "Boolean".to_string(),
+        _ => "String".to_string(),
+    }
+}
+
 impl EntryBuilder {
     fn build(self) -> Result<ParsedEntry, String> {
-        let name = self.name.ok_or("missing entry name".to_string())?;
-        let type_name = self.type_name.ok_or("missing entry type".to_string())?;
+        let name = self.name.ok_or("No entry name".to_string())?;
+        let value_raw = self.value.unwrap_or_else(|| "".to_string());
+
+        let type_name = self.type_name.unwrap_or_else(|| {
+            check_value_type(&value_raw)
+        });
 
         let default = match self.default_value {
             Some(v) => Some(Self::parse_value(
@@ -132,7 +145,6 @@ impl EntryBuilder {
             None => None,
         };
 
-        let value_raw = self.value.ok_or("missing entry value".to_string())?;
         let value = Self::parse_value(
             value_raw,
             self.acceptable_values,
@@ -196,7 +208,7 @@ impl EntryBuilder {
                     .map_err(|e| e.to_string())?,
             )),
             "String" => Ok(SimpleValue::String(value.replace(r"\n", "\n"))),
-            "Int32" => Ok(SimpleValue::Int(parse_num_i32(&value, range)?)),
+            "Int32" | "Number" => Ok(SimpleValue::Int(parse_num_i32(&value, range)?)),
             "Single" | "Double" => Ok(SimpleValue::Float(parse_num_f32(&value, range)?)),
             _ => Ok(SimpleValue::String(value)),
         }

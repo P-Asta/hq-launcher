@@ -256,7 +256,7 @@ export default function App() {
       const parsed = await invoke("read_bepinex_cfg", { relPath: activeConfigPath });
       setCfgFile(parsed ?? null);
       const firstSection = parsed?.sections?.[0]?.name ?? "";
-      setActiveSection((prev) => prev || firstSection);
+      setActiveSection(firstSection);
     })().catch((e) => {
       console.error(e);
       setCfgFile(null);
@@ -364,7 +364,7 @@ export default function App() {
     const set = new Set(installedVersions);
     set.add(selectedVersion);
     // small suggested list (so there are “not installed” entries too)
-    [40, 45, 49, 50, 56, 62, 64, 69, 72, 73].forEach((v) => set.add(v));
+    [40, 49, 50, 56, 62, 64, 69, 72, 73].forEach((v) => set.add(v));
     return Array.from(set).sort((a, b) => b - a);
   }, [installedVersions, selectedVersion]);
 
@@ -490,7 +490,7 @@ export default function App() {
         </div>
 
         {/* Main grid */}
-        <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] gap-4">
+        <div className="grid min-h-0 flex-1 grid-cols-[repeat(auto-fit,minmax(0,1fr))] gap-4">
           {/* Mod list */}
           <div className="min-h-0 rounded-2xl border border-white/10 bg-white/5 p-3">
             <div className="mb-3 flex items-center justify-between px-1">
@@ -542,12 +542,11 @@ export default function App() {
           </div>
 
           {/* Right panel: config editor */}
+          {!selectedMod ? (
+            <></>
+          ) : (
+          
           <div className="min-h-0 rounded-2xl border border-white/10 bg-white/5 p-4">
-            {!selectedMod ? (
-              <div className="flex h-full items-center justify-center text-sm text-white/40">
-                Select a mod to edit its config.
-              </div>
-            ) : (
               <div className="flex h-full flex-col gap-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
@@ -822,8 +821,9 @@ export default function App() {
                   </div>
                 )}
               </div>
-            )}
           </div>
+          
+          )}
         </div>
 
       </div>

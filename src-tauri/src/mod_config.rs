@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use serde::Deserializer;
 
 /// New config format (requested):
 /// - dev: thunderstore namespace/author
@@ -27,13 +28,27 @@ pub struct ModEntry {
     /// Means:
     /// - game >= 56 uses 1.0.1
     /// - game >= 73 uses 1.1.1 (overrides)
-    #[serde(default)]
+    #[serde(default, deserialize_with="deserialize_version_config")]
     pub version_config: BTreeMap<u32, String>,
 }
 
+fn deserialize_version_config<'de, D>(deserializer: D) -> Result<BTreeMap<u32, String>, D::Error> where D: Deserializer<'de> {
+    let string_map: BTreeMap<String, String> = BTreeMap::deserialize(deserializer)?;
+    string_map
+        .into_iter()
+        .map(|(k, v)| {
+            k.parse::<u32>()
+                .map(|key| (key, v))
+                .map_err(serde::de::Error::custom)
+        })
+        .collect()
+}
+
+
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ModsConfigV2 {
+pub struct ModsConfig {
     pub mods: Vec<ModEntry>,
 }
 
@@ -41,96 +56,16 @@ fn default_true() -> bool {
     true
 }
 
-fn default_community() -> String {
-    "repo".to_string()
-}
-
-fn default_fallbacks() -> Vec<String> {
-    vec!["repo".to_string(), "lethal-company".to_string()]
-}
-
-// ---------- Legacy support (auto-migrate old schema to the new one) ----------
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LegacyModVersionPin {
-    pub min_game_version: Option<u32>,
-    pub max_game_version: Option<u32>,
-    pub version_number: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LegacyModEntry {
-    pub namespace: String,
-    pub name: String,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    pub min_game_version: Option<u32>,
-    pub max_game_version: Option<u32>,
-    pub community: Option<String>,
-    #[serde(default)]
-    pub pins: Vec<LegacyModVersionPin>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ModsConfigLegacy {
-    #[serde(default = "default_community")]
-    pub community: String,
-    #[serde(default = "default_fallbacks")]
-    pub fallback_communities: Vec<String>,
-    pub mods: Vec<LegacyModEntry>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-enum ModsConfigFile {
-    V2(ModsConfigV2),
-    Legacy(ModsConfigLegacy),
-}
-
-impl From<ModsConfigLegacy> for ModsConfigV2 {
-    fn from(old: ModsConfigLegacy) -> Self {
-        let mods = old
-            .mods
-            .into_iter()
-            .map(|m| {
-                let mut version_config: BTreeMap<u32, String> = BTreeMap::new();
-                for pin in m.pins {
-                    let key = pin.min_game_version.unwrap_or(0);
-                    version_config.insert(key, pin.version_number);
-                }
-
-                ModEntry {
-                    name: m.name,
-                    dev: m.namespace,
-                    enabled: m.enabled,
-                    low_cap: m.min_game_version,
-                    high_cap: m.max_game_version,
-                    version_config,
-                }
-            })
-            .collect();
-
-        ModsConfigV2 {
-            mods,
-        }
-    }
-}
-
 // ---------- Public API ----------
 
-pub type ModsConfig = ModsConfigV2;
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct RemoteManifestV1 {
+pub struct RemoteManifest {
     pub version: u32,
     pub mods: Vec<ModEntry>,
 }
 
-impl ModsConfigV2 {
+impl ModsConfig {
     #[allow(dead_code)]
     pub fn default_for_lethal_company() -> Self {
         Self {
@@ -173,17 +108,17 @@ impl ModsConfigV2 {
             .map_err(|e| e.to_string())?
             .error_for_status()
             .map_err(|e| e.to_string())?
-            .json::<RemoteManifestV1>()
+            .json::<RemoteManifest>()
             .await
             .map_err(|e| e.to_string())?;
 
-        let mut cfg = ModsConfigV2 { mods: manifest.mods };
+        let mut cfg = ModsConfig { mods: manifest.mods };
         let _ = normalize_aliases(&mut cfg);
         Ok((manifest.version, cfg))
     }
 }
 
-fn normalize_aliases(cfg: &mut ModsConfigV2) -> bool {
+fn normalize_aliases(cfg: &mut ModsConfig) -> bool {
     let mut changed = false;
     for m in &mut cfg.mods {
         // Hardy-LCMaxSoundsFix (common typo: LCMaxSoundFix)
