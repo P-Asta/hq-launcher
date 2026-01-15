@@ -299,7 +299,7 @@ where
         on_progress(idx, total_mods, Some(format!("{} pass mod", mod_label.clone())), None);
     }
 
-    on_progress(total_mods, total_mods, Some("Finished".to_string()), Some("Finished".to_string()));
+    on_progress(total_mods, total_mods, Some("Finished".to_string()), None);
 
     Ok(())
 }

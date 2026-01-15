@@ -64,6 +64,11 @@ export default function App() {
     version: null,
   });
 
+  const [checkUpdatePrompt, setCheckUpdatePrompt] = useState({
+    open: false,
+    mods: [],
+  });
+
   // Config editor state (shared config via junction) - BepInEx cfg UI
   const [configFiles, setConfigFiles] = useState([]);
   const [activeConfigPath, setActiveConfigPath] = useState("");
@@ -201,7 +206,6 @@ export default function App() {
 
     (async () => {
       unlistenProgress = await listen("download://progress", (event) => {
-        console.log("download://progress", event.payload);
         setTask((t) => ({
           ...t,
           status: "working",
@@ -247,10 +251,14 @@ export default function App() {
       unlistenCheckUpdateProgress = await listen(
         "check_update://progress",
         (event) => {
+          console.log("check_update://progress", event.payload);
+          let overall_percent =
+            (event.payload.checked / event.payload.total) * 100;
           setCheckUpdateTask((t) => ({
             ...t,
             status: "working",
             ...event.payload,
+            overall_percent: overall_percent,
             error: null,
           }));
         }
@@ -627,7 +635,10 @@ export default function App() {
           <Button
             variant="secondary"
             className="h-11"
-            onClick={() => checkModUpdates(selectedVersion)}
+            onClick={() => {
+              checkModUpdates(selectedVersion);
+              setCheckUpdatePrompt({ open: true, mods: filteredMods });
+            }}
           >
             <Download className="h-4 w-4" />
           </Button>
@@ -1178,6 +1189,135 @@ export default function App() {
                       downloadVersion(promptVersion);
                     }}
                     disabled={typeof promptVersion !== "number"}
+                    className="h-10"
+                  >
+                    <Download className="h-4 w-4" />
+                    Download
+                  </Button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Check update confirm modal */}
+      {checkUpdatePrompt.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <button
+            className="absolute inset-0 bg-black/60"
+            onClick={() => {
+              if (!checkUpdateTask.status === "working")
+                setCheckUpdatePrompt({ open: false, mods: [] });
+            }}
+            aria-label="Close"
+          />
+
+          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-white/10 bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-lg font-semibold">
+                  {checkUpdateTask.status === "done"
+                    ? `${checkUpdateTask.updatable_mods.length} mods can be updated`
+                    : "Checking for updates..."}
+                </div>
+              </div>
+            </div>
+
+            {/* Progress (from Rust emit) */}
+            {(checkUpdateTask.status === "working" ||
+              checkUpdateTask.status === "error") && (
+              <div className="mt-4 rounded-2xl ">
+                <div className="h-2 w-full overflow-hidden bg-gray-500 rounded-full">
+                  <div
+                    className={cn(
+                      "h-full rounded-full transition-[width]",
+                      checkUpdateTask.status === "error"
+                        ? "bg-red-400"
+                        : "bg-emerald-400"
+                    )}
+                    style={{
+                      width: `${Math.max(
+                        0,
+                        Math.min(100, checkUpdateTask.overall_percent ?? 0)
+                      )}%`,
+                    }}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-3 text-white/50 text-sm">
+                  {checkUpdateTask.detail}
+                </div>
+              </div>
+            )}
+            {checkUpdateTask.status === "done" && (
+              <div className="flex items-center justify-between gap-3 text-white/50 text-sm">
+                {checkUpdateTask.updatable_mods.map((mod, index) => (
+                  <div key={index}>{mod}</div>
+                ))}
+              </div>
+            )}
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              {checkUpdateTask.status === "working" ? (
+                <Button
+                  variant="default"
+                  disabled
+                  className="h-10 min-w-[120px]"
+                >
+                  <Download className="h-4 w-4" />
+                  Checking...
+                </Button>
+              ) : checkUpdateTask.status === "done" ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    className="h-10 min-w-[120px]"
+                    onClick={() =>
+                      setCheckUpdatePrompt({ open: false, mods: [] })
+                    }
+                  >
+                    Close
+                  </Button>
+                  <Button
+                    variant="default"
+                    className="h-10 min-w-[120px]"
+                    onClick={() =>
+                      setCheckUpdatePrompt({ open: false, mods: [] })
+                    }
+                  >
+                    Update
+                  </Button>
+                </>
+              ) : checkUpdateTask.status === "error" ? (
+                <Button
+                  variant="default"
+                  className="h-10 min-w-[120px]"
+                  onClick={() =>
+                    setCheckUpdatePrompt({ open: false, mods: [] })
+                  }
+                >
+                  Close
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    variant="secondary"
+                    onClick={() =>
+                      setCheckUpdatePrompt({ open: false, mods: [] })
+                    }
+                    className="h-10"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="default"
+                    onClick={() => {
+                      if (typeof checkUpdateTask.version !== "number") return;
+                      setSelectedVersion(checkUpdateTask.version);
+                      checkModUpdates(checkUpdateTask.version);
+                    }}
+                    disabled={typeof checkUpdateTask.version !== "number"}
                     className="h-10"
                   >
                     <Download className="h-4 w-4" />

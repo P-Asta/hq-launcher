@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{Manager, State};
 
-use crate::{mod_config::ModsConfig, progress::{TaskCheckUpdateProgressPayload}};
+use crate::{mod_config::ModsConfig, progress::{TaskCheckUpdateProgressPayload, TaskFinishedPayload}};
 
 #[derive(Debug, Clone, Serialize)]
 struct ManifestDto {
@@ -248,6 +248,10 @@ async fn check_mod_updates(app: tauri::AppHandle, version: u32) -> Result<bool, 
     )
     .await?;
 
+    progress::emit_check_update_finished(
+        &app,
+        TaskFinishedPayload { version, path: extract_dir.to_string_lossy().to_string() }
+    );
     Ok(true)
 }
 
