@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{Manager, State};
 
-use crate::{mod_config::ModsConfig, progress::{TaskCheckUpdateProgressPayload, TaskFinishedPayload}};
+use crate::{mod_config::ModsConfig, progress::{TaskFinishedPayload, TaskUpdatableProgressPayload}};
 
 #[derive(Debug, Clone, Serialize)]
 struct ManifestDto {
@@ -101,6 +101,15 @@ fn disablemod_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String>
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?
         .join("config")
         .join("disablemod.json"))
+}
+
+fn thunderstore_cache_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
+        .join("config")
+        .join("cache.json"))
 }
 
 fn read_disablemod(app: &tauri::AppHandle) -> Result<DisableModFile, String> {
@@ -231,7 +240,7 @@ async fn check_mod_updates(app: tauri::AppHandle, version: u32) -> Result<bool, 
     let mut updatable_mods: Vec<String> = vec![];
 
 
-    mods::update_mods_with_progress(
+    mods::updatable_mods_with_progress(
         &extract_dir,
         version,
         &mods_cfg,
@@ -240,15 +249,15 @@ async fn check_mod_updates(app: tauri::AppHandle, version: u32) -> Result<bool, 
                 updatable_mods.push(mod_name.clone());
             }
             
-            progress::emit_check_update_progress(
+            progress::emit_updatable_progress(
                 &app,
-                TaskCheckUpdateProgressPayload { total,  checked, updatable_mods: updatable_mods.clone(), detail }
+                TaskUpdatableProgressPayload { total,  checked, updatable_mods: updatable_mods.clone(), detail }
             );
         },
     )
     .await?;
 
-    progress::emit_check_update_finished(
+    progress::emit_updatable_finished(
         &app,
         TaskFinishedPayload { version, path: extract_dir.to_string_lossy().to_string() }
     );

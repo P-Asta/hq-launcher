@@ -249,9 +249,9 @@ export default function App() {
 
     (async () => {
       unlistenCheckUpdateProgress = await listen(
-        "check_update://progress",
+        "updatable://progress",
         (event) => {
-          console.log("check_update://progress", event.payload);
+          console.log("updatable://progress", event.payload);
           let overall_percent =
             (event.payload.checked / event.payload.total) * 100;
           setCheckUpdateTask((t) => ({
@@ -264,7 +264,7 @@ export default function App() {
         }
       );
       unlistenCheckUpdateFinished = await listen(
-        "check_update://finished",
+        "updatable://finished",
         (event) => {
           setCheckUpdateTask((t) => ({
             ...t,
@@ -277,17 +277,14 @@ export default function App() {
             .catch(() => {});
         }
       );
-      unlistenCheckUpdateError = await listen(
-        "check_update://error",
-        (event) => {
-          setCheckUpdateTask((t) => ({
-            ...t,
-            status: "error",
-            version: event.payload?.version ?? t.version,
-            error: event.payload?.message ?? "Unknown error",
-          }));
-        }
-      );
+      unlistenCheckUpdateError = await listen("updatable://error", (event) => {
+        setCheckUpdateTask((t) => ({
+          ...t,
+          status: "error",
+          version: event.payload?.version ?? t.version,
+          error: event.payload?.message ?? "Unknown error",
+        }));
+      });
     })();
 
     return () => {
