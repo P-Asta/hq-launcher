@@ -761,7 +761,7 @@ export default function LauncherPage({
               </span>
             </Button>
           )}
-          <div className="ml-2 flex items-center gap-2">
+          {loginState?.username != null && <div className="ml-2 flex items-center gap-2">
             {loginState?.username ? (
               <div className="hidden items-center gap-2 md:flex">
                 <div className="text-sm text-white/55">
@@ -777,7 +777,7 @@ export default function LauncherPage({
             >
               <LogOut className="h-4 w-4" />
             </Button>
-          </div>
+          </div>}
         </div>
 
         {/* Main grid */}
@@ -787,9 +787,6 @@ export default function LauncherPage({
             <div className="mb-3 flex items-center justify-between px-1">
               <div className="text-sm font-semibold text-white/80">
                 Mods{" "}
-                {manifest.version != null
-                  ? `(manifest v${manifest.version})`
-                  : ""}
               </div>
               <div className="text-xs text-white/40">
                 {filteredMods.length} items
