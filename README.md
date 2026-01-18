@@ -1,4 +1,8 @@
+<div align="center">
+
 ![HQ Launcher](https://raw.githubusercontent.com/p-asta/hq-launcher/main/assets/banner.png)
+
+</div>
 
 [![Thunderstore Version](https://img.shields.io/thunderstore/v/asta/hq-launcher?style=flat)](https://thunderstore.io/c/lethal-company/p/asta/hq-launcher/)
 [![Discord](https://img.shields.io/discord/1255306516672806972?style=flat&label=discord)](https://discord.com/invite/usYCEz49Je)
