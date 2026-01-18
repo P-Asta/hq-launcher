@@ -799,6 +799,171 @@ fn write_config_file(app: tauri::AppHandle, args: WriteConfigArgs) -> Result<boo
     Ok(true)
 }
 
+// =========================
+// 🔹 AUTO-UPDATE COMMANDS
+// =========================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    name: String,
+    published_at: String,
+    body: Option<String>,
+    assets: Vec<GitHubAsset>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GitHubAsset {
+    name: String,
+    browser_download_url: String,
+    size: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct UpdateInfo {
+    available: bool,
+    current_version: String,
+    version: Option<String>,
+    date: Option<String>,
+    body: Option<String>,
+}
+
+#[tauri::command]
+async fn check_app_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
+    use semver::Version;
+
+    let current_version_str = app.package_info().version.to_string();
+    
+    // GitHub Releases API에서 최신 릴리즈 가져오기
+    let client = reqwest::Client::new();
+    let github_release_url = "https://api.github.com/repos/p-asta/hq-launcher/releases/latest";
+    
+    let github_release: GitHubRelease = client
+        .get(github_release_url)
+        .header("User-Agent", "hq-launcher-updater")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch GitHub release: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse GitHub release: {e}"))?;
+
+    // 버전 비교 (tag_name에서 v 제거)
+    let latest_version_str = github_release.tag_name.trim_start_matches('v').to_string();
+    let current_version = Version::parse(&current_version_str)
+        .map_err(|e| format!("Failed to parse current version: {e}"))?;
+    let latest_version = Version::parse(&latest_version_str)
+        .map_err(|e| format!("Failed to parse latest version: {e}"))?;
+
+    let available = latest_version > current_version;
+
+    Ok(UpdateInfo {
+        available,
+        current_version: current_version_str,
+        version: if available {
+            Some(latest_version_str.clone())
+        } else {
+            None
+        },
+        date: Some(github_release.published_at),
+        body: github_release.body,
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct UpdateProgress {
+    downloaded: u64,
+    total: u64,
+    percent: f64,
+}
+
+#[tauri::command]
+async fn download_app_update(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    // Tauri updater 사용 (엔드포인트는 tauri.conf.json에서 설정, GitHub Releases latest.json)
+    let updater = app
+        .updater_builder()
+        .build()
+        .map_err(|e| format!("Failed to initialize updater: {e}"))?;
+
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| format!("Failed to check for updates: {e}"))?
+        .ok_or("No update available")?;
+
+    // Download the update with progress tracking
+    // on_chunk: FnMut(chunk_length: usize, content_length: Option<u64>)
+    // on_download_finish: FnOnce()
+    let mut downloaded = 0u64;
+    update
+        .download(
+            |chunk_length, content_length| {
+                downloaded += chunk_length as u64;
+                if let Some(total) = content_length {
+                    let percent = (downloaded as f64 / total as f64) * 100.0;
+                    log::debug!("Update download progress: {:.2}% ({}/{} bytes)", percent, downloaded, total);
+                } else {
+                    log::debug!("Update download progress: {} bytes downloaded", downloaded);
+                }
+            },
+            || {
+                log::info!("Update download finished");
+            },
+        )
+        .await
+        .map_err(|e| format!("Failed to download update: {e}"))?;
+
+    Ok(true)
+}
+
+#[tauri::command]
+async fn install_app_update(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    // Tauri updater 사용 (엔드포인트는 tauri.conf.json에서 설정, GitHub Releases latest.json)
+    let updater = app
+        .updater_builder()
+        .build()
+        .map_err(|e| format!("Failed to initialize updater: {e}"))?;
+
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| format!("Failed to check for updates: {e}"))?
+        .ok_or("No update available")?;
+
+    // Download and install the update
+    // on_chunk: FnMut(chunk_length: usize, content_length: Option<u64>)
+    // on_download_finish: FnOnce()
+    let mut downloaded = 0u64;
+    update
+        .download_and_install(
+            |chunk_length, content_length| {
+                downloaded += chunk_length as u64;
+                if let Some(total) = content_length {
+                    let percent = (downloaded as f64 / total as f64) * 100.0;
+                    log::debug!("Update download progress: {:.2}% ({}/{} bytes)", percent, downloaded, total);
+                } else {
+                    log::debug!("Update download progress: {} bytes downloaded", downloaded);
+                }
+            },
+            || {
+                log::info!("Update download finished, installing...");
+            },
+        )
+        .await
+        .map_err(|e| format!("Failed to download and install update: {e}"))?;
+
+    Ok(true)
+}
+
+#[tauri::command]
+fn get_app_version(app: tauri::AppHandle) -> Result<String, String> {
+    Ok(app.package_info().version.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -846,6 +1011,10 @@ pub fn run() {
             downloader::depot_logout,
             downloader::depot_download,
             downloader::depot_download_files,
+            check_app_update,
+            download_app_update,
+            install_app_update,
+            get_app_version,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

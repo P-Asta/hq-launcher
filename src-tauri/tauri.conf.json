@@ -37,7 +37,7 @@
     "updater": {
       "active": true,
       "endpoints": [
-        "https://f.asta.rs/hq-launcher/releases/latest.json"
+        "https://github.com/p-asta/hq-launcher/releases/latest/download/latest.json"
       ],
       "dialog": true,
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkwNTA1NzQ0MjAyNTc2ODIKUldTQ2RpVWdSRmRRa0piMnc3L1BKbU40WjNOL3pXekphbW9QQmRuR0dIcXNPeW81MG50WmV3Y08K"
