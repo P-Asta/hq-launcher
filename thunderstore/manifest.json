@@ -1,0 +1,7 @@
+{
+  "name": "hq-launcher",
+  "description": "A game launcher for HQ(High Quota) challenge configuration.",
+  "version_number": "1.0.0",
+  "dependencies": [],
+  "website_url": "https://github.com/p-asta/hq-launcher"
+}
