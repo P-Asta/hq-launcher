@@ -4,7 +4,7 @@
 
 </div>
 
-[![Thunderstore Version](https://img.shields.io/thunderstore/v/asta/hq-launcher?style=flat)](https://thunderstore.io/c/lethal-company/p/asta/hq-launcher/)
+[![GitHub Release](https://img.shields.io/github/v/release/p-asta/hq-launcher)](https://github.com/P-Asta/hq-launcher/releases)
 [![Discord](https://img.shields.io/discord/1255306516672806972?style=flat&label=discord)](https://discord.com/invite/usYCEz49Je)
 
 A game launcher built with [React](https://react.dev/) and [Tauri](https://tauri.app/), designed to make HQ(High Quota) challenge configuration faster and more convenient.
@@ -22,11 +22,6 @@ A game launcher built with [React](https://react.dev/) and [Tauri](https://tauri
 
 ### Windows
 
-**From Thunderstore**
-
-- Go to the [Thunderstore page](https://thunderstore.io/c/lethal-company/p/asta/hq-launcher/) and click _Manual Download_.
-- Extract the downloaded .zip file (for example by right-clicking and choosing _Extract All_).
-- Run the installer file inside of the extracted folder.
 
 **From Github**
 
