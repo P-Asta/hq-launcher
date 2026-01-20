@@ -123,13 +123,13 @@ fn disablemod_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String>
         .join("disablemod.json"))
 }
 
-fn thunderstore_cache_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+pub(crate) fn thunderstore_cache_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(app
         .path()
         .app_data_dir()
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("config")
-        .join("cache.json"))
+        .join("cache")
+        .join("thunderstore.json"))
 }
 
 fn read_disablemod(app: &tauri::AppHandle) -> Result<DisableModFile, String> {
@@ -306,6 +306,7 @@ async fn check_mod_updates(app: tauri::AppHandle, version: u32) -> Result<bool, 
     let mut updatable_mods: Vec<String> = vec![];
 
     let res = mods::updatable_mods_with_progress(
+        &app,
         &extract_dir,
         version,
         &mods_cfg,
@@ -391,6 +392,7 @@ async fn apply_mod_updates(app: tauri::AppHandle, version: u32) -> Result<bool, 
 
         let mut updatable: Vec<String> = vec![];
         mods::updatable_mods_with_progress(
+            &app,
             &game_root,
             version,
             &mods_cfg,
@@ -463,6 +465,7 @@ async fn apply_mod_updates(app: tauri::AppHandle, version: u32) -> Result<bool, 
         );
 
         mods::update_mods_with_progress(
+            &app,
             &game_root,
             version,
             &mods_cfg,
@@ -978,14 +981,14 @@ async fn download_app_update(app: tauri::AppHandle) -> Result<bool, String> {
 
 #[tauri::command]
 #[cfg(not(target_os = "macos"))]
-async fn get_global_shortcut(app: tauri::AppHandle, shortcut: String) -> Result<String, String> {
+async fn get_global_shortcut(_app: tauri::AppHandle, shortcut: String) -> Result<String, String> {
     let shortcut = shortcut.replace("CommandOrControl", "Ctrl");
     Ok(shortcut)
 }
 
 #[tauri::command]
 #[cfg(target_os = "macos")]
-async fn get_global_shortcut(app: tauri::AppHandle, shortcut: String) -> Result<String, String> {
+async fn get_global_shortcut(_app: tauri::AppHandle, shortcut: String) -> Result<String, String> {
     let shortcut = shortcut.replace("CommandOrControl", "Cmd");
     Ok(shortcut)
 }

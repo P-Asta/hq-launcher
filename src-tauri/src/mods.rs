@@ -58,6 +58,7 @@ pub fn plugins_dir(game_root: &Path) -> PathBuf {
 ///
 /// Progress callback reports `(installed_mods, total_mods, detail)`.
 pub async fn install_mods_with_progress<F>(
+    app: &tauri::AppHandle,
     game_root: &Path,
     game_version: u32,
     cfg: &ModsConfig,
@@ -69,7 +70,8 @@ where
     let client = reqwest::Client::new();
 
     // Fetch Thunderstore package list once (per-package API is unreliable/404).
-    let packages = thunderstore::fetch_community_packages(&client).await?;
+    let cache_path = crate::thunderstore_cache_path(app)?;
+    let packages = thunderstore::fetch_community_packages(&client, &cache_path).await?;
     log::info!("Fetched {} packages", packages.len());
     let mut package_map: HashMap<(String, String), PackageListing> = HashMap::new();
     for p in packages.clone() {
@@ -297,6 +299,7 @@ where
 }
 
 pub async fn updatable_mods_with_progress<F>(
+    app: &tauri::AppHandle,
     game_root: &Path,
     game_version: u32,
     cfg: &ModsConfig,
@@ -312,7 +315,8 @@ where
 
     // Fetch Thunderstore package list once (per-package API is unreliable/404).
     log::info!("Fetching Thunderstore package list for Lethal Company");
-    let packages = thunderstore::fetch_community_packages(&client).await?;
+    let cache_path = crate::thunderstore_cache_path(app)?;
+    let packages = thunderstore::fetch_community_packages(&client, &cache_path).await?;
     log::info!("Fetched {} packages", packages.len());
     let mut package_map: HashMap<(String, String), PackageListing> = HashMap::new();
     for p in packages.clone() {
@@ -462,6 +466,7 @@ where
 
 
 pub async fn update_mods_with_progress<F>(
+    app: &tauri::AppHandle,
     game_root: &Path,
     game_version: u32,
     cfg: &ModsConfig,
@@ -474,7 +479,8 @@ where
     let client = reqwest::Client::new();
 
     // Fetch Thunderstore package list once (per-package API is unreliable/404).
-    let packages = thunderstore::fetch_community_packages(&client).await?;
+    let cache_path = crate::thunderstore_cache_path(app)?;
+    let packages = thunderstore::fetch_community_packages(&client, &cache_path).await?;
     log::info!("Fetched {} packages", packages.len());
     let mut package_map: HashMap<(String, String), PackageListing> = HashMap::new();
     for p in packages.clone() {

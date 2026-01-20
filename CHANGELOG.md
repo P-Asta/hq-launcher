@@ -19,3 +19,6 @@
 ## 1.0.8 (2026-01-21)
 - Fixed a bug in the check logic related to mode updates and omissions.
 - Fixed a scrolling bug in the UI.
+
+## 1.1.0 (2026-01-21)
+- Resolving plugin installation issues caused by false antivirus detection

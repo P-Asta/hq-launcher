@@ -1,10 +1,7 @@
 use std::{
     path::Path,
-    sync::LazyLock,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
-
-use futures_util::lock::Mutex;
 use serde::{Deserialize, Serialize};
 
 /// Minimal Thunderstore package model used for install resolution.
@@ -38,8 +35,8 @@ pub struct ThunderstoreCache {
 /// but the list endpoint returns full version/download_url data.
 pub async fn fetch_community_packages(
     client: &reqwest::Client,
+    cache_path: &Path,
 ) -> Result<Vec<PackageListing>, String> {
-    let cache_path = Path::new("lc-launcher-cache.json");
     log::info!(target: "fetch_packages", "Cache path: {cache_path:?}");
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -55,9 +52,9 @@ pub async fn fetch_community_packages(
         log::info!(target: "fetch_packages", "Cache expired, fetching new packages");
     }
 
-    let url = format!("https://thunderstore.io/c/lethal-company/api/v1/package/");
+    let url = "https://thunderstore.io/c/lethal-company/api/v1/package/".to_string();
     log::info!(target: "fetch_packages", "Thunderstore GET {url}");
-    let packages = client
+    let packages: Vec<PackageListing> = client
         .get(url)
         .send()
         .await
@@ -66,12 +63,37 @@ pub async fn fetch_community_packages(
         .map_err(|e| e.to_string())?
         .json::<Vec<PackageListing>>()
         .await
-        .map_err(|e| e.to_string());
+        .map_err(|e| e.to_string())?;
 
     let cache = ThunderstoreCache {
-        packages: packages.clone().unwrap(),
+        packages: packages.clone(),
         time: now,
     };
-    std::fs::write(cache_path, serde_json::to_string(&cache).unwrap()).unwrap();
-    packages
+
+    // Best-effort persist; failure shouldn't crash installs/updates.
+    if let Some(parent) = cache_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            log::warn!(
+                target: "fetch_packages",
+                "Failed to create cache directory {}: {e}",
+                parent.to_string_lossy()
+            );
+        }
+    }
+    match serde_json::to_string(&cache) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(cache_path, json) {
+                log::warn!(
+                    target: "fetch_packages",
+                    "Failed to write cache file {}: {e}",
+                    cache_path.to_string_lossy()
+                );
+            }
+        }
+        Err(e) => {
+            log::warn!(target: "fetch_packages", "Failed to serialize cache: {e}");
+        }
+    }
+
+    Ok(packages)
 }

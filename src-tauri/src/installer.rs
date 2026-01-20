@@ -358,6 +358,7 @@ pub async fn sync_latest_install_from_manifest(app: tauri::AppHandle) -> Result<
         );
 
         mods::install_mods_with_progress(
+            &app,
             &game_root,
             game_version,
             &mods_cfg,
@@ -789,6 +790,7 @@ pub async fn download_and_setup(app: tauri::AppHandle, version: u32) -> Result<b
         std::fs::create_dir_all(&plugins_dir).map_err(|e| e.to_string())?;
 
         mods::install_mods_with_progress(
+            &app,
             &extract_dir,
             version,
             &mods_cfg,
