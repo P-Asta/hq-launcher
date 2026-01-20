@@ -14,6 +14,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
+use crate::progress::{self, TaskProgressPayload};
+
 fn strip_ansi(s: &str) -> String {
     // Minimal ANSI stripper for log display.
     // Removes common CSI/OSC sequences and carriage returns.
@@ -151,6 +153,20 @@ pub enum DepotDownloaderEvent {
     LoginFailed(String),
     DownloadComplete,
     Error(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct DownloadTaskContext {
+    pub version: u32,
+    pub steps_total: u32,
+    pub step: u32, // 1-based
+    pub step_name: String,
+}
+
+fn overall_from_step(step: u32, step_progress: f64, steps_total: u32) -> f64 {
+    let s = step.max(1).min(steps_total) as f64;
+    let sp = step_progress.clamp(0.0, 1.0);
+    (((s - 1.0) + sp) / (steps_total as f64)) * 100.0
 }
 
 #[derive(Default)]
@@ -710,6 +726,7 @@ impl DepotDownloader {
         &self,
         manifest_id: Option<String>,
         output_dir: PathBuf,
+        task: Option<DownloadTaskContext>,
     ) -> Result<(), String> {
         let login_state = self.get_login_state();
         if !login_state.is_logged_in {
@@ -773,6 +790,7 @@ impl DepotDownloader {
             });
         }
 
+        let mut last_task_progress_bp: Option<u64> = None;
         let mut last_output_at = Instant::now();
         let mut idle_ticks = tokio::time::interval(Duration::from_millis(500));
         let status = loop {
@@ -820,6 +838,45 @@ impl DepotDownloader {
                                 current: progress.0,
                                 total: progress.1,
                             });
+
+                            // Bridge DepotDownloader progress into the frontend-wide task progress
+                            // so install UI doesn't stay stuck at the step's initial percent.
+                            if let Some(task) = task.as_ref() {
+                                if last_task_progress_bp != Some(progress.0) && progress.1 > 0 {
+                                    last_task_progress_bp = Some(progress.0);
+                                    let step_progress = (progress.0 as f64) / (progress.1 as f64);
+
+                                    // Use remaining text after the % token as a small detail (file path).
+                                    let s = line.trim_start();
+                                    let pct_part = s.split_whitespace().next().unwrap_or("");
+                                    let detail = s
+                                        .get(pct_part.len()..)
+                                        .unwrap_or("")
+                                        .trim_start()
+                                        .to_string();
+
+                                    progress::emit_progress(
+                                        &self.app,
+                                        TaskProgressPayload {
+                                            version: task.version,
+                                            steps_total: task.steps_total,
+                                            step: task.step,
+                                            step_name: task.step_name.clone(),
+                                            step_progress,
+                                            overall_percent: overall_from_step(
+                                                task.step,
+                                                step_progress,
+                                                task.steps_total,
+                                            ),
+                                            detail: if detail.is_empty() { None } else { Some(detail) },
+                                            downloaded_bytes: None,
+                                            total_bytes: None,
+                                            extracted_files: None,
+                                            total_files: None,
+                                        },
+                                    );
+                                }
+                            }
                         }
                         self.emit_event(DepotDownloaderEvent::Output(line));
                     }
@@ -1002,14 +1059,23 @@ impl DepotDownloader {
 
     /// 진행률 파싱 (DepotDownloader 출력 형식에 맞게 조정 필요)
     fn parse_progress(&self, line: &str) -> Option<(u64, u64)> {
-        // 예: "Downloaded 1234/5678 bytes" 형식 파싱
-        // 실제 DepotDownloader 출력 형식에 맞게 수정 필요
-        if line.contains("downloaded") || line.contains("progress") {
-            // 간단한 파싱 예시
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            // 실제 구현은 DepotDownloader의 출력 형식을 확인 후 작성
+        // DepotDownloader prints progress lines like:
+        // " 28.91% C:\path\to\file"
+        // Use basis points (0.01%) to preserve decimals:
+        // current=2891, total=10000 → UI can compute percent = current/total*100
+        let s = line.trim_start();
+        if !s.contains('%') {
+            return None;
         }
-        None
+        let pct_part = s.split_whitespace().next()?;
+        let pct_str = pct_part.strip_suffix('%')?;
+        let pct: f64 = pct_str.parse().ok()?;
+        if !pct.is_finite() {
+            return None;
+        }
+        let clamped = pct.clamp(0.0, 100.0);
+        let basis_points = (clamped * 100.0).round() as u64;
+        Some((basis_points, 10_000))
     }
 
     /// 이벤트 발생
@@ -1023,6 +1089,9 @@ impl DepotDownloader {
                     s.clone()
                 };
                 log::info!("DepotDownloader: {}", preview.replace('\n', "\\n"));
+            }
+            DepotDownloaderEvent::Progress { current, total } => {
+                log::info!("DepotDownloader progress: {current}/{total}");
             }
             DepotDownloaderEvent::Error(e) => log::error!("DepotDownloader error: {e}"),
             DepotDownloaderEvent::LoginFailed(e) => {
@@ -1380,7 +1449,7 @@ pub async fn depot_download(
 ) -> Result<(), String> {
     let downloader = DepotDownloader::new(&app)?;
     downloader
-        .download_depot(manifest_id, PathBuf::from(output_dir))
+        .download_depot(manifest_id, PathBuf::from(output_dir), None)
         .await
 }
 

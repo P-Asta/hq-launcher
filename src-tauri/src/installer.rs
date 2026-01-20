@@ -542,7 +542,16 @@ pub async fn download_and_setup(app: tauri::AppHandle, version: u32) -> Result<b
 
         // 게임 다운로드
         downloader
-            .download_depot(Some(manifest_id), extract_dir.clone())
+            .download_depot(
+                Some(manifest_id),
+                extract_dir.clone(),
+                Some(downloader::DownloadTaskContext {
+                    version,
+                    steps_total: STEPS_TOTAL,
+                    step: 2,
+                    step_name: "Download Game".to_string(),
+                }),
+            )
             .await?;
 
         emit_progress(

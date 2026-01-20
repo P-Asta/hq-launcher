@@ -20,6 +20,7 @@ export function LoginDialog({ open, onLoggedIn }) {
   const [error, setError] = useState("");
   const [logs, setLogs] = useState([]);
   const [sessionId, setSessionId] = useState(null);
+  const [gameDownloadProgress, setGameDownloadProgress] = useState(0);
 
   useEffect(() => {
     if (!open) return;
@@ -29,11 +30,11 @@ export function LoginDialog({ open, onLoggedIn }) {
         const p = event.payload;
         if (!p || typeof p !== "object") return;
         if (p.type === "NeedsTwoFactor") {
-          setNeeds2fa(true);
-          if (p.data?.session_id != null)
-            setSessionId(Number(p.data.session_id));
-          if (p.data?.message) setError(String(p.data.message));
-          return;
+          // setNeeds2fa(true);
+          // if (p.data?.session_id != null)
+          //   setSessionId(Number(p.data.session_id));
+          // if (p.data?.message) setError(String(p.data.message));
+          // return;
         }
         if (p.type === "NeedsMobileConfirmation") {
           if (p.data?.session_id != null)
@@ -52,6 +53,9 @@ export function LoginDialog({ open, onLoggedIn }) {
         if (p.type === "Error") {
           setLoginRunning(false);
           const msg = String(p.data ?? "");
+          if (msg.includes("Login failed")) {
+            setNeeds2fa(false)
+          }
           if (msg) setError(msg);
           return;
         }
@@ -61,11 +65,32 @@ export function LoginDialog({ open, onLoggedIn }) {
           if (msg) setError(msg);
           return;
         }
+        if (p.type === "Progress") {
+          const current = Number(p.data?.current ?? 0);
+          const total = Number(p.data?.total ?? 0);
+          if (Number.isFinite(current) && Number.isFinite(total) && total > 0) {
+            const percent = (current / total) * 100;
+            setGameDownloadProgress(percent);
+          }
+          return;
+        }
         if (p.type === "Output") {
           const line = String(p.data ?? "");
           if (!line) return;
           setLogs((prev) => {
             const next = [...prev, line].slice(-60);
+            if (line.includes("Connecting to Steam")) {
+              setNeeds2fa(true);
+              setSessionId(null);
+            }
+            if (line.includes("STEAM GUARD")) {
+              setError(
+                "When you receive the Steam Guard (email/app) code, enter it and click Submit code."
+              );
+            }
+            if (line.includes("1966721")) {
+              setNeeds2fa(false)
+            }
             return next;
           });
         }
@@ -96,11 +121,11 @@ export function LoginDialog({ open, onLoggedIn }) {
     setLogs([]);
     try {
       // Start login and immediately ask user to check Steam Guard email/app.
-      setNeeds2fa(true);
-      setSessionId(null);
-      setError(
-        "Steam Guard (email/app) 코드가 오면 입력 후 Submit code를 눌러주세요."
-      );
+      // setNeeds2fa(true);
+      // setSessionId(null);
+      // setError(
+      //   "Steam Guard (email/app) 코드가 오면 입력 후 Submit code를 눌러주세요."
+      // );
 
       // Start session and get sessionId immediately (no event race).
       const sid = await invoke("depot_login_start", {
@@ -198,6 +223,26 @@ export function LoginDialog({ open, onLoggedIn }) {
                 {logs.map((l, i) => (
                   <div key={i}>{l}</div>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {gameDownloadProgress > 0 && (
+            <div className="rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-[11px] text-white/70">
+              <div className="mb-1 flex items-center justify-between">
+                <span className="font-semibold">게임 파일 다운로드 진행률</span>
+                <span>{gameDownloadProgress.toFixed(1)}%</span>
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+                <div
+                  className="h-full rounded-full bg-emerald-400 transition-[width]"
+                  style={{
+                    width: `${Math.max(
+                      0,
+                      Math.min(100, gameDownloadProgress || 0)
+                    )}%`,
+                  }}
+                />
               </div>
             </div>
           )}
