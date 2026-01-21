@@ -39,7 +39,7 @@ export function LoginDialog({ open, onLoggedIn }) {
         if (p.type === "NeedsMobileConfirmation") {
           if (p.data?.session_id != null)
             setSessionId(Number(p.data.session_id));
-          setError("Please complete the login approval in the Steam app and try again.");
+          setError("Please complete the login approval in the Steam app.");
           return;
         }
         if (p.type === "LoginSuccess") {

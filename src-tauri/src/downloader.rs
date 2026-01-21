@@ -539,7 +539,7 @@ impl DepotDownloader {
             .arg("-depot")
             .arg(Self::DEPOT_ID)
             .arg("-manifest-only")
-            .arg("-no-mobile")
+            // .arg("-no-mobile")
             .arg("-dir")
             .arg(login_cache_dir.to_string_lossy().to_string())
             .arg("-username")
