@@ -791,6 +791,9 @@ impl DepotDownloader {
         }
 
         let mut last_task_progress_bp: Option<u64> = None;
+        // If we have seen any progress >= 0.01% (basis point >= 1),
+        // do NOT treat "no output for 15s" as an auth prompt.
+        let mut last_progress_bp: u64 = 0;
         let mut last_output_at = Instant::now();
         let mut idle_ticks = tokio::time::interval(Duration::from_millis(500));
         let status = loop {
@@ -798,10 +801,21 @@ impl DepotDownloader {
                 s = child.wait() => break s.map_err(|e| e.to_string())?,
                 _ = idle_ticks.tick() => {
                     if last_output_at.elapsed() > Duration::from_secs(15) {
-                        let _ = child.kill().await;
-                        let err = "Steam Guard / login required. Please login and try again.".to_string();
-                        self.emit_event(DepotDownloaderEvent::Error(err.clone()));
-                        return Err(err);
+                        // After progress has started, DepotDownloader may go quiet for a while
+                        // (large files, disk I/O). Only fail if it stays silent for a long time.
+                        if last_progress_bp >= 1 {
+                            if last_output_at.elapsed() > Duration::from_secs(300) {
+                                let _ = child.kill().await;
+                                let err = "Download stalled (no output for 5 minutes). Please retry.".to_string();
+                                self.emit_event(DepotDownloaderEvent::Error(err.clone()));
+                                return Err(err);
+                            }
+                        } else {
+                            let _ = child.kill().await;
+                            let err = "Steam Guard / login required. Please login and try again.".to_string();
+                            self.emit_event(DepotDownloaderEvent::Error(err.clone()));
+                            return Err(err);
+                        }
                     }
                 }
                 msg = rx.recv() => {
@@ -834,6 +848,8 @@ impl DepotDownloader {
                         let line = strip_ansi(&line);
                         log::info!("DepotDownloader: {}", line);
                         if let Some(progress) = self.parse_progress(&line) {
+                            // Track last seen progress so we can distinguish auth prompts from stalls.
+                            last_progress_bp = progress.0;
                             self.emit_event(DepotDownloaderEvent::Progress {
                                 current: progress.0,
                                 total: progress.1,
@@ -967,6 +983,8 @@ impl DepotDownloader {
             });
         }
 
+        // Same logic as download(): once we've seen progress, don't treat short silence as auth.
+        let mut last_progress_bp: u64 = 0;
         let mut last_output_at = Instant::now();
         let mut idle_ticks = tokio::time::interval(Duration::from_millis(500));
         let status = loop {
@@ -974,10 +992,19 @@ impl DepotDownloader {
                 s = child.wait() => break s.map_err(|e| e.to_string())?,
                 _ = idle_ticks.tick() => {
                     if last_output_at.elapsed() > Duration::from_secs(15) {
-                        let _ = child.kill().await;
-                        // 임시 파일 정리
-                        let _ = std::fs::remove_file(&filelist_path);
-                        return Err("Steam Guard / login required. Please login and try again.".to_string());
+                        if last_progress_bp >= 1 {
+                            if last_output_at.elapsed() > Duration::from_secs(300) {
+                                let _ = child.kill().await;
+                                // 임시 파일 정리
+                                let _ = std::fs::remove_file(&filelist_path);
+                                return Err("Download stalled (no output for 5 minutes). Please retry.".to_string());
+                            }
+                        } else {
+                            let _ = child.kill().await;
+                            // 임시 파일 정리
+                            let _ = std::fs::remove_file(&filelist_path);
+                            return Err("Steam Guard / login required. Please login and try again.".to_string());
+                        }
                     }
                 }
                 msg = rx.recv() => {
@@ -1007,6 +1034,13 @@ impl DepotDownloader {
                     } else {
                         let line = strip_ansi(&line);
                         log::info!("DepotDownloader: {}", line);
+                        if let Some(progress) = self.parse_progress(&line) {
+                            last_progress_bp = progress.0;
+                            self.emit_event(DepotDownloaderEvent::Progress {
+                                current: progress.0,
+                                total: progress.1,
+                            });
+                        }
                         self.emit_event(DepotDownloaderEvent::Output(line));
                     }
                 }

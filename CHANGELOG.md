@@ -22,3 +22,6 @@
 
 ## 1.1.0 (2026-01-21)
 - Resolving plugin installation issues caused by false antivirus detection
+
+## 1.1.1 (2026-01-21)
+- Fixed timeout false detection issue

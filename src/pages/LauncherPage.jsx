@@ -770,7 +770,7 @@ export default function LauncherPage({
             {loginState?.username ? (
               <div className="hidden items-center gap-2 md:flex">
                 <div className="text-sm text-white/55">
-                  {String(loginState.username)}
+                  logged In
                 </div>
               </div>
             ) : null}
