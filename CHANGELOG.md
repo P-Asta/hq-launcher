@@ -1,12 +1,10 @@
 ## Version (YYYY-MM-DD)
 - Content
 
-## 1.1.5 (2026-01-22)
+## 1.2.0 (2026-01-22)
 - Closing and reopening the download window now clears download errors/status.
 - Added a Retry button to quickly re-attempt failed downloads.
 - Added a Cancel download button during download; canceling deletes the in-progress version folder.
-
-## 1.1.3 (2025-01-22)
 - The position of the plugin enable/disable button has been changed.
 - Installed plugin versions are now displayed in the config editor.
 - Fixed an issue where linked plugins were not enabled/disabled together.
