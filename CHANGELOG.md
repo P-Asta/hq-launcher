@@ -1,6 +1,9 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.2.1 (2026-01-22)
+- linux..?
+
 ## 1.2.0 (2026-01-22)
 - Closing and reopening the download window now clears download errors/status.
 - Added a Retry button to quickly re-attempt failed downloads.

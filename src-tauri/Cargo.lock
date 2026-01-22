@@ -1648,6 +1648,7 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "expectrl",
+ "flate2",
  "futures-util",
  "log",
  "log4rs",
@@ -1656,6 +1657,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-global-shortcut",

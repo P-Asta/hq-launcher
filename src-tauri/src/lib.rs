@@ -1016,21 +1016,47 @@ fn set_bepinex_cfg_entry(app: tauri::AppHandle, args: SetBepInExEntryArgs) -> Re
         return Err("invalid path".to_string());
     }
     let path = base.join(rel);
-    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    // If the cfg doesn't exist yet, start from an empty file and create the
+    // requested section/entry.
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.to_string()),
+    };
     let mut file = bepinex_cfg::parse(&text)?;
 
-    let section = file
-        .sections
-        .iter_mut()
-        .find(|s| s.name == args.section)
-        .ok_or("section not found".to_string())?;
-    let entry = section
-        .entries
-        .iter_mut()
-        .find(|e| e.name == args.entry)
-        .ok_or("entry not found".to_string())?;
+    let section = match file.sections.iter_mut().find(|s| s.name == args.section) {
+        Some(s) => s,
+        None => {
+            file.sections.push(bepinex_cfg::Section {
+                name: args.section.clone(),
+                entries: vec![],
+            });
+            file.sections
+                .iter_mut()
+                .find(|s| s.name == args.section)
+                .ok_or("failed to create section".to_string())?
+        }
+    };
 
-    entry.value = args.value;
+    match section.entries.iter_mut().find(|e| e.name == args.entry) {
+        Some(e) => {
+            e.value = args.value;
+        }
+        None => {
+            section.entries.push(bepinex_cfg::Entry {
+                name: args.entry,
+                description: None,
+                default: None,
+                value: args.value,
+            });
+        }
+    }
 
     let new_text = bepinex_cfg::write(&file)?;
     std::fs::write(&path, new_text).map_err(|e| e.to_string())?;
@@ -1260,11 +1286,23 @@ pub fn run() {
             // File logging (AppDataDir/logs/hq-launcher.log)
             logger::init(&app.handle()).map_err(|e| tauri::Error::Setup(e.into()))?;
 
-            // Ensure default config is downloaded on app startup if config directory is empty
+            // Startup housekeeping (best-effort, won't block UI):
+            // - Purge mods that remote manifest marks as enabled=false (and their configs)
+            // - Ensure default config is downloaded if shared config dir is empty
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = installer::ensure_default_config(app_handle).await {
+                if let Err(e) = installer::purge_remote_disabled_mods_on_startup(app_handle.clone()).await
+                {
+                    log::warn!("Failed to purge remote-disabled mods on startup: {e}");
+                }
+                if let Err(e) = installer::ensure_default_config(app_handle.clone()).await {
                     log::warn!("Failed to ensure default config on startup: {e}");
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    if let Err(e) = installer::install_proton_ge_impl(&app_handle).await {
+                        log::warn!("Failed to install Proton-GE on startup: {e}");
+                    }
                 }
             });
 
@@ -1303,6 +1341,8 @@ pub fn run() {
             download_app_update,
             install_app_update,
             get_app_version,
+            installer::install_proton_ge,
+            installer::get_current_proton_dir,
             open_version_folder,
             get_global_shortcut
         ])
