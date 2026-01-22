@@ -24,10 +24,329 @@ const BEPINEXPACK_VERSION: &str = "5.4.2304";
 const BEPINEXPACK_URL: &str =
     "https://thunderstore.io/package/download/BepInEx/BepInExPack/5.4.2304/";
 
+// Proton-GE (Linux): download and extract into AppData/proton_env/proton/.
+#[cfg(target_os = "linux")]
+const PROTON_GE_VERSION: &str = "GE-Proton10-28";
+#[cfg(target_os = "linux")]
+const PROTON_GE_URL: &str =
+    "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton10-28/GE-Proton10-28.tar.gz";
+
 fn overall_from_step(step: u32, step_progress: f64, steps_total: u32) -> f64 {
     let s = step.max(1).min(steps_total) as f64;
     let sp = step_progress.clamp(0.0, 1.0);
     (((s - 1.0) + sp) / (steps_total as f64)) * 100.0
+}
+
+#[cfg(target_os = "linux")]
+fn sanitize_tar_rel_path(p: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    // Accept only relative, "normal" components; strip any leading "./".
+    // Reject absolute paths, prefixes, and any ".." traversal.
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => continue,
+            Component::Normal(s) => out.push(s),
+            _ => return None,
+        }
+    }
+    if out.as_os_str().is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn dir_has_any_entries(path: &Path) -> bool {
+    std::fs::read_dir(path).ok().and_then(|mut rd| rd.next()).is_some()
+}
+
+#[cfg(target_os = "linux")]
+fn list_other_proton_ge_dirs(proton_root: &Path) -> Vec<PathBuf> {
+    let mut out = vec![];
+    let Ok(rd) = std::fs::read_dir(proton_root) else {
+        return out;
+    };
+    for e in rd.flatten() {
+        let path = e.path();
+        let Ok(ty) = e.file_type() else { continue };
+        if !ty.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if name.starts_with("GE-Proton") && name != PROTON_GE_VERSION {
+            out.push(path);
+        }
+    }
+    out
+}
+
+fn proton_root_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
+        .join("proton_env")
+        .join("proton"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn get_current_proton_dir_impl(_app: &tauri::AppHandle) -> Result<Option<PathBuf>, String> {
+    Ok(None)
+}
+
+#[cfg(target_os = "linux")]
+fn get_current_proton_dir_impl(app: &tauri::AppHandle) -> Result<Option<PathBuf>, String> {
+    let proton_root = proton_root_dir(app)?;
+    if !proton_root.exists() {
+        return Ok(None);
+    }
+
+    // Prefer the desired version if present and non-empty.
+    let preferred = proton_root.join(PROTON_GE_VERSION);
+    if preferred.exists() && preferred.is_dir() && dir_has_any_entries(&preferred) {
+        return Ok(Some(preferred));
+    }
+
+    // Otherwise, pick any GE-Proton* directories that look installed.
+    let Ok(rd) = std::fs::read_dir(&proton_root) else {
+        return Ok(None);
+    };
+
+    let mut candidates: Vec<PathBuf> = vec![];
+    for e in rd.flatten() {
+        let path = e.path();
+        let Ok(ty) = e.file_type() else { continue };
+        if !ty.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("GE-Proton") {
+            continue;
+        }
+        if dir_has_any_entries(&path) {
+            candidates.push(path);
+        }
+    }
+
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+
+    // Deterministic choice: sort by folder name and pick the last one.
+    candidates.sort_by(|a, b| {
+        a.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .cmp(b.file_name().and_then(|s| s.to_str()).unwrap_or(""))
+    });
+    Ok(candidates.pop())
+}
+
+/// Install Proton-GE under `AppDataDir/proton_env/proton/` (Linux only).
+///
+/// Behavior:
+/// - If `.../proton/GE-Proton10-28/` already exists, do nothing.
+/// - Otherwise download `GE-Proton10-28.tar.gz`, extract safely, then move into place.
+pub async fn install_proton_ge_impl(app: &tauri::AppHandle) -> Result<bool, String> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = app;
+        return Ok(false);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use flate2::read::GzDecoder;
+        use std::io::Read;
+        use tar::Archive;
+
+        log::info!("Installing Proton-GE");
+
+        let app_data = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
+
+        let proton_root = app_data.join("proton_env").join("proton");
+        std::fs::create_dir_all(&proton_root).map_err(|e| e.to_string())?;
+
+        let final_dir = proton_root.join(PROTON_GE_VERSION);
+        if final_dir.exists() && dir_has_any_entries(&final_dir) {
+            // Desired version already present.
+            log::info!(
+                "Proton-GE already installed at {}",
+                final_dir.to_string_lossy()
+            );
+            return Ok(true);
+        }
+
+        // If the desired dir exists but is empty/corrupt, remove it and reinstall.
+        if final_dir.exists() && !dir_has_any_entries(&final_dir) {
+            log::warn!(
+                "Proton-GE dir exists but is empty; reinstalling: {}",
+                final_dir.to_string_lossy()
+            );
+            let _ = std::fs::remove_dir_all(&final_dir);
+        }
+
+        // If another GE-Proton version is installed, remove it and install the desired version.
+        let other_ge_dirs = list_other_proton_ge_dirs(&proton_root);
+        if !other_ge_dirs.is_empty() {
+            log::info!(
+                "Found {} other GE-Proton version(s); replacing with {}",
+                other_ge_dirs.len(),
+                PROTON_GE_VERSION
+            );
+            for d in other_ge_dirs {
+                match std::fs::remove_dir_all(&d) {
+                    Ok(()) => log::info!("Removed old Proton-GE dir: {}", d.to_string_lossy()),
+                    Err(e) => log::warn!(
+                        "Failed to remove old Proton-GE dir {}: {e}",
+                        d.to_string_lossy()
+                    ),
+                }
+            }
+        }
+
+        let temp_dir = app_data.join("temp");
+        std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+
+        let tar_path = temp_dir.join(format!("{PROTON_GE_VERSION}.tar.gz"));
+        log::info!(
+            "Downloading Proton-GE from {} to {}",
+            PROTON_GE_URL,
+            tar_path.to_string_lossy()
+        );
+
+        // Stream download into file (avoid holding whole tarball in memory).
+        let client = reqwest::Client::new();
+        let response = client
+            .get(PROTON_GE_URL)
+            .header("User-Agent", "hq-launcher/0.1 (tauri)")
+            .send()
+            .await
+            .map_err(|e| format!("Failed to download Proton-GE: {e}"))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!(
+                "Proton-GE download failed with status {}: {}",
+                status, body
+            ));
+        }
+
+        let mut file = File::create(&tar_path).map_err(|e| e.to_string())?;
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| e.to_string())?;
+            file.write_all(&chunk).map_err(|e| e.to_string())?;
+        }
+        drop(file);
+
+        // Basic sanity check: gzip files start with 1F 8B.
+        {
+            let mut f = File::open(&tar_path).map_err(|e| e.to_string())?;
+            let mut header = [0u8; 2];
+            let n = f.read(&mut header).map_err(|e| e.to_string())?;
+            if n < 2 || header != [0x1f, 0x8b] {
+                let _ = std::fs::remove_file(&tar_path);
+                return Err(
+                    "Proton-GE download is not a valid .tar.gz (got non-gzip response). Please retry."
+                        .to_string(),
+                );
+            }
+        }
+
+        // Extract into a temp folder, then move into place.
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let extract_tmp = proton_root.join(format!(".tmp_extract_{PROTON_GE_VERSION}_{ts}"));
+        if extract_tmp.exists() {
+            let _ = std::fs::remove_dir_all(&extract_tmp);
+        }
+        std::fs::create_dir_all(&extract_tmp).map_err(|e| e.to_string())?;
+
+        let tar_path_clone = tar_path.clone();
+        let extract_tmp_clone = extract_tmp.clone();
+        tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+            let f = File::open(&tar_path_clone).map_err(|e| e.to_string())?;
+            let gz = GzDecoder::new(f);
+            let mut archive = Archive::new(gz);
+
+            // We unpack entries manually so we can sanitize paths (avoid Tar Slip).
+            for entry in archive.entries().map_err(|e| e.to_string())? {
+                let mut entry = entry.map_err(|e| e.to_string())?;
+                let raw_path = entry.path().map_err(|e| e.to_string())?.to_path_buf();
+                let Some(rel) = sanitize_tar_rel_path(&raw_path) else {
+                    log::warn!("Skipped unsafe tar path: {}", raw_path.to_string_lossy());
+                    continue;
+                };
+
+                let out_path = extract_tmp_clone.join(&rel);
+                if let Some(parent) = out_path.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                entry.unpack(&out_path).map_err(|e| e.to_string())?;
+            }
+
+            Ok(())
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+
+        // Expect the tarball to contain a top-level folder named exactly PROTON_GE_VERSION.
+        let extracted_dir = extract_tmp.join(PROTON_GE_VERSION);
+        if !extracted_dir.exists() {
+            let _ = std::fs::remove_file(&tar_path);
+            let _ = std::fs::remove_dir_all(&extract_tmp);
+            return Err(format!(
+                "Proton-GE archive did not contain expected top-level folder `{}`",
+                PROTON_GE_VERSION
+            ));
+        }
+
+        // Move extracted dir into final location (same filesystem).
+        std::fs::rename(&extracted_dir, &final_dir).map_err(|e| e.to_string())?;
+
+        // Cleanup temp dir + tarball (best-effort).
+        let _ = std::fs::remove_file(&tar_path);
+        let _ = std::fs::remove_dir_all(&extract_tmp);
+
+        log::info!(
+            "Proton-GE installed successfully at {}",
+            final_dir.to_string_lossy()
+        );
+        Ok(true)
+    }
+}
+
+/// Tauri command wrapper for installing Proton-GE (Linux only).
+///
+/// Returns:
+/// - `true` if installed or already present (Linux)
+/// - `false` on non-Linux platforms (no-op)
+#[tauri::command]
+pub async fn install_proton_ge(app: tauri::AppHandle) -> Result<bool, String> {
+    install_proton_ge_impl(&app).await
+}
+
+/// Return the current installed Proton-GE directory path (if any).
+///
+/// Returns absolute path like:
+/// `.../AppData/.../proton_env/proton/GE-Proton10-28`
+#[tauri::command]
+pub fn get_current_proton_dir(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    Ok(get_current_proton_dir_impl(&app)?
+        .map(|p| p.to_string_lossy().to_string()))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +420,41 @@ fn latest_installed_version_dir(
     Ok(best)
 }
 
+fn installed_version_dirs(app: &tauri::AppHandle) -> Result<Vec<(u32, std::path::PathBuf)>, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
+        .join("versions");
+
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return Ok(vec![]);
+    };
+
+    let mut out: Vec<(u32, std::path::PathBuf)> = vec![];
+    for e in rd {
+        let Ok(e) = e else { continue };
+        let path = e.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some(num) = name.strip_prefix('v') else {
+            continue;
+        };
+        let Ok(v) = num.parse::<u32>() else {
+            continue;
+        };
+        out.push((v, path));
+    }
+
+    // Stable ordering (old -> new)
+    out.sort_by_key(|(v, _)| *v);
+    Ok(out)
+}
+
 fn shared_config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(app
         .path()
@@ -108,6 +462,118 @@ fn shared_config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?
         .join("config")
         .join("shared"))
+}
+
+fn plugins_dir_for_version_root(version_root: &Path) -> PathBuf {
+    version_root.join("BepInEx").join("plugins")
+}
+
+fn delete_config_files_for_mod(shared_config: &Path, dev: &str, name: &str) -> Result<u64, String> {
+    if !shared_config.exists() {
+        return Ok(0);
+    }
+    let dev_l = dev.to_lowercase();
+    let name_l = name.to_lowercase();
+
+    let mut deleted: u64 = 0;
+    let mut stack: Vec<PathBuf> = vec![shared_config.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let path = e.path();
+            let Ok(ty) = e.file_type() else { continue };
+            if ty.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !ty.is_file() {
+                continue;
+            }
+
+            // Match on relative path (lowercased) to catch nested config layouts too.
+            let rel = path
+                .strip_prefix(shared_config)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_lowercase();
+            if !(rel.contains(&dev_l) || rel.contains(&name_l)) {
+                continue;
+            }
+
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    deleted = deleted.saturating_add(1);
+                }
+                Err(e) => {
+                    log::warn!("Failed to delete config file {}: {e}", path.to_string_lossy());
+                }
+            }
+        }
+    }
+
+    Ok(deleted)
+}
+
+/// On app startup: if a mod is installed but remote manifest marks it `enabled=false`,
+/// remove the plugin folder and its related config files.
+///
+/// This is best-effort: failures are logged but won't break startup.
+pub async fn purge_remote_disabled_mods_on_startup(app: tauri::AppHandle) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let remote = match ModsConfig::fetch_manifest(&client).await {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!("Failed to fetch remote manifest for purge: {e}");
+            return Ok(());
+        }
+    };
+    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests) = remote;
+
+    let disabled: Vec<_> = mods_cfg.mods.into_iter().filter(|m| !m.enabled).collect();
+    if disabled.is_empty() {
+        return Ok(());
+    }
+
+    let versions = installed_version_dirs(&app)?;
+    if versions.is_empty() {
+        return Ok(());
+    }
+
+    let shared_config = shared_config_dir(&app)?;
+
+    for m in disabled {
+        let mod_label = format!("{}-{}", m.dev, m.name);
+
+        // Remove plugin folders for all installed versions.
+        for (v, root) in &versions {
+            let plugins = plugins_dir_for_version_root(root);
+            let dir = plugins.join(&mod_label);
+            if !dir.exists() {
+                continue;
+            }
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => log::info!("Purged disabled mod {mod_label} from v{v}"),
+                Err(e) => log::warn!(
+                    "Failed to purge disabled mod {mod_label} from v{v} ({}): {e}",
+                    dir.to_string_lossy()
+                ),
+            }
+        }
+
+        // Remove matching config files from shared config dir.
+        match delete_config_files_for_mod(&shared_config, &m.dev, &m.name) {
+            Ok(n) => {
+                if n > 0 {
+                    log::info!("Purged {n} config files for disabled mod {mod_label}");
+                }
+            }
+            Err(e) => log::warn!("Failed to purge config for disabled mod {mod_label}: {e}"),
+        }
+    }
+
+    Ok(())
 }
 
 fn copy_dir_add_only(src: &Path, dst: &Path) -> Result<(), String> {

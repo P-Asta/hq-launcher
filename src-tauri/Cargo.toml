@@ -26,6 +26,9 @@ serde_json = "1"
 futures-util = "0.3"
 # Unzip downloaded versions.
 zip = "2"
+# Untar Proton-GE tar.gz on Linux
+tar = "0.4"
+flate2 = "1"
 # Avoid pulling in rustls/aws-lc-sys (which requires CMake/NASM on Windows) by using the OS TLS backend.
 reqwest = { version = "0.13.1", default-features = false, features = ["native-tls", "stream", "json", "http2"] }
 log = "0.4.29"
