@@ -84,7 +84,7 @@ fn list_other_proton_ge_dirs(proton_root: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn proton_root_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub fn proton_root_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(app
         .path()
         .app_data_dir()
@@ -99,7 +99,16 @@ fn get_current_proton_dir_impl(_app: &tauri::AppHandle) -> Result<Option<PathBuf
 }
 
 #[cfg(target_os = "linux")]
-fn get_current_proton_dir_impl(app: &tauri::AppHandle) -> Result<Option<PathBuf>, String> {
+pub fn proton_env_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
+        .join("proton_env"))
+}
+
+#[cfg(target_os = "linux")]
+pub fn get_current_proton_dir_impl(app: &tauri::AppHandle) -> Result<Option<PathBuf>, String> {
     let proton_root = proton_root_dir(app)?;
     if !proton_root.exists() {
         return Ok(None);

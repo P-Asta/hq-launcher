@@ -612,6 +612,26 @@ async fn apply_mod_updates(app: tauri::AppHandle, version: u32) -> Result<bool, 
     }
 }
 
+#[cfg(target_os = "linux")]
+fn get_steam_client_path(launcher_root: &std::path::Path) -> std::path::PathBuf {
+    if let Some(home_dir) = dirs::home_dir() {
+        let steam_paths = [
+            home_dir.join(".steam/steam"),
+            home_dir.join(".local/share/Steam"),
+            home_dir.join(".var/app/com.valvesoftware.Steam/.local/share/Steam"),
+        ];
+        for path in steam_paths.iter() {
+            if path.exists() && path.join("steamapps").exists() {
+                println!("Found real Steam installation at: {:?}", path);
+                return path.clone();
+            }
+        }
+    }
+
+    println!("Steam not found. Mocking client path.");
+    launcher_root.to_path_buf()
+}
+
 #[tauri::command]
 fn launch_game(
     app: tauri::AppHandle,
@@ -626,6 +646,7 @@ fn launch_game(
         ));
     }
 
+    let app_path = app.path().app_data_dir().map_err(|e| format!("app path not found: {e}"))?;
     let exe_name = "Lethal Company.exe";
     let exe_path = dir.join(exe_name);
     let exe_path = if exe_path.exists() {
@@ -656,7 +677,39 @@ fn launch_game(
     // Ensure disabled mods are applied for this version before launch.
     let _ = apply_disabled_mods_for_version(&app, version);
 
-    let child = std::process::Command::new(&exe_path)
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new(&exe_path);
+
+    #[cfg(target_os = "linux")]
+    let (proton_binary, compat_data_path) = {
+        let proton_env_path = installer::proton_env_dir(&app).map_err(|e| format!("proton_env path not found: {e}"))?;
+        let proton_bin_path = installer::get_current_proton_dir_impl(&app)
+            .map_err(|e| format!("proton path not found: {e}"))?
+            .ok_or("found proton path but is None")?;
+        let compat_pre_path = proton_env_path.join("wine_prefix");
+        if !compat_pre_path.exists() {
+            std::fs::create_dir(&compat_pre_path).map_err(|e| format!("could not make prefix: {e}"))?;
+        }
+        (
+            proton_bin_path.join("proton"),
+            compat_pre_path
+        )
+    };
+
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let steam_path = get_steam_client_path(&app_path);
+        let mut cmd = std::process::Command::new(&proton_binary);
+        cmd.arg("run");
+        cmd.arg(&exe_path);
+        cmd.env("STEAM_COMPAT_DATA_PATH", &compat_data_path);
+        cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_path);
+        cmd.env("WINEDLLOVERRIDES", "winhttp=n,b");
+        println!("{:?}", cmd);
+        cmd
+    };
+
+    let child = command
         .current_dir(exe_dir)
         .spawn()
         .map_err(|e| format!("failed to launch: {e}"))?;
