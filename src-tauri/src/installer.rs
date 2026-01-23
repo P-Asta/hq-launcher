@@ -626,8 +626,11 @@ fn is_reparse_point(path: &Path) -> Result<bool, String> {
 }
 
 #[cfg(not(windows))]
-fn is_reparse_point(_path: &Path) -> Result<bool, String> {
-    Ok(false)
+fn is_reparse_point(path: &Path) -> Result<bool, String> {
+    // On Unix, treat symlinks as "reparse-point-like" so we don't recurse into the target
+    // when cleaning up the old config path.
+    let md = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    Ok(md.file_type().is_symlink())
 }
 
 #[cfg(windows)]
@@ -650,9 +653,40 @@ fn create_dir_junction(link: &Path, target: &Path) -> Result<(), String> {
 
 #[cfg(not(windows))]
 fn create_dir_junction(link: &Path, target: &Path) -> Result<(), String> {
-    // Best-effort fallback: create the directory (no junctions).
-    let _ = target;
-    std::fs::create_dir_all(link).map_err(|e| e.to_string())
+    // Prefer a directory symlink so the game config path points to the shared config dir.
+    // On Linux, a bind mount would require elevated privileges; symlink is the best userland option.
+    #[cfg(unix)]
+    {
+        if let Err(e) = std::os::unix::fs::symlink(target, link) {
+            log::warn!(
+                "Failed to create config symlink {} -> {} ({}); falling back to directory",
+                link.display(),
+                target.display(),
+                e
+            );
+            std::fs::create_dir_all(link).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    {
+        // Best-effort fallback for other non-Windows platforms.
+        let _ = target;
+        std::fs::create_dir_all(link).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(windows)]
+fn remove_dir_link(path: &Path) -> Result<(), String> {
+    // Junctions are removed via remove_dir on Windows.
+    std::fs::remove_dir(path).map_err(|e| e.to_string())
+}
+
+#[cfg(not(windows))]
+fn remove_dir_link(path: &Path) -> Result<(), String> {
+    // Symlinks to directories are removed via remove_file on Unix.
+    std::fs::remove_file(path).map_err(|e| e.to_string())
 }
 
 /// Ensure `game_root/BepInEx/config` is a junction to the shared config directory.
@@ -668,7 +702,8 @@ fn ensure_config_junction(app: &tauri::AppHandle, game_root: &Path) -> Result<Pa
     let link = bepinex_dir.join("config");
 
     // If it's already pointing to shared, do nothing.
-    if link.exists() {
+    // Use symlink_metadata so broken symlinks are still detected and cleaned up.
+    if std::fs::symlink_metadata(&link).is_ok() {
         if let (Ok(a), Ok(b)) = (std::fs::canonicalize(&link), std::fs::canonicalize(&shared)) {
             if a == b {
                 return Ok(shared);
@@ -678,7 +713,7 @@ fn ensure_config_junction(app: &tauri::AppHandle, game_root: &Path) -> Result<Pa
         if link.is_dir() {
             // If it's a junction/symlink already, remove only the link itself.
             if is_reparse_point(&link)? {
-                std::fs::remove_dir(&link).map_err(|e| e.to_string())?;
+                remove_dir_link(&link)?;
             } else {
                 // Regular directory: copy into shared (add-only) then remove.
                 let _ = copy_dir_add_only(&link, &shared);
