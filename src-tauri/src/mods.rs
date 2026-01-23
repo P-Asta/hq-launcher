@@ -8,6 +8,21 @@ use crate::thunderstore::{self, PackageListing};
 use crate::zip_utils::extract_thunderstore_into_plugins_with_progress;
 use semver::Version;
 
+fn read_manifest_allow_old(mod_dir: &Path) -> Result<crate::bepinex_cfg::BepInExManifest, String> {
+    let manifest = mod_dir.join("manifest.json");
+    if manifest.exists() {
+        return read_manifest(&manifest);
+    }
+    let manifest_old = mod_dir.join("manifest.json.old");
+    if manifest_old.exists() {
+        return read_manifest(&manifest_old);
+    }
+    Err(format!(
+        "manifest.json not found under {}",
+        mod_dir.to_string_lossy()
+    ))
+}
+
 fn parse_semver_loose(s: &str) -> Option<Version> {
     let s = s.trim().trim_start_matches('v');
     if let Ok(v) = Version::parse(s) {
@@ -106,8 +121,7 @@ where
                 spec.name
             );
 
-            let path = target_plugins.join(format!("{}-{}/manifest.json", spec.dev, spec.name));
-            let manifest = read_manifest(&path)?;
+            let manifest = read_manifest_allow_old(&already_dir)?;
 
             let version_limit = spec
                 .version_config
@@ -343,8 +357,7 @@ where
         let already_dir = target_plugins.join(format!("{}-{}", spec.dev, spec.name));
         let mod_label = format!("{}-{}", spec.dev, spec.name);
         if already_dir.exists() {
-            let path = target_plugins.join(format!("{}-{}/manifest.json", spec.dev, spec.name));
-            let manifest = match read_manifest(&path) {
+            let manifest = match read_manifest_allow_old(&already_dir) {
                 Ok(m) => m,
                 Err(e) => {
                     // Don't fail the entire check if one plugin has a broken/edited manifest.

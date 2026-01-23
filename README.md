@@ -17,6 +17,13 @@ A game launcher built with [React](https://react.dev/) and [Tauri](https://tauri
 - **Mod Management**: Search, enable/disable, and configure mods
 - **Config Editor**: Built-in BepInEx configuration file editor
 - **Auto Updates**: Automatic updates for both launcher and game versions
+- **Practice Mode**: This is a mode that runs by adding a practice plugin.
+
+
+## Practice Mode
+- [LethalDevMode](https://thunderstore.io/c/lethal-company/p/megumin/LethalDevMode/)(v45+)
+- [Imperium](https://thunderstore.io/c/lethal-company/p/giosuel/Imperium/)(v50+)
+- [CruiserJumpPractice](https://thunderstore.io/c/lethal-company/p/aoirint/CruiserJumpPractice/)(v56+)
 
 ## Installation
 

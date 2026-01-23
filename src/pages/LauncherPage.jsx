@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   CheckCircle2,
+  ChevronDown,
   Download,
   LogOut,
   Play,
@@ -97,6 +98,8 @@ export default function LauncherPage({
   });
 
   const [updatePrompt, setUpdatePrompt] = useState({ open: false });
+  const [practicePrompt, setPracticePrompt] = useState({ open: false });
+  const [practiceTask, setPracticeTask] = useState(null); // last Practice Mods progress payload
 
   const [checkUpdatePrompt, setCheckUpdatePrompt] = useState({
     open: false,
@@ -139,6 +142,7 @@ export default function LauncherPage({
   });
 
   const [gameStatus, setGameStatus] = useState({ running: false, pid: null });
+  const [runMode, setRunMode] = useState("normal"); // normal | practice
   const autoCheckedRef = useRef(new Set());
 
   const isInstalled = useMemo(() => {
@@ -477,6 +481,18 @@ export default function LauncherPage({
 
     (async () => {
       unlistenProgress = await listen("download://progress", (event) => {
+        // Practice install modal: only show when practice actually installs missing plugins.
+        if (event?.payload?.step_name === "Practice Mods") {
+          setPracticeTask({
+            status: "working",
+            ...event.payload,
+            error: null,
+          });
+          const totalFiles = Number(event.payload?.total_files ?? 0);
+          if (Number.isFinite(totalFiles) && totalFiles > 0) {
+            setPracticePrompt({ open: true });
+          }
+        }
         setTask((t) => ({
           ...t,
           status: "working",
@@ -499,6 +515,15 @@ export default function LauncherPage({
         if (Number.isFinite(v)) refreshInstalledModVersions(v);
       });
       unlistenError = await listen("download://error", (event) => {
+        // If practice setup fails, keep the modal open and show the error.
+        if (practicePrompt.open && practiceTask?.step_name === "Practice Mods") {
+          setPracticeTask((t) => ({
+            ...(t ?? {}),
+            status: "error",
+            version: event.payload?.version ?? t?.version,
+            error: event.payload?.message ?? "Unknown error",
+          }));
+        }
         setTask((t) => ({
           ...t,
           status: "error",
@@ -1013,6 +1038,10 @@ export default function LauncherPage({
         running: true,
         pid: typeof pid === "number" ? pid : null,
       });
+      // backend may force-disable practice mods on normal run
+      invoke("get_disabled_mods")
+        .then((dm) => setDisabledMods(Array.isArray(dm) ? dm : []))
+        .catch(() => {});
     } catch (e) {
       console.error(e);
       setTask((t) => ({
@@ -1024,19 +1053,104 @@ export default function LauncherPage({
     }
   }
 
+  async function startPracticeRun() {
+    if (gameStatus.running) return;
+    if (!isInstalled(selectedVersion)) {
+      openDownloadPrompt(selectedVersion);
+      return;
+    }
+    try {
+      // Reset practice modal state; it will open only if backend reports installs needed.
+      setPracticePrompt({ open: false });
+      setPracticeTask(null);
+      const pid = await invoke("launch_game_practice", { version: selectedVersion });
+      setPracticePrompt({ open: false });
+      setGameStatus({
+        running: true,
+        pid: typeof pid === "number" ? pid : null,
+      });
+      // backend may enable/disable practice mods for this version
+      invoke("get_disabled_mods")
+        .then((dm) => setDisabledMods(Array.isArray(dm) ? dm : []))
+        .catch(() => {});
+    } catch (e) {
+      console.error(e);
+      // If there's an error without progress, show it via the practice modal too.
+      setPracticePrompt({ open: true });
+      setPracticeTask((t) => ({
+        ...(t ?? {}),
+        status: "error",
+        version: selectedVersion,
+        step_name: t?.step_name ?? "Practice Mods",
+        detail: t?.detail ?? "Failed to prepare practice mods",
+        error: e?.message ?? String(e),
+      }));
+      setTask((t) => ({
+        ...t,
+        status: "error",
+        version: selectedVersion,
+        error: e?.message ?? String(e),
+      }));
+    }
+  }
+
+  async function startSelectedRun() {
+    if (gameStatus.running) return startRun(); // stop
+    if (runMode === "practice") return startPracticeRun();
+    return startRun();
+  }
+
+  const runModeLabel = runMode === "practice" ? "Practice" : "Normal";
+
   return (
     <div className="h-full text-white">
       <div className="mx-auto flex h-full max-w-[1600px] flex-col gap-4 p-4">
         {/* Top bar */}
         <div className="flex items-center gap-3">
-          <Button
-            variant={gameStatus.running ? "secondary" : "default"}
-            className="h-11 px-5"
-            onClick={startRun}
-          >
-            <Play className="h-4 w-4" />
-            {gameStatus.running ? "Stop" : "Start Run"}
-          </Button>
+          {gameStatus.running ? (
+            <Button variant="secondary" className="h-11 px-5" onClick={startRun} title="Stop">
+              <Play className="h-4 w-4" />
+              {runModeLabel} Stop
+            </Button>
+          ) : (
+            <Select value={runMode} onValueChange={(v) => setRunMode(v)}>
+              <SelectTrigger
+                showIcon={false}
+                className="h-11 w-fit font-semibold overflow-hidden rounded-xl border-white/10 bg-white px-0 text-black hover:bg-white/90 focus:ring-white/15"
+                title={
+                  runMode === "practice"
+                    ? "Practice run: installs/enables practice mods for this run"
+                    : "Normal run: practice mods are disabled"
+                }
+              >
+                <div className="flex h-full w-full items-stretch">
+                  <div
+                    className="flex h-full select-none items-center gap-2 px-5"
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      startSelectedRun();
+                    }}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                  >
+                    <Play className="h-4 w-4" />
+                    {runMode === "practice" ? "Practice Run" : "Start Run"}
+                  </div>
+                  <div className="flex w-10 items-center justify-center border-l border-black/10">
+                    <ChevronDown className="h-4 w-4 text-black/70" />
+                    <span className="sr-only">Select run mode</span>
+                  </div>
+                </div>
+              </SelectTrigger>
+              <SelectContent className="min-w-48" align="start">
+                <SelectItem value="normal">Normal Run</SelectItem>
+                <SelectItem value="practice">Practice Run</SelectItem>
+              </SelectContent>
+            </Select>
+          )}
 
           <div className="w-fit">
             <Select
@@ -1962,6 +2076,83 @@ export default function LauncherPage({
                   Close
                 </Button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Practice install modal (only shows when installing plugins) */}
+      {practicePrompt.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <button
+            className="absolute inset-0 bg-black/60"
+            onClick={() => {
+              const st = practiceTask?.status ?? "working";
+              if (st !== "working") setPracticePrompt({ open: false });
+            }}
+            aria-label="Close"
+          />
+
+          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-white/10 bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-lg font-semibold">
+                  {practiceTask?.status === "error"
+                    ? "Practice setup failed"
+                    : "Installing practice mods..."}
+                </div>
+                <div className="mt-1 text-sm text-white/55">
+                  Required practice plugins are being installed for this run.
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold">
+                    {practiceTask?.step_name ?? "Practice Mods"}
+                  </div>
+                  <div className="truncate text-xs text-white/50">
+                    {practiceTask?.detail ?? ""}
+                  </div>
+                  {practiceTask?.error && (
+                    <div className="mt-1 text-xs text-red-300">
+                      {practiceTask.error}
+                    </div>
+                  )}
+                </div>
+                <div className="shrink-0 text-sm text-white/70">
+                  {Number.isFinite(Number(practiceTask?.overall_percent))
+                    ? `${Math.round(Number(practiceTask?.overall_percent))}%`
+                    : ""}
+                </div>
+              </div>
+              <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-white/10">
+                <div
+                  className={cn(
+                    "h-full rounded-full transition-[width]",
+                    practiceTask?.status === "error" ? "bg-red-400" : "bg-emerald-400"
+                  )}
+                  style={{
+                    width: `${Math.max(
+                      0,
+                      Math.min(100, Number(practiceTask?.overall_percent ?? 0))
+                    )}%`,
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <Button
+                variant="secondary"
+                className="h-10 min-w-[120px]"
+                disabled={(practiceTask?.status ?? "working") === "working"}
+                onClick={() => setPracticePrompt({ open: false })}
+              >
+                Close
+              </Button>
             </div>
           </div>
         </div>

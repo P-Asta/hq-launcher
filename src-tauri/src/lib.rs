@@ -106,6 +106,44 @@ fn mod_folder_name(dev: &str, name: &str) -> String {
     format!("{dev}-{name}")
 }
 
+fn mod_dir_for(
+    plugins_dir: &std::path::Path,
+    dev: &str,
+    name: &str,
+) -> Option<std::path::PathBuf> {
+    // Fast paths (common on Windows; case-insensitive FS).
+    let direct = plugins_dir.join(mod_folder_name(dev, name));
+    if direct.exists() {
+        return Some(direct);
+    }
+
+    let dev_l = dev.trim().to_lowercase();
+    let name_l = name.trim().to_lowercase();
+    let lowered = plugins_dir.join(mod_folder_name(&dev_l, &name_l));
+    if lowered.exists() {
+        return Some(lowered);
+    }
+
+    // Fallback: scan directories and match case-insensitively.
+    let target = mod_folder_name(&dev_l, &name_l);
+    let Ok(rd) = std::fs::read_dir(plugins_dir) else {
+        return None;
+    };
+    for e in rd.flatten() {
+        let path = e.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(folder) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if folder.to_lowercase() == target {
+            return Some(path);
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct DisabledMod {
     dev: String,
@@ -263,9 +301,195 @@ fn apply_disabled_mods_for_version(app: &tauri::AppHandle, version: u32) -> Resu
     let list = read_disablemod(app)?;
     let plugins = plugins_dir(app, version)?;
     for m in list.mods {
-        let dir = plugins.join(mod_folder_name(&m.dev, &m.name));
-        let _ = set_mod_files_old_suffix(&dir, false);
+        if let Some(dir) = mod_dir_for(&plugins, &m.dev, &m.name) {
+            let _ = set_mod_files_old_suffix(&dir, false);
+        }
     }
+    Ok(())
+}
+
+fn hqol_mod_dir(plugins_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    mod_dir_for(plugins_dir, "HQHQTeam", "HQoL")
+        .or_else(|| mod_dir_for(plugins_dir, "HQHQTeam", "HQOL"))
+}
+
+fn sync_hqol_with_disablemod_for_version(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
+    let list = read_disablemod(app)?;
+    let id1 = normalize_mod_id("HQHQTeam", "HQoL");
+    let id2 = normalize_mod_id("HQHQTeam", "HQOL");
+    let disabled = list.mods.iter().any(|m| m == &id1 || m == &id2);
+
+    let plugins = plugins_dir(app, version)?;
+    if let Some(dir) = hqol_mod_dir(&plugins) {
+        let _ = set_mod_files_old_suffix(&dir, !disabled);
+    }
+    Ok(())
+}
+
+fn ensure_practice_mods_disabled_for_version(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
+    let practice = variable::get_practice_mod_list();
+    let mut list = read_disablemod(app)?;
+
+    // Force-disable all practice mods globally (source of truth for the UI).
+    for m in &practice {
+        let id = normalize_mod_id(&m.dev, &m.name);
+        list.mods.retain(|x| x != &id);
+        list.mods.push(id);
+    }
+    list.mods
+        .sort_by(|a, b| a.dev.cmp(&b.dev).then(a.name.cmp(&b.name)));
+    list.mods.dedup();
+    write_disablemod(app, &list)?;
+
+    // Apply for this version immediately.
+    let plugins = plugins_dir(app, version)?;
+    for m in practice {
+        if let Some(dir) = mod_dir_for(&plugins, &m.dev, &m.name) {
+            let _ = set_mod_files_old_suffix(&dir, false);
+        }
+    }
+
+    Ok(())
+}
+
+async fn prepare_practice_mods_for_version(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
+    let game_root = version_dir(app, version)?;
+    if !game_root.exists() {
+        return Err(format!(
+            "version folder not found: {}",
+            game_root.to_string_lossy()
+        ));
+    }
+
+    let practice_all = variable::get_practice_mod_list();
+    let practice_enabled: Vec<mod_config::ModEntry> = practice_all
+        .iter()
+        .cloned()
+        .filter(|m| m.is_compatible(version))
+        .collect();
+
+    // Emit progress so the UI can show work (practice installs can be slow).
+    const STEPS_TOTAL: u32 = 1;
+    progress::emit_progress(
+        app,
+        TaskProgressPayload {
+            version,
+            steps_total: STEPS_TOTAL,
+            step: 1,
+            step_name: "Practice Mods".to_string(),
+            step_progress: 0.0,
+            overall_percent: 0.0,
+            detail: Some("Preparing practice mods...".to_string()),
+            downloaded_bytes: None,
+            total_bytes: None,
+            extracted_files: Some(0),
+            total_files: Some(practice_enabled.len() as u64),
+        },
+    );
+
+    // Install enabled practice mods additively (no overwrite).
+    let cfg = ModsConfig {
+        mods: practice_enabled.clone(),
+    };
+
+    let install_res: Result<(), String> = mods::install_mods_with_progress(
+        app,
+        &game_root,
+        version,
+        &cfg,
+        |done, total, detail| {
+            let step_progress = if total == 0 {
+                1.0
+            } else {
+                (done as f64 / total as f64).clamp(0.0, 1.0)
+            };
+            progress::emit_progress(
+                app,
+                TaskProgressPayload {
+                    version,
+                    steps_total: STEPS_TOTAL,
+                    step: 1,
+                    step_name: "Practice Mods".to_string(),
+                    step_progress,
+                    overall_percent: overall_from_step(1, step_progress, STEPS_TOTAL),
+                    detail,
+                    downloaded_bytes: None,
+                    total_bytes: None,
+                    extracted_files: Some(done),
+                    total_files: Some(total),
+                },
+            );
+        },
+    )
+    .await;
+
+    if let Err(e) = &install_res {
+        progress::emit_error(
+            app,
+            TaskErrorPayload {
+                version,
+                message: e.clone(),
+            },
+        );
+        return Err(e.clone());
+    }
+
+    // Update disable list: practice mods are disabled by default, except compatible ones for this version.
+    let mut list = read_disablemod(app)?;
+    let all_ids: Vec<DisabledMod> = practice_all
+        .iter()
+        .map(|m| normalize_mod_id(&m.dev, &m.name))
+        .collect();
+    let enabled_ids: Vec<DisabledMod> = practice_enabled
+        .iter()
+        .map(|m| normalize_mod_id(&m.dev, &m.name))
+        .collect();
+
+    // Remove any existing entries for practice mods.
+    list.mods.retain(|m| !all_ids.contains(m));
+    // Add all practice mods as disabled, then remove the enabled subset.
+    for id in &all_ids {
+        list.mods.push(id.clone());
+    }
+    list.mods.retain(|m| !enabled_ids.contains(m));
+    list.mods
+        .sort_by(|a, b| a.dev.cmp(&b.dev).then(a.name.cmp(&b.name)));
+    list.mods.dedup();
+    write_disablemod(app, &list)?;
+
+    // Apply filesystem state for this version: disable all practice mods, then enable compatible subset.
+    let plugins = plugins_dir(app, version)?;
+    for m in &practice_all {
+        if let Some(dir) = mod_dir_for(&plugins, &m.dev, &m.name) {
+            let _ = set_mod_files_old_suffix(&dir, false);
+        }
+    }
+    for m in &practice_enabled {
+        if let Some(dir) = mod_dir_for(&plugins, &m.dev, &m.name) {
+            let _ = set_mod_files_old_suffix(&dir, true);
+        }
+    }
+
+    // Special rule: when running Practice and Imperium is installed, force-disable HQoL (HQHQTeam).
+    // Otherwise, HQoL should follow disablemod.json state.
+    let imperium_installed = mod_dir_for(&plugins, "giosuel", "Imperium").is_some();
+    if let Some(hqol_dir) = hqol_mod_dir(&plugins) {
+        if imperium_installed {
+            let _ = set_mod_files_old_suffix(&hqol_dir, false);
+        } else {
+            // Re-sync HQoL to user's config.
+            let _ = sync_hqol_with_disablemod_for_version(app, version);
+        }
+    }
+
+    progress::emit_finished(
+        app,
+        TaskFinishedPayload {
+            version,
+            path: game_root.to_string_lossy().to_string(),
+        },
+    );
+
     Ok(())
 }
 
@@ -647,7 +871,7 @@ fn launch_game(
         ));
     }
 
-    let app_path = app.path().app_data_dir().map_err(|e| format!("app path not found: {e}"))?;
+    let _app_path = app.path().app_data_dir().map_err(|e| format!("app path not found: {e}"))?;
     let exe_name = "Lethal Company.exe";
     let exe_path = dir.join(exe_name);
     let exe_path = if exe_path.exists() {
@@ -675,8 +899,13 @@ fn launch_game(
         *guard = None;
     }
 
+    // Non-practice run: force-disable practice mods.
+    ensure_practice_mods_disabled_for_version(&app, version)?;
+
     // Ensure disabled mods are applied for this version before launch.
     let _ = apply_disabled_mods_for_version(&app, version);
+    // For HQoL specifically, also ensure `.old` matches disablemod.json on normal runs.
+    let _ = sync_hqol_with_disablemod_for_version(&app, version);
 
     #[cfg(target_os = "windows")]
     let mut command = std::process::Command::new(&exe_path);
@@ -707,7 +936,113 @@ fn launch_game(
 
     #[cfg(target_os = "linux")]
     let mut command = {
-        let steam_path = get_steam_client_path(&app_path);
+        let steam_path = get_steam_client_path(&_app_path);
+        let mut cmd = std::process::Command::new(&proton_binary);
+        cmd.arg("run");
+        cmd.arg(&exe_path);
+        cmd.env("STEAM_COMPAT_DATA_PATH", &compat_data_path);
+        cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_path);
+        cmd.env("WINEDLLOVERRIDES", "winhttp=n,b");
+        println!("{:?}", cmd);
+        cmd
+    };
+
+    let child = command
+        .current_dir(exe_dir)
+        .spawn()
+        .map_err(|e| format!("failed to launch: {e}"))?;
+
+    let pid = child.id();
+    let mut guard = state
+        .child
+        .lock()
+        .map_err(|_| "game state lock poisoned".to_string())?;
+    *guard = Some(child);
+    Ok(pid)
+}
+
+#[tauri::command]
+async fn launch_game_practice(
+    app: tauri::AppHandle,
+    version: u32,
+    state: State<'_, GameState>,
+) -> Result<u32, String> {
+    let dir = version_dir(&app, version)?;
+    if !dir.exists() {
+        return Err(format!(
+            "version folder not found: {}",
+            dir.to_string_lossy()
+        ));
+    }
+
+    let _app_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app path not found: {e}"))?;
+    let exe_name = "Lethal Company.exe";
+    let exe_path = dir.join(exe_name);
+    let exe_path = if exe_path.exists() {
+        exe_path
+    } else {
+        find_file_named(&dir, exe_name, 3)
+            .ok_or_else(|| format!("{exe_name} not found under {}", dir.to_string_lossy()))?
+    };
+
+    let exe_dir = exe_path
+        .parent()
+        .ok_or_else(|| "invalid exe path".to_string())?;
+
+    // If already running, return an error.
+    {
+        let mut guard = state
+            .child
+            .lock()
+            .map_err(|_| "game state lock poisoned".to_string())?;
+        if let Some(child) = guard.as_mut() {
+            if child.try_wait().map_err(|e| e.to_string())?.is_none() {
+                return Err("game is already running".to_string());
+            }
+        }
+        *guard = None;
+    }
+
+    // Practice run: install + enable practice mods (compatible with this game version).
+    prepare_practice_mods_for_version(&app, version).await?;
+
+    // Ensure disabled mods are applied for this version before launch.
+    let _ = apply_disabled_mods_for_version(&app, version);
+
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new(&exe_path);
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg("-a");
+        cmd.arg(&exe_path);
+        cmd
+    };
+
+    #[cfg(target_os = "linux")]
+    let (proton_binary, compat_data_path) = {
+        let proton_env_path = installer::proton_env_dir(&app)
+            .map_err(|e| format!("proton_env path not found: {e}"))?;
+        let proton_bin_path = installer::get_current_proton_dir_impl(&app)
+            .map_err(|e| format!("proton path not found: {e}"))?
+            .ok_or("found proton path but is None")?;
+        let compat_pre_path = proton_env_path.join("wine_prefix");
+        if !compat_pre_path.exists() {
+            std::fs::create_dir(&compat_pre_path).map_err(|e| format!("could not make prefix: {e}"))?;
+        }
+        (
+            proton_bin_path.join("proton"),
+            compat_pre_path
+        )
+    };
+
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let steam_path = get_steam_client_path(&_app_path);
         let mut cmd = std::process::Command::new(&proton_binary);
         cmd.arg("run");
         cmd.arg(&exe_path);
@@ -798,7 +1133,7 @@ fn set_mod_enabled(
 
     // Use normalized ids in the file.
     let id = normalize_mod_id(&dev, &name);
-    list.mods.retain(|m| *m != id);
+    list.mods.retain(|m| m != &id);
     if !enabled {
         list.mods.push(id);
         list.mods
@@ -808,8 +1143,10 @@ fn set_mod_enabled(
     write_disablemod(&app, &list)?;
 
     // Apply to current version immediately (still add-only / no overwrite).
-    let dir = plugins_dir(&app, version)?.join(mod_folder_name(&dev, &name));
-    let _ = set_mod_files_old_suffix(&dir, enabled);
+    let plugins = plugins_dir(&app, version)?;
+    if let Some(dir) = mod_dir_for(&plugins, &dev, &name) {
+        let _ = set_mod_files_old_suffix(&dir, enabled);
+    }
     Ok(true)
 }
 
@@ -1324,6 +1661,7 @@ pub fn run() {
             check_mod_updates,
             apply_mod_updates,
             launch_game,
+            launch_game_practice,
             get_game_status,
             stop_game,
             get_disabled_mods,
