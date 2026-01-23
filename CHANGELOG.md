@@ -1,6 +1,9 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.3.2 (2026-01-24)
+- Add practice mode
+
 ## 1.3.1 (2026-01-24)
 - Add practice mode
 

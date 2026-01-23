@@ -22,3 +22,5 @@ lc-launcher-cache.json
 *.njsproj
 *.sln
 *.sw?
+.yarn/*
+.yarnrc.yml
