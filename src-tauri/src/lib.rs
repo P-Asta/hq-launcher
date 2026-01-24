@@ -66,6 +66,10 @@ fn version_dir(app: &tauri::AppHandle, version: u32) -> Result<std::path::PathBu
         .join(format!("v{version}")))
 }
 
+fn version_config_dir(app: &tauri::AppHandle, version: u32) -> Result<std::path::PathBuf, String> {
+    Ok(version_dir(app, version)?.join("BepInEx").join("config"))
+}
+
 fn find_file_named(
     root: &std::path::Path,
     target_name: &str,
@@ -1298,6 +1302,89 @@ fn list_config_files(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+fn list_config_files_for_version_impl(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<Vec<String>, String> {
+    let base = version_config_dir(app, version)?;
+    if !base.exists() {
+        return Ok(vec![]);
+    }
+
+    let mut out: Vec<String> = vec![];
+    let base_canon = std::fs::canonicalize(&base).map_err(|e| e.to_string())?;
+
+    let mut stack: Vec<std::path::PathBuf> = vec![base.clone()];
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+            let e = e.map_err(|e| e.to_string())?;
+            let path = e.path();
+            let ty = e.file_type().map_err(|e| e.to_string())?;
+            if ty.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !ty.is_file() {
+                continue;
+            }
+            let canon = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+            if !canon.starts_with(&base_canon) {
+                continue;
+            }
+            let rel = canon
+                .strip_prefix(&base_canon)
+                .unwrap_or(&canon)
+                .to_string_lossy()
+                .replace('\\', "/");
+            out.push(rel.trim_start_matches('/').to_string());
+        }
+    }
+
+    out.sort();
+    Ok(out)
+}
+
+#[tauri::command]
+fn get_config_link_state(app: tauri::AppHandle) -> Result<installer::ConfigLinkState, String> {
+    installer::get_config_link_state(&app)
+}
+
+#[tauri::command]
+fn get_config_link_state_for_version(
+    app: tauri::AppHandle,
+    version: u32,
+) -> Result<installer::VersionConfigLinkState, String> {
+    installer::get_config_link_state_for_version(&app, version)
+}
+
+#[tauri::command]
+fn link_config(app: tauri::AppHandle) -> Result<installer::ConfigLinkState, String> {
+    let _ = installer::link_config_for_all_versions(&app)?;
+    installer::get_config_link_state(&app)
+}
+
+#[tauri::command]
+fn link_config_for_version(
+    app: tauri::AppHandle,
+    version: u32,
+) -> Result<installer::VersionConfigLinkState, String> {
+    installer::link_config_for_version(&app, version)
+}
+
+#[tauri::command]
+fn unlink_config(app: tauri::AppHandle) -> Result<installer::ConfigLinkState, String> {
+    let _ = installer::unlink_config_for_all_versions(&app)?;
+    installer::get_config_link_state(&app)
+}
+
+#[tauri::command]
+fn unlink_config_for_version(
+    app: tauri::AppHandle,
+    version: u32,
+) -> Result<installer::VersionConfigLinkState, String> {
+    installer::unlink_config_for_version(&app, version)
+}
+
 #[tauri::command]
 fn list_config_files_for_mod(
     app: tauri::AppHandle,
@@ -1305,6 +1392,25 @@ fn list_config_files_for_mod(
     name: String,
 ) -> Result<Vec<String>, String> {
     let all = list_config_files(app)?;
+    let d = dev.to_lowercase();
+    let n = name.to_lowercase();
+    Ok(all
+        .into_iter()
+        .filter(|p| {
+            let lp = p.to_lowercase();
+            lp.contains(&d) || lp.contains(&n)
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn list_config_files_for_mod_for_version(
+    app: tauri::AppHandle,
+    version: u32,
+    dev: String,
+    name: String,
+) -> Result<Vec<String>, String> {
+    let all = list_config_files_for_version_impl(&app, version)?;
     let d = dev.to_lowercase();
     let n = name.to_lowercase();
     Ok(all
@@ -1342,6 +1448,22 @@ fn read_bepinex_cfg(
     bepinex_cfg::parse(&text)
 }
 
+#[tauri::command]
+fn read_bepinex_cfg_for_version(
+    app: tauri::AppHandle,
+    version: u32,
+    rel_path: String,
+) -> Result<bepinex_cfg::FileData, String> {
+    let base = version_config_dir(&app, version)?;
+    let rel = std::path::Path::new(&rel_path);
+    if !is_safe_rel_path(rel) {
+        return Err("invalid path".to_string());
+    }
+    let path = base.join(rel);
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    bepinex_cfg::parse(&text)
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct SetBepInExEntryArgs {
     rel_path: String,
@@ -1356,6 +1478,68 @@ fn set_bepinex_cfg_entry(app: tauri::AppHandle, args: SetBepInExEntryArgs) -> Re
     let rel = std::path::Path::new(&args.rel_path);
 
     log::info!("set_bepinex_cfg_entry: {:?}", args);
+
+    if !is_safe_rel_path(rel) {
+        return Err("invalid path".to_string());
+    }
+    let path = base.join(rel);
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    // If the cfg doesn't exist yet, start from an empty file and create the
+    // requested section/entry.
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut file = bepinex_cfg::parse(&text)?;
+
+    let section = match file.sections.iter_mut().find(|s| s.name == args.section) {
+        Some(s) => s,
+        None => {
+            file.sections.push(bepinex_cfg::Section {
+                name: args.section.clone(),
+                entries: vec![],
+            });
+            file.sections
+                .iter_mut()
+                .find(|s| s.name == args.section)
+                .ok_or("failed to create section".to_string())?
+        }
+    };
+
+    match section.entries.iter_mut().find(|e| e.name == args.entry) {
+        Some(e) => {
+            e.value = args.value;
+        }
+        None => {
+            section.entries.push(bepinex_cfg::Entry {
+                name: args.entry,
+                description: None,
+                default: None,
+                value: args.value,
+            });
+        }
+    }
+
+    let new_text = bepinex_cfg::write(&file)?;
+    std::fs::write(&path, new_text).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn set_bepinex_cfg_entry_for_version(
+    app: tauri::AppHandle,
+    version: u32,
+    args: SetBepInExEntryArgs,
+) -> Result<bool, String> {
+    let base = version_config_dir(&app, version)?;
+    let rel = std::path::Path::new(&args.rel_path);
+
+    log::info!("set_bepinex_cfg_entry_for_version(v{version}): {:?}", args);
 
     if !is_safe_rel_path(rel) {
         return Err("invalid path".to_string());
@@ -1671,10 +1855,19 @@ pub fn run() {
             get_manifest,
             list_installed_versions,
             list_config_files,
+            get_config_link_state,
+            link_config,
+            unlink_config,
+            get_config_link_state_for_version,
+            link_config_for_version,
+            unlink_config_for_version,
+            list_config_files_for_mod_for_version,
             list_config_files_for_mod,
             read_config_file,
             read_bepinex_cfg,
+            read_bepinex_cfg_for_version,
             set_bepinex_cfg_entry,
+            set_bepinex_cfg_entry_for_version,
             write_config_file,
             downloader::depot_login,
             downloader::depot_login_start,

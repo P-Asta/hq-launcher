@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import {
   CheckCircle2,
   ChevronDown,
@@ -113,6 +113,8 @@ export default function LauncherPage({
   const [activeSection, setActiveSection] = useState("");
   const [cfgError, setCfgError] = useState("");
   const [savingEntry, setSavingEntry] = useState(null); // `${section}/${entry}`
+  const [configLinkEpoch, setConfigLinkEpoch] = useState(0);
+  const [configLinkState, setConfigLinkState] = useState(null);
 
   // Download/sync progress toast
   const [task, setTask] = useState({
@@ -180,7 +182,7 @@ export default function LauncherPage({
       const keyLower = `${devLower}::${nameLower}`;
 
       // Prefer confirmed mapping (from backend list_config_files_for_mod)
-      const cfgs = modCfgFilesByKey[keyLower];
+      const cfgs = modCfgFilesByKey[`${selectedVersion}::${keyLower}`];
       if (Array.isArray(cfgs) && cfgs.length > 0) {
         for (const cfgPath of cfgs) {
           const chain = chainConfigs.find((paths) => paths.includes(cfgPath));
@@ -296,6 +298,7 @@ export default function LauncherPage({
     manifest.chain_config,
     query,
     selectedMod,
+    selectedVersion,
     modCfgFilesByKey,
     installedModVersions,
   ]);
@@ -314,7 +317,11 @@ export default function LauncherPage({
           mod: m,
           keyLower: `${String(m.dev).toLowerCase()}::${String(m.name).toLowerCase()}`,
         }))
-        .filter((x) => x.keyLower && modCfgFilesByKey[x.keyLower] == null);
+        .filter(
+          (x) =>
+            x.keyLower &&
+            modCfgFilesByKey[`${selectedVersion}::${x.keyLower}`] == null
+        );
 
       if (queue.length === 0) return;
 
@@ -324,15 +331,18 @@ export default function LauncherPage({
         while (idx < queue.length && !cancelled) {
           const cur = queue[idx++];
           try {
-            const files = await invoke("list_config_files_for_mod", {
+            const files = await invoke("list_config_files_for_mod_for_version", {
+              version: selectedVersion,
               dev: cur.mod.dev,
               name: cur.mod.name,
             });
-            nextMap[cur.keyLower] = (Array.isArray(files) ? files : [])
+            nextMap[`${selectedVersion}::${cur.keyLower}`] = (
+              Array.isArray(files) ? files : []
+            )
               .map((p) => String(p))
               .filter((p) => p.toLowerCase().endsWith(".cfg"));
           } catch {
-            nextMap[cur.keyLower] = [];
+            nextMap[`${selectedVersion}::${cur.keyLower}`] = [];
           }
         }
       }
@@ -346,7 +356,7 @@ export default function LauncherPage({
     };
     // Intentionally not including modCfgFilesByKey in deps to avoid infinite re-fetch loops.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [manifest.mods]);
+  }, [manifest.mods, selectedVersion, configLinkEpoch]);
 
   const progressText = useMemo(() => {
     const p = task.overall_percent;
@@ -416,6 +426,13 @@ export default function LauncherPage({
       console.error(e);
     });
   }, []);
+
+  // Let the Titlebar know what version is currently selected
+  useEffect(() => {
+    const v = Number(selectedVersion);
+    if (!Number.isFinite(v)) return;
+    emit("ui://selected-version-changed", { version: v }).catch(() => {});
+  }, [selectedVersion]);
 
   async function refreshInstalledModVersions(v = selectedVersion) {
     const vv = Number(v);
@@ -601,6 +618,36 @@ export default function LauncherPage({
     };
   }, []);
 
+  // If link/unlink is triggered from the Titlebar while config UI is open,
+  // force-refresh config lists + active file immediately.
+  useEffect(() => {
+    let unlisten = null;
+    (async () => {
+      unlisten = await listen("config://link-changed", (event) => {
+        const v = Number(event?.payload?.version);
+        if (Number.isFinite(v) && v !== Number(selectedVersion)) return;
+        setConfigLinkEpoch((x) => x + 1);
+      });
+    })();
+    return () => {
+      if (typeof unlisten === "function") unlisten();
+    };
+  }, [selectedVersion]);
+
+  // Track current link state so we can show a banner in config editor.
+  useEffect(() => {
+    (async () => {
+      try {
+        const s = await invoke("get_config_link_state_for_version", {
+          version: selectedVersion,
+        });
+        setConfigLinkState(s ?? null);
+      } catch {
+        setConfigLinkState(null);
+      }
+    })();
+  }, [configLinkEpoch, selectedVersion]);
+
   // when selecting a mod, load candidate config files
   useEffect(() => {
     if (!selectedMod) {
@@ -620,7 +667,9 @@ export default function LauncherPage({
       ).toLowerCase()}`;
       setModEnabled(!disabledSet.has(key));
 
-      const files = await invoke("list_config_files_for_mod", {
+      const files = await invoke("list_config_files_for_mod_for_version", {
+        // Always use the selected version config dir; if it's linked, it's a junction to shared.
+        version: selectedVersion,
         dev: selectedMod.dev,
         name: selectedMod.name,
       });
@@ -631,7 +680,7 @@ export default function LauncherPage({
       const next = list[0] ?? "";
       setActiveConfigPath(next);
     })().catch((e) => console.error(e));
-  }, [selectedMod, selectedVersion, disabledSet]);
+  }, [selectedMod, selectedVersion, disabledSet, configLinkEpoch]);
 
   // load + parse active cfg file
   useEffect(() => {
@@ -644,7 +693,8 @@ export default function LauncherPage({
 
     (async () => {
       setCfgError("");
-      const parsed = await invoke("read_bepinex_cfg", {
+      const parsed = await invoke("read_bepinex_cfg_for_version", {
+        version: selectedVersion,
         relPath: activeConfigPath,
       });
       setCfgFile(parsed ?? null);
@@ -656,7 +706,7 @@ export default function LauncherPage({
       setActiveSection("");
       setCfgError(e?.message ?? String(e));
     });
-  }, [activeConfigPath]);
+  }, [activeConfigPath, selectedVersion, configLinkEpoch]);
 
   async function downloadVersion(v, didRetryAfterLogin = false) {
     setTask((t) => ({
@@ -776,7 +826,8 @@ export default function LauncherPage({
     });
 
     try {
-      await invoke("set_bepinex_cfg_entry", {
+      await invoke("set_bepinex_cfg_entry_for_version", {
+        version: selectedVersion,
         args: {
           rel_path: activeConfigPath,
           section: sectionName,
@@ -790,7 +841,8 @@ export default function LauncherPage({
         let chainPath = manifest.chain_config
           .find((paths) => paths.includes(activeConfigPath))
           .filter((path) => path !== activeConfigPath)[0];
-        await invoke("set_bepinex_cfg_entry", {
+        await invoke("set_bepinex_cfg_entry_for_version", {
+          version: selectedVersion,
           args: {
             rel_path: chainPath,
             section: sectionName,
@@ -804,7 +856,8 @@ export default function LauncherPage({
       setCfgError(e?.message ?? String(e));
       // re-parse to resync
       try {
-        const parsed = await invoke("read_bepinex_cfg", {
+        const parsed = await invoke("read_bepinex_cfg_for_version", {
+          version: selectedVersion,
           relPath: activeConfigPath,
         });
         setCfgFile(parsed ?? null);
@@ -826,7 +879,8 @@ export default function LauncherPage({
   async function listCfgFilesForMod(mod) {
     if (!mod) return [];
     try {
-      const files = await invoke("list_config_files_for_mod", {
+      const files = await invoke("list_config_files_for_mod_for_version", {
+        version: selectedVersion,
         dev: mod.dev,
         name: mod.name,
       });
@@ -1408,6 +1462,13 @@ export default function LauncherPage({
                     Close
                   </Button>
                 </div>
+
+                {configLinkState?.is_installed && configLinkState?.is_linked === false && (
+                  <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs text-amber-200">
+                    Config is currently <span className="font-semibold">unlinked</span>. Changes will be
+                    saved to <span className="font-semibold">this version</span> on (v{selectedVersion}).
+                  </div>
+                )}
 
                 {/* <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-black/10 px-3 py-2">
                   <div className="text-sm font-semibold text-white/80">

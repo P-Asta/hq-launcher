@@ -498,7 +498,8 @@ export default function App() {
       ).toLowerCase()}`;
       setModEnabled(!disabledSet.has(key));
 
-      const files = await invoke("list_config_files_for_mod", {
+      const files = await invoke("list_config_files_for_mod_for_version", {
+        version: selectedVersion,
         dev: selectedMod.dev,
         name: selectedMod.name,
       });
@@ -522,7 +523,8 @@ export default function App() {
 
     (async () => {
       setCfgError("");
-      const parsed = await invoke("read_bepinex_cfg", {
+      const parsed = await invoke("read_bepinex_cfg_for_version", {
+        version: selectedVersion,
         relPath: activeConfigPath,
       });
       setCfgFile(parsed ?? null);
@@ -534,7 +536,7 @@ export default function App() {
       setActiveSection("");
       setCfgError(e?.message ?? String(e));
     });
-  }, [activeConfigPath]);
+  }, [activeConfigPath, selectedVersion]);
 
   async function downloadVersion(v) {
     setTask((t) => ({
@@ -606,7 +608,8 @@ export default function App() {
     });
 
     try {
-      await invoke("set_bepinex_cfg_entry", {
+      await invoke("set_bepinex_cfg_entry_for_version", {
+        version: selectedVersion,
         args: {
           rel_path: activeConfigPath,
           section: sectionName,
@@ -621,7 +624,8 @@ export default function App() {
           .find((paths) => paths.includes(activeConfigPath))
           .filter((path) => path !== activeConfigPath)[0];
         console.log(activeConfigPath, "=>", chainPath);
-        await invoke("set_bepinex_cfg_entry", {
+        await invoke("set_bepinex_cfg_entry_for_version", {
+          version: selectedVersion,
           args: {
             rel_path: chainPath,
             section: sectionName,
@@ -635,7 +639,8 @@ export default function App() {
       setCfgError(e?.message ?? String(e));
       // re-parse to resync
       try {
-        const parsed = await invoke("read_bepinex_cfg", {
+        const parsed = await invoke("read_bepinex_cfg_for_version", {
+          version: selectedVersion,
           relPath: activeConfigPath,
         });
         setCfgFile(parsed ?? null);

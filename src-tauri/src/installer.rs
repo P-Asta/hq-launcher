@@ -729,6 +729,188 @@ fn ensure_config_junction(app: &tauri::AppHandle, game_root: &Path) -> Result<Pa
     Ok(shared)
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigLinkState {
+    pub total_versions: u32,
+    pub linked_versions: u32,
+    pub is_fully_linked: bool,
+    pub is_fully_unlinked: bool,
+    pub is_mixed: bool,
+}
+
+fn bepinex_config_dir_for_version_root(version_root: &Path) -> PathBuf {
+    version_root.join("BepInEx").join("config")
+}
+
+fn is_config_linked_to_shared(config_dir: &Path, shared_canon: &Path) -> bool {
+    // Use symlink_metadata so broken symlinks are still detected.
+    if std::fs::symlink_metadata(config_dir).is_err() {
+        return false;
+    }
+    let Ok(canon) = std::fs::canonicalize(config_dir) else {
+        return false;
+    };
+    canon == shared_canon
+}
+
+pub fn get_config_link_state(app: &tauri::AppHandle) -> Result<ConfigLinkState, String> {
+    let shared = shared_config_dir(app)?;
+    let shared_canon = std::fs::canonicalize(&shared).unwrap_or(shared);
+
+    let versions = installed_version_dirs(app)?;
+    let total = versions.len() as u32;
+    let mut linked: u32 = 0;
+
+    for (_, root) in versions {
+        let cfg = bepinex_config_dir_for_version_root(&root);
+        if is_config_linked_to_shared(&cfg, &shared_canon) {
+            linked = linked.saturating_add(1);
+        }
+    }
+
+    let is_fully_linked = total > 0 && linked == total;
+    let is_fully_unlinked = linked == 0;
+    let is_mixed = total > 0 && linked > 0 && linked < total;
+
+    Ok(ConfigLinkState {
+        total_versions: total,
+        linked_versions: linked,
+        is_fully_linked,
+        is_fully_unlinked,
+        is_mixed,
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VersionConfigLinkState {
+    pub version: u32,
+    pub is_installed: bool,
+    pub is_linked: bool,
+}
+
+fn version_root_dir(app: &tauri::AppHandle, version: u32) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
+        .join("versions")
+        .join(format!("v{version}")))
+}
+
+pub fn get_config_link_state_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<VersionConfigLinkState, String> {
+    let root = version_root_dir(app, version)?;
+    if !root.exists() {
+        return Ok(VersionConfigLinkState {
+            version,
+            is_installed: false,
+            is_linked: false,
+        });
+    }
+
+    let shared = shared_config_dir(app)?;
+    let shared_canon = std::fs::canonicalize(&shared).unwrap_or(shared);
+    let cfg = bepinex_config_dir_for_version_root(&root);
+    let is_linked = is_config_linked_to_shared(&cfg, &shared_canon);
+
+    Ok(VersionConfigLinkState {
+        version,
+        is_installed: true,
+        is_linked,
+    })
+}
+
+pub fn link_config_for_version(app: &tauri::AppHandle, version: u32) -> Result<VersionConfigLinkState, String> {
+    let root = version_root_dir(app, version)?;
+    if !root.exists() {
+        return Err(format!("version folder not found: {}", root.to_string_lossy()));
+    }
+    let _ = ensure_config_junction(app, &root)?;
+    get_config_link_state_for_version(app, version)
+}
+
+pub fn unlink_config_for_version(app: &tauri::AppHandle, version: u32) -> Result<VersionConfigLinkState, String> {
+    let root = version_root_dir(app, version)?;
+    if !root.exists() {
+        return Err(format!("version folder not found: {}", root.to_string_lossy()));
+    }
+
+    let shared = shared_config_dir(app)?;
+    std::fs::create_dir_all(&shared).map_err(|e| e.to_string())?;
+    let shared_canon = std::fs::canonicalize(&shared).unwrap_or(shared.clone());
+
+    let cfg = bepinex_config_dir_for_version_root(&root);
+    if !is_config_linked_to_shared(&cfg, &shared_canon) {
+        return get_config_link_state_for_version(app, version);
+    }
+
+    // Remove the link itself, then materialize a real directory and copy shared into it (add-only).
+    if cfg.is_dir() && is_reparse_point(&cfg)? {
+        remove_dir_link(&cfg)?;
+    } else if cfg.exists() {
+        std::fs::remove_dir_all(&cfg).map_err(|e| e.to_string())?;
+    }
+    std::fs::create_dir_all(&cfg).map_err(|e| e.to_string())?;
+    let _ = copy_dir_add_only(&shared, &cfg);
+
+    get_config_link_state_for_version(app, version)
+}
+
+pub fn link_config_for_all_versions(app: &tauri::AppHandle) -> Result<u32, String> {
+    let shared = shared_config_dir(app)?;
+    std::fs::create_dir_all(&shared).map_err(|e| e.to_string())?;
+    let shared_canon = std::fs::canonicalize(&shared).unwrap_or(shared);
+
+    let versions = installed_version_dirs(app)?;
+    let mut changed: u32 = 0;
+
+    for (_, root) in versions {
+        let cfg = bepinex_config_dir_for_version_root(&root);
+        if is_config_linked_to_shared(&cfg, &shared_canon) {
+            continue;
+        }
+        let _ = ensure_config_junction(app, &root)?;
+        changed = changed.saturating_add(1);
+    }
+
+    Ok(changed)
+}
+
+pub fn unlink_config_for_all_versions(app: &tauri::AppHandle) -> Result<u32, String> {
+    let shared = shared_config_dir(app)?;
+    std::fs::create_dir_all(&shared).map_err(|e| e.to_string())?;
+    let shared_canon = std::fs::canonicalize(&shared).unwrap_or(shared.clone());
+
+    let versions = installed_version_dirs(app)?;
+    let mut changed: u32 = 0;
+
+    for (_, root) in versions {
+        let cfg = bepinex_config_dir_for_version_root(&root);
+        if !is_config_linked_to_shared(&cfg, &shared_canon) {
+            continue;
+        }
+
+        // Should be a junction/symlink; remove the link itself, then materialize a real directory.
+        if cfg.is_dir() && is_reparse_point(&cfg)? {
+            remove_dir_link(&cfg)?;
+        } else if cfg.exists() {
+            // Fallback: try best-effort cleanup without deleting shared targets.
+            // This should be rare; we only get here if the OS reports a non-reparse dir
+            // but canonicalize still resolves to shared (unexpected).
+            std::fs::remove_dir_all(&cfg).map_err(|e| e.to_string())?;
+        }
+
+        std::fs::create_dir_all(&cfg).map_err(|e| e.to_string())?;
+        // Copy current shared config into the now-local config folder (add-only).
+        let _ = copy_dir_add_only(&shared, &cfg);
+        changed = changed.saturating_add(1);
+    }
+
+    Ok(changed)
+}
+
 /// Download default config if shared config directory is empty or missing.
 /// This is called on app startup to ensure config files exist.
 pub async fn ensure_default_config(app: tauri::AppHandle) -> Result<(), String> {
