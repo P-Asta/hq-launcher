@@ -70,6 +70,159 @@ fn version_config_dir(app: &tauri::AppHandle, version: u32) -> Result<std::path:
     Ok(version_dir(app, version)?.join("BepInEx").join("config"))
 }
 
+fn copy_dir_add_only(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    if src == dst {
+        return Ok(());
+    }
+    if let (Ok(a), Ok(b)) = (std::fs::canonicalize(src), std::fs::canonicalize(dst)) {
+        if a == b {
+            return Ok(());
+        }
+    }
+
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        let ty = entry.file_type().map_err(|e| e.to_string())?;
+        if ty.is_dir() {
+            copy_dir_add_only(&from, &to)?;
+            continue;
+        }
+        if ty.is_file() {
+            if to.exists() {
+                continue;
+            }
+            if let Some(parent) = to.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            std::fs::copy(&from, &to).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn is_reparse_point(path: &std::path::Path) -> Result<bool, String> {
+    use std::os::windows::fs::MetadataExt;
+    let md = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    Ok((md.file_attributes() & 0x400) != 0) // FILE_ATTRIBUTE_REPARSE_POINT
+}
+
+#[cfg(not(windows))]
+fn is_reparse_point(path: &std::path::Path) -> Result<bool, String> {
+    let md = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    Ok(md.file_type().is_symlink())
+}
+
+#[cfg(windows)]
+fn remove_dir_link(path: &std::path::Path) -> Result<(), String> {
+    std::fs::remove_dir(path).map_err(|e| e.to_string())
+}
+
+#[cfg(not(windows))]
+fn remove_dir_link(path: &std::path::Path) -> Result<(), String> {
+    std::fs::remove_file(path).map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn create_dir_junction(link: &std::path::Path, target: &std::path::Path) -> Result<(), String> {
+    let link_s = link.to_string_lossy().to_string();
+    let target_s = target.to_string_lossy().to_string();
+
+    let out = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J", &link_s, &target_s])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if !out.status.success() {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("mklink /J failed: {stdout}{stderr}"));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn create_dir_junction(link: &std::path::Path, target: &std::path::Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        if let Err(e) = std::os::unix::fs::symlink(target, link) {
+            log::warn!(
+                "Failed to create symlink {} -> {} ({}); falling back to directory",
+                link.display(),
+                target.display(),
+                e
+            );
+            std::fs::create_dir_all(link).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = target;
+        std::fs::create_dir_all(link).map_err(|e| e.to_string())
+    }
+}
+
+fn ensure_bepinex_next_to_exe(version_root: &std::path::Path, exe_dir: &std::path::Path) -> Result<(), String> {
+    // If the exe is already at the version root, BepInExPack layout matches and nothing to do.
+    if let (Ok(a), Ok(b)) = (std::fs::canonicalize(version_root), std::fs::canonicalize(exe_dir)) {
+        if a == b {
+            return Ok(());
+        }
+    }
+
+    let src_bepinex = version_root.join("BepInEx");
+    if !src_bepinex.exists() {
+        return Err(format!(
+            "BepInEx folder not found under {} (BepInExPack may be missing).",
+            version_root.to_string_lossy()
+        ));
+    }
+
+    // Ensure the loader files are next to the actual exe directory.
+    for file_name in ["winhttp.dll", "doorstop_config.ini"] {
+        let src = version_root.join(file_name);
+        let dst = exe_dir.join(file_name);
+        if dst.exists() {
+            continue;
+        }
+        if !src.exists() {
+            return Err(format!(
+                "{file_name} not found under {} (BepInExPack may be missing).",
+                version_root.to_string_lossy()
+            ));
+        }
+        let _ = std::fs::copy(&src, &dst).map_err(|e| e.to_string())?;
+    }
+
+    // Ensure exe_dir/BepInEx exists and points to the real one.
+    let dst_bepinex = exe_dir.join("BepInEx");
+    if !dst_bepinex.exists() {
+        create_dir_junction(&dst_bepinex, &src_bepinex)?;
+        return Ok(());
+    }
+
+    // If it's a link, verify it points to the right place; if not, recreate.
+    if dst_bepinex.is_dir() && is_reparse_point(&dst_bepinex)? {
+        if let (Ok(a), Ok(b)) = (std::fs::canonicalize(&dst_bepinex), std::fs::canonicalize(&src_bepinex)) {
+            if a == b {
+                return Ok(());
+            }
+        }
+        let _ = remove_dir_link(&dst_bepinex);
+        create_dir_junction(&dst_bepinex, &src_bepinex)?;
+        return Ok(());
+    }
+
+    // If it's a real directory, copy add-only so we don't destroy any local files.
+    copy_dir_add_only(&src_bepinex, &dst_bepinex)?;
+    Ok(())
+}
+
 fn find_file_named(
     root: &std::path::Path,
     target_name: &str,
@@ -889,6 +1042,10 @@ fn launch_game(
         .parent()
         .ok_or_else(|| "invalid exe path".to_string())?;
 
+    // Auto-fix: if the exe lives in a nested folder, ensure BepInExPack loader files
+    // exist next to the actual exe folder (otherwise BepInEx won't start).
+    ensure_bepinex_next_to_exe(&dir, exe_dir)?;
+
     // If already running, return an error.
     {
         let mut guard = state
@@ -995,6 +1152,9 @@ async fn launch_game_practice(
     let exe_dir = exe_path
         .parent()
         .ok_or_else(|| "invalid exe path".to_string())?;
+
+    // Auto-fix: ensure BepInExPack loader files exist next to exe folder.
+    ensure_bepinex_next_to_exe(&dir, exe_dir)?;
 
     // If already running, return an error.
     {

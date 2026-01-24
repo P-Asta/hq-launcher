@@ -1,7 +1,7 @@
 ## Version (YYYY-MM-DD)
 - Content
 
-## 1.3.3 (2026-01-24)
+## 1.3.4 (2026-01-24)
 - Add link/unlink config folder
 
 ## 1.3.2 (2026-01-24)
