@@ -1,6 +1,9 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.3.6 (2026-01-26)
+- Change Logo
+
 ## 1.3.5 (2026-01-25)
 - Fix python using user path instead of system path
 - Change logo

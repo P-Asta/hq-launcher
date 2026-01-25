@@ -198,7 +198,7 @@ export default function Titlebar({ ...props }) {
             >
                 {/* Left side - Menu items */}
                 <div className="flex items-center gap-1">
-                    <img src="/icon.svg" alt="logo" className='ml-2 w-4 h-4' />
+                    <img src="/icon.svg" alt="logo" className='ml-2 w-6 h-6' />
                     <TitlebarMenu 
                         name="File" 
                         items={[
