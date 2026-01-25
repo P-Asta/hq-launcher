@@ -1,0 +1,1 @@
+./hq-launcher_1.3.6_amd64.AppImage --appimage-extract && rm hq-launcher_1.3.6_amd64.AppImage squashfs-root/usr/lib/libwayland-client.so.0 && ./appimagetool-x86_64.AppImage squashfs-root/ hq-launcher_1.3.6_amd64_patched.AppImage && rm -r squashfs-root
