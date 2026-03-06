@@ -1054,6 +1054,8 @@ async fn launch_game_practice(
         cmd.env("STEAM_COMPAT_DATA_PATH", &compat_data_path);
         cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_path);
         cmd.env("WINEDLLOVERRIDES", "winhttp=n,b");
+        cmd.env_remove("PYTHONPATH"); 
+        cmd.env_remove("PYTHONHOME");
         println!("{:?}", cmd);
         cmd
     };
