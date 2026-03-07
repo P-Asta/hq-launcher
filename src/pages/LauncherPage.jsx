@@ -1262,14 +1262,14 @@ export default function LauncherPage({
       },
       {
         value: "wesley",
-        label: "Wesley's Run ʙᴇᴛᴀ",
+        label: "Wesley's Run",
         preset: "wesley",
         practice: false,
         title: "Wesley preset: installs Wesley-tagged mods (v69+)",
       },
       {
         value: "wesley_smhq",
-        label: "Wesley's SMHQ ʙᴇᴛᴀ",
+        label: "Wesley's SMHQ",
         preset: "wesley_smhq",
         practice: false,
         title:
@@ -1277,7 +1277,7 @@ export default function LauncherPage({
       },
       {
         value: "wesley_practice",
-        label: "Wesley's Practice ʙᴇᴛᴀ",
+        label: "Wesley's Practice",
         preset: "wesley",
         practice: true,
         title:

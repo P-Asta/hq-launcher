@@ -191,17 +191,27 @@ async fn disable_irrelevant_tagged_mods_for_run(
     app: &tauri::AppHandle,
     version: u32,
     active_tags: &[String],
+    protected_ids: &[(String, String)],
 ) -> Result<(), String> {
     let client = reqwest::Client::new();
     let (_remote_manifest_version, mods_cfg, _chain_config, _manifests) =
         ModsConfig::fetch_manifest(&client).await?;
 
     let active_lower: Vec<String> = active_tags.iter().map(|t| t.to_lowercase()).collect();
+    let protected: std::collections::HashSet<String> = protected_ids
+        .iter()
+        .map(|(d, n)| format!("{}::{}", d.to_lowercase(), n.to_lowercase()))
+        .collect();
     let plugins = plugins_dir(app, version)?;
     let patchers = patchers_dir(app, version)?;
 
     for m in mods_cfg.mods {
         if m.tags.is_empty() {
+            continue;
+        }
+        // Never disable mods we explicitly prepared (e.g. practice mods) even if their manifest entry is tagged.
+        let id = format!("{}::{}", m.dev.to_lowercase(), m.name.to_lowercase());
+        if protected.contains(&id) {
             continue;
         }
         let matches_active = m
@@ -1247,7 +1257,7 @@ async fn prepare_practice_mods_for_version(
     app: &tauri::AppHandle,
     version: u32,
     cancel: Option<Arc<AtomicBool>>,
-) -> Result<(), String> {
+) -> Result<Vec<(String, String)>, String> {
     let game_root = version_dir(app, version)?;
     if !game_root.exists() {
         return Err(format!(
@@ -1261,6 +1271,10 @@ async fn prepare_practice_mods_for_version(
         .iter()
         .cloned()
         .filter(|m| m.is_compatible(version))
+        .collect();
+    let practice_ids: Vec<(String, String)> = practice_enabled
+        .iter()
+        .map(|m| (m.dev.clone(), m.name.clone()))
         .collect();
 
     // Emit progress so the UI can show work (practice installs can be slow).
@@ -1386,7 +1400,7 @@ async fn prepare_practice_mods_for_version(
         },
     );
 
-    Ok(())
+    Ok(practice_ids)
 }
 
 #[derive(Default)]
@@ -1913,7 +1927,7 @@ async fn launch_game_practice(
     }
 
     // Practice run: install + enable practice mods (compatible with this game version).
-    prepare_practice_mods_for_version(&app, version, None).await?;
+    let _ = prepare_practice_mods_for_version(&app, version, None).await?;
 
     // Ensure disabled mods are applied for this version before launch.
     let _ = apply_disabled_mods_for_version(&app, version);
@@ -1999,7 +2013,7 @@ async fn launch_game_preset(
 
     if practice {
         // Practice run: install + enable practice mods (compatible with this game version).
-        prepare_practice_mods_for_version(&app, version, None).await?;
+        let _ = prepare_practice_mods_for_version(&app, version, None).await?;
     }
 
     // Install preset-tagged mods additively (no overwrite).
@@ -2064,7 +2078,7 @@ async fn launch_game_preset(
 
     // Runtime-only tag gating: disable tagged mods not relevant to this run.
     // (No disablemod.json writes; next run will re-evaluate.)
-    let _ = disable_irrelevant_tagged_mods_for_run(&app, version, &tags).await;
+    let _ = disable_irrelevant_tagged_mods_for_run(&app, version, &tags, &[]).await;
 
     #[cfg(target_os = "windows")]
     let mut command = std::process::Command::new(&exe_path);
@@ -2149,12 +2163,13 @@ async fn prepare_preset_for_version(
         let _ = ensure_wesley_moonscripts_cfg(app, version);
     }
 
-    if practice {
-        prepare_practice_mods_for_version(app, version, Some(cancel.clone())).await?;
+    let practice_ids = if practice {
+        prepare_practice_mods_for_version(app, version, Some(cancel.clone())).await?
     } else {
         // Selecting a non-practice run should disable practice mods now (not at launch).
         ensure_practice_mods_disabled_for_version(app, version)?;
-    }
+        vec![]
+    };
 
     if cancel.load(Ordering::Relaxed) {
         return Err("Cancelled".to_string());
@@ -2176,7 +2191,7 @@ async fn prepare_preset_for_version(
     let _ = sync_hqol_with_disablemod_for_version(app, version);
 
     // Runtime-only tag gating: disable tagged mods not relevant to this selected run.
-    let _ = disable_irrelevant_tagged_mods_for_run(app, version, &tags).await;
+    let _ = disable_irrelevant_tagged_mods_for_run(app, version, &tags, &practice_ids).await;
 
     Ok(true)
 }

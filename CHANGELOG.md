@@ -1,6 +1,9 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.4.7 (2026-03-07)
+- Practice mod bug fix
+
 ## 1.4.6 (2026-03-07)
 - Wesley's
   - config fix
