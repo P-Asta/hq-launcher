@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 6,
 
   "chain_config": [
     ["OreoM.ShipLootCruiser.cfg", "tinyhoot.ShipLoot.cfg"],
@@ -505,7 +505,7 @@
       "dev": "Sniper1_1",
       "tags": ["Wesley"],
       "enabled": false,
-      "low_cap": 69,
+      "low_cap": 73,
       "high_cap": null,
       "version_config": {
         "73": "0.0.0"
@@ -516,7 +516,7 @@
       "dev": "Magic_Wesley",
       "tags": ["Wesley"],
       "enabled": false,
-      "low_cap": 69,
+      "low_cap": 73,
       "high_cap": null,
       "version_config": {
         "73": "0.0.0"
@@ -527,7 +527,7 @@
       "dev": "Magic_Wesley",
       "tags": ["Wesley"],
       "enabled": false,
-      "low_cap": 69,
+      "low_cap": 73,
       "high_cap": null,
       "version_config": {
         "73": "0.0.0"
@@ -538,7 +538,7 @@
       "dev": "mrov",
       "tags": ["Wesley"],
       "enabled": false,
-      "low_cap": 69,
+      "low_cap": 73,
       "high_cap": null,
       "version_config": {
         "73": "0.0.0"
@@ -549,7 +549,7 @@
       "dev": "mrov",
       "tags": ["Wesley"],
       "enabled": false,
-      "low_cap": 69,
+      "low_cap": 73,
       "high_cap": null,
       "version_config": {
         "73": "0.0.0"

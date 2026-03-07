@@ -1,10 +1,10 @@
 ## Version (YYYY-MM-DD)
 - Content
 
-## 1.4.0 (2026-03-07)
+## 1.4.5 (2026-03-07)
 - Support MODDED HQ
   - Brutal
-  - Wesley's
+  - Wesley's ʙᴇᴛᴀ
 - fix issue with practice mode for linux
 - change some UX
   - download UI
