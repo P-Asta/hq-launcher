@@ -271,6 +271,80 @@ fn version_config_dir(app: &tauri::AppHandle, version: u32) -> Result<std::path:
     Ok(version_dir(app, version)?.join("BepInEx").join("config"))
 }
 
+fn ensure_wesley_moonscripts_cfg(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
+    // Only meaningful for the Wesley preset (v69+). Never overwrite existing configs.
+    if version < 69 {
+        return Ok(());
+    }
+
+    let cfg_dir = version_config_dir(app, version)?;
+    std::fs::create_dir_all(&cfg_dir).map_err(|e| e.to_string())?;
+
+    let cfg_path = cfg_dir.join("JacobG5.WesleyMoonScripts.cfg");
+    if cfg_path.exists() {
+        // If the cfg already exists, ensure LockMoons isn't left enabled.
+        // Preserve everything else in the file.
+        let bytes = std::fs::read(&cfg_path).map_err(|e| e.to_string())?;
+        let text = String::from_utf8_lossy(&bytes);
+
+        let mut changed = false;
+        let mut out = String::with_capacity(text.len());
+
+        for seg in text.split_inclusive(['\n', '\r']) {
+            // Preserve original newline sequence; only edit the assignment line.
+            let (line, nl) = if seg.ends_with("\r\n") {
+                (seg.trim_end_matches("\r\n"), "\r\n")
+            } else if seg.ends_with('\n') {
+                (seg.trim_end_matches('\n'), "\n")
+            } else if seg.ends_with('\r') {
+                (seg.trim_end_matches('\r'), "\r")
+            } else {
+                (seg, "")
+            };
+
+            let trimmed = line.trim_start();
+            let indent_len = line.len().saturating_sub(trimmed.len());
+            let indent = &line[..indent_len];
+
+            // Only touch `LockMoons = true` (case-insensitive for value).
+            if trimmed.starts_with("LockMoons") {
+                if let Some(eq_idx) = trimmed.find('=') {
+                    let (left, right_all) = trimmed.split_at(eq_idx);
+                    let right_all = right_all.trim_start_matches('=');
+
+                    // Keep inline comments if any.
+                    let (right, comment) = match right_all.find('#') {
+                        Some(i) => (&right_all[..i], &right_all[i..]),
+                        None => (right_all, ""),
+                    };
+
+                    if left.trim() == "LockMoons" && right.trim().eq_ignore_ascii_case("true") {
+                        out.push_str(indent);
+                        out.push_str("LockMoons = false");
+                        out.push_str(comment);
+                        out.push_str(nl);
+                        changed = true;
+                        continue;
+                    }
+                }
+            }
+
+            out.push_str(line);
+            out.push_str(nl);
+        }
+
+        if changed {
+            std::fs::write(&cfg_path, out).map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+
+    let content = "## Settings file was created by plugin WesleyMoonScripts v1.1.6\n## Plugin GUID: JacobG5.WesleyMoonScripts\n\n[Core]\n\n## Locks moons that have progression integration set up to enable playing the campaign.\n# Setting type: Boolean\n# Default value: true\nLockMoons = false\n\n";
+
+    std::fs::write(&cfg_path, content).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn find_file_named(
     root: &std::path::Path,
     target_name: &str,
@@ -1467,6 +1541,11 @@ async fn prepare_preset_for_version(
 
     if cancel.load(Ordering::Relaxed) {
         return Err("Cancelled".to_string());
+    }
+
+    // Wesley preset: ensure default cfg exists (do not overwrite user edits).
+    if tags.iter().any(|t| t.eq_ignore_ascii_case("wesley")) {
+        let _ = ensure_wesley_moonscripts_cfg(app, version);
     }
 
     if practice {

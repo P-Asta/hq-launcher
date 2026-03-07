@@ -536,6 +536,9 @@ export default function LauncherPage({
         const extractedFiles = Number(p?.extracted_files ?? 0);
         const stepProgress = Number(p?.step_progress ?? 0);
         const overall = Number(p?.overall_percent ?? 0);
+        const stepName = String(p?.step_name ?? "");
+        const isSetupStep =
+          stepName === "Practice Mods" || stepName === "Preset Mods";
         const didFinish =
           (Number.isFinite(totalFiles) &&
             totalFiles > 0 &&
@@ -545,7 +548,7 @@ export default function LauncherPage({
           (Number.isFinite(overall) && overall >= 100);
 
         // Practice install modal: only show when practice actually installs missing plugins.
-        if (p?.step_name === "Practice Mods") {
+        if (stepName === "Practice Mods") {
           setPracticeTask({
             status: didFinish ? "done" : "working",
             ...p,
@@ -556,7 +559,7 @@ export default function LauncherPage({
           }
         }
         // Preset install modal (tagged mods like Brutal/Wesley).
-        if (p?.step_name === "Preset Mods") {
+        if (stepName === "Preset Mods") {
           setPresetTask({
             status: didFinish ? "done" : "working",
             ...p,
@@ -566,12 +569,16 @@ export default function LauncherPage({
             setPresetPrompt({ open: true });
           }
         }
-        setTask((t) => ({
-          ...t,
-          status: "working",
-          ...p,
-          error: null,
-        }));
+        // IMPORTANT: Keep preset/practice setup progress OUT of the download prompt state.
+        // Otherwise the "Download version" modal can get stuck showing setup progress.
+        if (!isSetupStep) {
+          setTask((t) => ({
+            ...t,
+            status: "working",
+            ...p,
+            error: null,
+          }));
+        }
       });
       unlistenFinished = await listen("download://finished", (event) => {
         setTask((t) => ({
@@ -811,7 +818,7 @@ export default function LauncherPage({
       // If user already selected a preset run mode, prepare its mods right after download.
       // This keeps "Start Run" fast and avoids doing installs at launch time.
       try {
-        await prepareRunMode(runMode, v);
+        await prepareRunMode(runMode, v, { assumeInstalled: true });
       } catch {}
     } catch (e) {
       if (
@@ -1255,14 +1262,14 @@ export default function LauncherPage({
       },
       {
         value: "wesley",
-        label: "Wesley's Run",
+        label: "Wesley's Run ʙᴇᴛᴀ",
         preset: "wesley",
         practice: false,
         title: "Wesley preset: installs Wesley-tagged mods (v69+)",
       },
       {
         value: "wesley_smhq",
-        label: "Wesley's SMHQ",
+        label: "Wesley's SMHQ ʙᴇᴛᴀ",
         preset: "wesley_smhq",
         practice: false,
         title:
@@ -1270,7 +1277,7 @@ export default function LauncherPage({
       },
       {
         value: "wesley_practice",
-        label: "Wesley's Practice",
+        label: "Wesley's Practice ʙᴇᴛᴀ",
         preset: "wesley",
         practice: true,
         title:
@@ -1290,9 +1297,9 @@ export default function LauncherPage({
 
   const latestPrepareKeyRef = useRef("");
 
-  async function prepareRunMode(nextRunMode, nextVersion) {
+  async function prepareRunMode(nextRunMode, nextVersion, opts = {}) {
     if (gameStatus.running) return;
-    if (!isInstalled(nextVersion)) return;
+    if (!opts?.assumeInstalled && !isInstalled(nextVersion)) return;
     const opt =
       RUN_OPTIONS.find((o) => o.value === nextRunMode) ??
       RUN_OPTIONS.find((o) => o.value === "hq") ??
