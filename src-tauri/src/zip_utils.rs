@@ -1,6 +1,8 @@
 use std::fs::File;
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use zip::ZipArchive;
 
 fn strip_prefix_components<'a>(
@@ -450,6 +452,7 @@ pub fn extract_thunderstore_into_bepinex_with_progress<F>(
     zip_path: &Path,
     game_root: &Path,
     folder_name: &str,
+    cancel: Option<&AtomicBool>,
     mut on_progress: F,
 ) -> Result<(), String>
 where
@@ -499,6 +502,10 @@ where
         None
     };
 
+    if cancel.is_some_and(|c| c.load(AtomicOrdering::Relaxed)) {
+        return Err("Cancelled".to_string());
+    }
+
     // Reset per-mod plugin folder always (install/update semantics).
     let plugin_dest_dir = plugins_root.join(folder_name);
     let _ = std::fs::remove_dir_all(&plugin_dest_dir);
@@ -507,6 +514,9 @@ where
     // Reset per-mod patchers folder only if zip contains patchers payload.
     let patcher_dest_dir = patchers_root.join(folder_name);
     if has_patchers_payload {
+        if cancel.is_some_and(|c| c.load(AtomicOrdering::Relaxed)) {
+            return Err("Cancelled".to_string());
+        }
         let _ = std::fs::remove_dir_all(&patcher_dest_dir);
         let _ = std::fs::create_dir_all(&patcher_dest_dir);
     }
@@ -514,6 +524,9 @@ where
     let folder_lower = folder_name.to_lowercase();
 
     for i in 0..archive.len() {
+        if cancel.is_some_and(|c| c.load(AtomicOrdering::Relaxed)) {
+            return Err("Cancelled".to_string());
+        }
         let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
         let entry_name = Some(entry.name().to_string());
 
@@ -606,7 +619,17 @@ where
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let mut out_file = File::create(&out_path).map_err(|e| e.to_string())?;
-        std::io::copy(&mut entry, &mut out_file).map_err(|e| e.to_string())?;
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            if cancel.is_some_and(|c| c.load(AtomicOrdering::Relaxed)) {
+                return Err("Cancelled".to_string());
+            }
+            let n = entry.read(&mut buf).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            out_file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        }
 
         processed = processed.saturating_add(1);
         on_progress(processed, total_entries, entry_name);

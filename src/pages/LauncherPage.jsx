@@ -1296,6 +1296,8 @@ export default function LauncherPage({
   }, [RUN_OPTIONS, runMode]);
 
   const latestPrepareKeyRef = useRef("");
+  const preparePrevRef = useRef(null); // { key, prevRunMode, prevVersion }
+  const explicitCancelKeyRef = useRef(""); // only set when user clicks Cancel
 
   async function prepareRunMode(nextRunMode, nextVersion, opts = {}) {
     if (gameStatus.running) return;
@@ -1307,6 +1309,18 @@ export default function LauncherPage({
 
     const key = `${nextRunMode}:${nextVersion}`;
     latestPrepareKeyRef.current = key;
+    if (
+      typeof opts?.prevRunMode === "string" ||
+      typeof opts?.prevVersion === "number"
+    ) {
+      preparePrevRef.current = {
+        key,
+        prevRunMode:
+          typeof opts?.prevRunMode === "string" ? opts.prevRunMode : runMode,
+        prevVersion:
+          typeof opts?.prevVersion === "number" ? opts.prevVersion : selectedVersion,
+      };
+    }
 
     // Reset modal state; the modals open only if backend emits progress.
     setPresetPrompt({ open: false });
@@ -1334,6 +1348,19 @@ export default function LauncherPage({
 
       const msg = e?.message ?? String(e);
       if (String(msg).toLowerCase().includes("cancelled")) {
+        // If user explicitly cancelled this prepare, revert the select menus.
+        if (explicitCancelKeyRef.current === key) {
+          explicitCancelKeyRef.current = "";
+          const prev = preparePrevRef.current;
+          if (prev && prev.key === key) {
+            // Revert run category + version together (whichever changed).
+            setRunMode(prev.prevRunMode);
+            setSelectedVersion(prev.prevVersion);
+            if (isInstalled(prev.prevVersion)) {
+              invoke("apply_disabled_mods", { version: prev.prevVersion }).catch(() => {});
+            }
+          }
+        }
         setPresetPrompt({ open: false });
         setPracticePrompt({ open: false });
         return;
@@ -1419,6 +1446,8 @@ export default function LauncherPage({
             <Select
               value={runMode}
               onValueChange={async (v) => {
+                const prevRun = runMode;
+                const prevVer = selectedVersion;
                 const minV = minRequiredForRunMode(v);
                 const effectiveV =
                   typeof minV === "number" ? Math.max(Number(selectedVersion), minV) : selectedVersion;
@@ -1435,7 +1464,10 @@ export default function LauncherPage({
                     return;
                   }
                 }
-                await prepareRunMode(v, effectiveV);
+                await prepareRunMode(v, effectiveV, {
+                  prevRunMode: prevRun,
+                  prevVersion: prevVer,
+                });
               }}
             >
               <SelectTrigger
@@ -1483,11 +1515,16 @@ export default function LauncherPage({
               onValueChange={async (v) => {
                 const nextV = Number(v);
                 if (isInstalled(nextV)) {
+                  const prevRun = runMode;
+                  const prevVer = selectedVersion;
                   setSelectedVersion(nextV);
                   try {
                     await invoke("apply_disabled_mods", { version: nextV });
                   } catch {}
-                  await prepareRunMode(runMode, nextV);
+                  await prepareRunMode(runMode, nextV, {
+                    prevRunMode: prevRun,
+                    prevVersion: prevVer,
+                  });
                 } else {
                   openDownloadPrompt(nextV);
                 }
@@ -2483,6 +2520,7 @@ export default function LauncherPage({
                 onClick={async () => {
                   const st = practiceTask?.status ?? "working";
                   if (st === "working") {
+                    explicitCancelKeyRef.current = latestPrepareKeyRef.current;
                     const v = Number(practiceTask?.version ?? selectedVersion);
                     if (!Number.isFinite(v)) return;
                     try {
@@ -2572,6 +2610,7 @@ export default function LauncherPage({
                 onClick={async () => {
                   const st = presetTask?.status ?? "working";
                   if (st === "working") {
+                    explicitCancelKeyRef.current = latestPrepareKeyRef.current;
                     const v = Number(presetTask?.version ?? selectedVersion);
                     if (!Number.isFinite(v)) return;
                     try {

@@ -1,10 +1,13 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+
+use futures_util::StreamExt;
 
 use crate::bepinex_cfg::read_manifest;
 use crate::mod_config::{ModEntry, ModsConfig};
@@ -290,18 +293,28 @@ where
             Some(format!("Downloading {mod_label}")),
         );
         log::info!("Downloading {mod_label} from {download_url}");
-        let bytes = client
+        let resp = client
             .get(&download_url)
             .send()
             .await
             .map_err(|e| e.to_string())?
             .error_for_status()
-            .map_err(|e| e.to_string())?
-            .bytes()
-            .await
             .map_err(|e| e.to_string())?;
 
-        std::fs::write(&zip_path, &bytes).map_err(|e| e.to_string())?;
+        let mut out = std::fs::File::create(&zip_path).map_err(|e| e.to_string())?;
+        let mut stream = resp.bytes_stream();
+        while let Some(item) = stream.next().await {
+            if cancel
+                .as_ref()
+                .is_some_and(|c| c.load(AtomicOrdering::Relaxed))
+            {
+                drop(out);
+                let _ = std::fs::remove_file(&zip_path);
+                return Err("Cancelled".to_string());
+            }
+            let chunk = item.map_err(|e| e.to_string())?;
+            out.write_all(&chunk).map_err(|e| e.to_string())?;
+        }
 
         // Extract into correct BepInEx locations (plugins/patchers), then delete the zip.
         if cancel
@@ -322,6 +335,7 @@ where
             &zip_path,
             game_root,
             &folder_name,
+            cancel.as_deref(),
             |_d, _t, _n| {},
         ) {
             installed = installed.saturating_add(1);
@@ -663,6 +677,7 @@ where
             &zip_path,
             game_root,
             &folder_name,
+            None,
             |_d, _t, _n| {},
         ) {
             installed = installed.saturating_add(1);

@@ -1,6 +1,11 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.4.6 (2026-03-07)
+- Wesley's
+  - config fix
+  - Beta -> Stable
+
 ## 1.4.5 (2026-03-07)
 - Support MODDED HQ
   - Brutal

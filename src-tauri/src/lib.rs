@@ -345,6 +345,606 @@ fn ensure_wesley_moonscripts_cfg(app: &tauri::AppHandle, version: u32) -> Result
     Ok(())
 }
 
+fn ensure_weather_registry_cfg(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
+    // Only meaningful for the Wesley preset (v69+). Never overwrite entire configs.
+    if version < 69 {
+        return Ok(());
+    }
+
+    let cfg_dir = version_config_dir(app, version)?;
+    std::fs::create_dir_all(&cfg_dir).map_err(|e| e.to_string())?;
+
+    let cfg_path = cfg_dir.join("mrov.WeatherRegistry.cfg");
+    let desired_first_day = "true";
+    let desired_algo = "Hybrid";
+
+    // If missing, create using the provided baseline.
+    if !cfg_path.exists() {
+        let content = r#"## Settings file was created by plugin WeatherRegistry v0.7.5
+## Plugin GUID: mrov.WeatherRegistry
+
+[|General]
+
+## Enable colored weathers on map screen
+# Setting type: Boolean
+# Default value: true
+Colored Weathers = true
+
+## Display planet videos on map screen
+# Setting type: Boolean
+# Default value: true
+Planet Videos = true
+
+## Show weather multipliers on map screen
+# Setting type: Boolean
+# Default value: false
+Show Weather Multipliers = false
+
+## Use Registry's scrap multipliers. Disable if you prefer to use other mod's multiplier settings.
+# Setting type: Boolean
+# Default value: true
+Scrap multipliers = true
+
+[|Logging]
+
+## Select which logs to show.
+# Setting type: LoggingType
+# Default value: Basic
+# Acceptable values: Basic, Debug, Developer
+Display Log Levels = Basic
+
+[|WeatherSelection]
+
+## Select the algorithm to use during weather selection.
+# Setting type: WeatherAlgorithm
+# Default value: Registry
+# Acceptable values: Registry, Vanilla, Hybrid
+Weather Selection Algorithm = Hybrid
+
+## If enabled, the first day will always have clear weather, on all planets, regardless of the selected algorithm.
+# Setting type: Boolean
+# Default value: false
+First Day Clear Weather = true
+
+[Modded Weather: Earthquakes]
+
+## The default weight of this weather
+# Setting type: Int32
+# Default value: 40
+# Acceptable value range: From 0 to 10000
+Default weight = 40
+
+## Multiplier for the amount of scrap spawned
+# Setting type: Single
+# Default value: 1.1
+# Acceptable value range: From 0 to 100
+Scrap amount multiplier = 1.1
+
+## Multiplier for the value of scrap spawned
+# Setting type: Single
+# Default value: 1
+# Acceptable value range: From 0 to 100
+Scrap value multiplier = 1
+
+## Whether to make the filter a whitelist (false is blacklist, true is whitelist)
+# Setting type: Boolean
+# Default value: false
+Filtering option = false
+
+## Semicolon-separated list of level names to filter (use `Filtering Option` config to select filter type)
+# Setting type: String
+# Default value: Company;Galetry;Calist;Berunah
+Level filter = Company;Galetry;Calist;Berunah
+
+## Semicolon-separated list of level weights
+# Setting type: String
+# Default value: MoonName@50
+Level weights = MoonName@50
+
+## Semicolon-separated list of weather-to-weather weights - if previous day was Earthquakes, next day should have weights:
+# Setting type: String
+# Default value: WeatherName@50
+WeatherToWeather weights = WeatherName@50
+
+[Modded Weather: Forsaken]
+
+## The default weight of this weather
+# Setting type: Int32
+# Default value: 30
+# Acceptable value range: From 0 to 10000
+Default weight = 30
+
+## Multiplier for the amount of scrap spawned
+# Setting type: Single
+# Default value: 1.2
+# Acceptable value range: From 0 to 100
+Scrap amount multiplier = 1.2
+
+## Multiplier for the value of scrap spawned
+# Setting type: Single
+# Default value: 1.2
+# Acceptable value range: From 0 to 100
+Scrap value multiplier = 1.2
+
+## Whether to make the filter a whitelist (false is blacklist, true is whitelist)
+# Setting type: Boolean
+# Default value: false
+Filtering option = false
+
+## Semicolon-separated list of level names to filter (use `Filtering Option` config to select filter type)
+# Setting type: String
+# Default value: Company;Galetry;Berunah;Calist;Repress;Cosmocos
+Level filter = Company;Galetry;Berunah;Calist;Repress;Cosmocos
+
+## Semicolon-separated list of level weights
+# Setting type: String
+# Default value: MoonName@20
+Level weights = MoonName@20
+
+## Semicolon-separated list of weather-to-weather weights - if previous day was Forsaken, next day should have weights:
+# Setting type: String
+# Default value: WeatherName@20
+WeatherToWeather weights = WeatherName@20
+
+[Modded Weather: Hallowed]
+
+## The default weight of this weather
+# Setting type: Int32
+# Default value: 8
+# Acceptable value range: From 0 to 10000
+Default weight = 8
+
+## Multiplier for the amount of scrap spawned
+# Setting type: Single
+# Default value: 1
+# Acceptable value range: From 0 to 100
+Scrap amount multiplier = 1
+
+## Multiplier for the value of scrap spawned
+# Setting type: Single
+# Default value: 1
+# Acceptable value range: From 0 to 100
+Scrap value multiplier = 1
+
+## Whether to make the filter a whitelist (false is blacklist, true is whitelist)
+# Setting type: Boolean
+# Default value: false
+Filtering option = false
+
+## Semicolon-separated list of level names to filter (use `Filtering Option` config to select filter type)
+# Setting type: String
+# Default value: Company;Galetry;Calist;Berunah;Asteroid-13;Thalasso;Roart;Repress;Cosmocos
+Level filter = Company;Galetry;Calist;Berunah;Asteroid-13;Thalasso;Roart;Repress;Cosmocos
+
+## Semicolon-separated list of level weights
+# Setting type: String
+# Default value: MoonName@8
+Level weights = MoonName@8
+
+## Semicolon-separated list of weather-to-weather weights - if previous day was Hallowed, next day should have weights:
+# Setting type: String
+# Default value: WeatherName@8
+WeatherToWeather weights = WeatherName@8
+
+[Modded Weather: Hurricane]
+
+## The default weight of this weather
+# Setting type: Int32
+# Default value: 80
+# Acceptable value range: From 0 to 10000
+Default weight = 80
+
+## Multiplier for the amount of scrap spawned
+# Setting type: Single
+# Default value: 1
+# Acceptable value range: From 0 to 100
+Scrap amount multiplier = 1
+
+## Multiplier for the value of scrap spawned
+# Setting type: Single
+# Default value: 1
+# Acceptable value range: From 0 to 100
+Scrap value multiplier = 1
+
+## Whether to make the filter a whitelist (false is blacklist, true is whitelist)
+# Setting type: Boolean
+# Default value: false
+Filtering option = false
+
+## Semicolon-separated list of level names to filter (use `Filtering Option` config to select filter type)
+# Setting type: String
+# Default value: Company;Galetry;Calist;Berunah;Asteroid-13,Roart;Repress;Cosmocos
+Level filter = Company;Galetry;Calist;Berunah;Asteroid-13,Roart;Repress;Cosmocos
+
+## Semicolon-separated list of level weights
+# Setting type: String
+# Default value: WeatherName@20
+Level weights = WeatherName@20
+
+## Semicolon-separated list of weather-to-weather weights - if previous day was Hurricane, next day should have weights:
+# Setting type: String
+# Default value: WeatherName@20
+WeatherToWeather weights = WeatherName@20
+
+[Vanilla Weather: DustClouds]
+
+## The default weight of this weather
+# Setting type: Int32
+# Default value: 100
+# Acceptable value range: From 0 to 10000
+Default weight = 100
+
+## Multiplier for the amount of scrap spawned
+# Setting type: Single
+# Default value: 1
+# Acceptable value range: From 0 to 100
+Scrap amount multiplier = 1
+
+## Multiplier for the value of scrap spawned
+# Setting type: Single
+# Default value: 1
+# Acceptable value range: From 0 to 100
+Scrap value multiplier = 1
+
+## Whether to make the filter a whitelist (false is blacklist, true is whitelist)
+# Setting type: Boolean
+# Default value: false
+Filtering option = false
+
+## Semicolon-separated list of level names to filter (use `Filtering Option` config to select filter type)
+# Setting type: String
+# Default value: Company;
+Level filter = Company;
+
+## Semicolon-separated list of level weights
+# Setting type: String
+# Default value: MoonName@50;
+Level weights = MoonName@50;
+
+## Semicolon-separated list of weather-to-weather weights - if previous day was Dust Clouds, next day should have weights:
+# Setting type: String
+# Default value: WeatherName@50
+WeatherToWeather weights = WeatherName@50
+
+[Vanilla Weather: Eclipsed]
+
+## The default weight of this weather
+# Setting type: Int32
+# Default value: 100
+# Acceptable value range: From 0 to 10000
+Default weight = 100
+
+## Multiplier for the amount of scrap spawned
+# Setting type: Single
+# Default value: 1
+# Acceptable value range: From 0 to 100
+Scrap amount multiplier = 1
+
+## Multiplier for the value of scrap spawned
+# Setting type: Single
+# Default value: 1
+# Acceptable value range: From 0 to 100
+Scrap value multiplier = 1
+
+## Whether to make the filter a whitelist (false is blacklist, true is whitelist)
+# Setting type: Boolean
+# Default value: false
+Filtering option = false
+
+## Semicolon-separated list of level names to filter (use `Filtering Option` config to select filter type)
+# Setting type: String
+# Default value: Company;
+Level filter = Company;
+
+## Semicolon-separated list of level weights
+# Setting type: String
+# Default value: MoonName@50;
+Level weights = MoonName@50;
+
+## Semicolon-separated list of weather-to-weather weights - if previous day was Eclipsed, next day should have weights:
+# Setting type: String
+# Default value: None@300; Rainy@40; Stormy@16; Flooded@20; Foggy@60; Eclipsed@10;
+WeatherToWeather weights = None@300; Rainy@40; Stormy@16; Flooded@20; Foggy@60; Eclipsed@10;
+
+[Vanilla Weather: Flooded]
+
+## The default weight of this weather
+# Setting type: Int32
+# Default value: 100
+# Acceptable value range: From 0 to 10000
+Default weight = 100
+
+## Multiplier for the amount of scrap spawned
+# Setting type: Single
+# Default value: 1
+# Acceptable value range: From 0 to 100
+Scrap amount multiplier = 1
+
+## Multiplier for the value of scrap spawned
+# Setting type: Single
+# Default value: 1
+# Acceptable value range: From 0 to 100
+Scrap value multiplier = 1
+
+## Whether to make the filter a whitelist (false is blacklist, true is whitelist)
+# Setting type: Boolean
+# Default value: false
+Filtering option = false
+
+## Semicolon-separated list of level names to filter (use `Filtering Option` config to select filter type)
+# Setting type: String
+# Default value: Company;
+Level filter = Company;
+
+## Semicolon-separated list of level weights
+# Setting type: String
+# Default value: MoonName@50;
+Level weights = MoonName@50;
+
+## Semicolon-separated list of weather-to-weather weights - if previous day was Flooded, next day should have weights:
+# Setting type: String
+# Default value: None@160; Rainy@60; Stormy@50; Flooded@10; Foggy@60; Eclipsed@40;
+WeatherToWeather weights = None@160; Rainy@60; Stormy@50; Flooded@10; Foggy@60; Eclipsed@40;
+
+[Vanilla Weather: Foggy]
+
+## The default weight of this weather
+# Setting type: Int32
+# Default value: 100
+# Acceptable value range: From 0 to 10000
+Default weight = 100
+
+## Multiplier for the amount of scrap spawned
+# Setting type: Single
+# Default value: 1
+# Acceptable value range: From 0 to 100
+Scrap amount multiplier = 1
+
+## Multiplier for the value of scrap spawned
+# Setting type: Single
+# Default value: 1
+# Acceptable value range: From 0 to 100
+Scrap value multiplier = 1
+
+## Whether to make the filter a whitelist (false is blacklist, true is whitelist)
+# Setting type: Boolean
+# Default value: false
+Filtering option = false
+
+## Semicolon-separated list of level names to filter (use `Filtering Option` config to select filter type)
+# Setting type: String
+# Default value: Company;
+Level filter = Company;
+
+## Semicolon-separated list of level weights
+# Setting type: String
+# Default value: MoonName@50;
+Level weights = MoonName@50;
+
+## Semicolon-separated list of weather-to-weather weights - if previous day was Foggy, next day should have weights:
+# Setting type: String
+# Default value: None@200; Rainy@60; Stormy@50; Flooded@10; Foggy@30; Eclipsed@20;
+WeatherToWeather weights = None@200; Rainy@60; Stormy@50; Flooded@10; Foggy@30; Eclipsed@20;
+
+[Vanilla Weather: None]
+
+## The default weight of this weather
+# Setting type: Int32
+# Default value: 100
+# Acceptable value range: From 0 to 10000
+Default weight = 100
+
+## Multiplier for the amount of scrap spawned
+# Setting type: Single
+# Default value: 1
+# Acceptable value range: From 0 to 100
+Scrap amount multiplier = 1
+
+## Multiplier for the value of scrap spawned
+# Setting type: Single
+# Default value: 1
+# Acceptable value range: From 0 to 100
+Scrap value multiplier = 1
+
+## Whether to make the filter a whitelist (false is blacklist, true is whitelist)
+# Setting type: Boolean
+# Default value: false
+Filtering option = false
+
+## Semicolon-separated list of level names to filter (use `Filtering Option` config to select filter type)
+# Setting type: String
+# Default value: Company;
+Level filter = Company;
+
+## Semicolon-separated list of level weights
+# Setting type: String
+# Default value: MoonName@50;
+Level weights = MoonName@50;
+
+## Semicolon-separated list of weather-to-weather weights - if previous day was None, next day should have weights:
+# Setting type: String
+# Default value: None@160; Rainy@100; Stormy@70; Flooded@20; Foggy@40; Eclipsed@10;
+WeatherToWeather weights = None@160; Rainy@100; Stormy@70; Flooded@20; Foggy@40; Eclipsed@10;
+
+[Vanilla Weather: Rainy]
+
+## The default weight of this weather
+# Setting type: Int32
+# Default value: 100
+# Acceptable value range: From 0 to 10000
+Default weight = 100
+
+## Multiplier for the amount of scrap spawned
+# Setting type: Single
+# Default value: 1
+# Acceptable value range: From 0 to 100
+Scrap amount multiplier = 1
+
+## Multiplier for the value of scrap spawned
+# Setting type: Single
+# Default value: 1
+# Acceptable value range: From 0 to 100
+Scrap value multiplier = 1
+
+## Whether to make the filter a whitelist (false is blacklist, true is whitelist)
+# Setting type: Boolean
+# Default value: false
+Filtering option = false
+
+## Semicolon-separated list of level names to filter (use `Filtering Option` config to select filter type)
+# Setting type: String
+# Default value: Company;
+Level filter = Company;
+
+## Semicolon-separated list of level weights
+# Setting type: String
+# Default value: MoonName@50;
+Level weights = MoonName@50;
+
+## Semicolon-separated list of weather-to-weather weights - if previous day was Rainy, next day should have weights:
+# Setting type: String
+# Default value: None@100; Rainy@60; Stormy@40; Flooded@30; Foggy@50; Eclipsed@20;
+WeatherToWeather weights = None@100; Rainy@60; Stormy@40; Flooded@30; Foggy@50; Eclipsed@20;
+
+[Vanilla Weather: Stormy]
+
+## The default weight of this weather
+# Setting type: Int32
+# Default value: 100
+# Acceptable value range: From 0 to 10000
+Default weight = 100
+
+## Multiplier for the amount of scrap spawned
+# Setting type: Single
+# Default value: 1
+# Acceptable value range: From 0 to 100
+Scrap amount multiplier = 1
+
+## Multiplier for the value of scrap spawned
+# Setting type: Single
+# Default value: 1
+# Acceptable value range: From 0 to 100
+Scrap value multiplier = 1
+
+## Whether to make the filter a whitelist (false is blacklist, true is whitelist)
+# Setting type: Boolean
+# Default value: false
+Filtering option = false
+
+## Semicolon-separated list of level names to filter (use `Filtering Option` config to select filter type)
+# Setting type: String
+# Default value: Company;
+Level filter = Company;
+
+## Semicolon-separated list of level weights
+# Setting type: String
+# Default value: MoonName@50;
+Level weights = MoonName@50;
+
+## Semicolon-separated list of weather-to-weather weights - if previous day was Stormy, next day should have weights:
+# Setting type: String
+# Default value: None@160; Rainy@110; Stormy@10; Flooded@120; Foggy@20; Eclipsed@80;
+WeatherToWeather weights = None@160; Rainy@110; Stormy@10; Flooded@120; Foggy@20; Eclipsed@80;
+
+
+
+
+[|WeatherSelection]
+First Day Clear Weather = true
+Weather Selection Algorithm = Hybrid
+"#;
+
+        std::fs::write(&cfg_path, content).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    // If exists: enforce only these two keys (preserve everything else).
+    let bytes = std::fs::read(&cfg_path).map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&bytes);
+
+    let mut changed = false;
+    let mut saw_first_day = false;
+    let mut saw_algo = false;
+    let mut out = String::with_capacity(text.len());
+
+    for seg in text.split_inclusive(['\n', '\r']) {
+        let (line, nl) = if seg.ends_with("\r\n") {
+            (seg.trim_end_matches("\r\n"), "\r\n")
+        } else if seg.ends_with('\n') {
+            (seg.trim_end_matches('\n'), "\n")
+        } else if seg.ends_with('\r') {
+            (seg.trim_end_matches('\r'), "\r")
+        } else {
+            (seg, "")
+        };
+
+        let trimmed = line.trim_start();
+        let indent_len = line.len().saturating_sub(trimmed.len());
+        let indent = &line[..indent_len];
+
+        let mut handled = false;
+        for (key, desired, flag) in [
+            ("First Day Clear Weather", desired_first_day, &mut saw_first_day),
+            ("Weather Selection Algorithm", desired_algo, &mut saw_algo),
+        ] {
+            if trimmed.starts_with(key) {
+                if let Some(eq_idx) = trimmed.find('=') {
+                    let (left, right_all) = trimmed.split_at(eq_idx);
+                    if left.trim() == key {
+                        let right_all = right_all.trim_start_matches('=');
+                        let (right, comment) = match right_all.find('#') {
+                            Some(i) => (&right_all[..i], &right_all[i..]),
+                            None => (right_all, ""),
+                        };
+                        *flag = true;
+                        if right.trim() != desired {
+                            out.push_str(indent);
+                            out.push_str(key);
+                            out.push_str(" = ");
+                            out.push_str(desired);
+                            out.push_str(comment);
+                            out.push_str(nl);
+                            changed = true;
+                        } else {
+                            out.push_str(line);
+                            out.push_str(nl);
+                        }
+                        handled = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if handled {
+            continue;
+        }
+
+        out.push_str(line);
+        out.push_str(nl);
+    }
+
+    if !saw_first_day || !saw_algo {
+        // Append a minimal section at end if missing.
+        if !out.ends_with('\n') && !out.ends_with("\r\n") && !out.ends_with('\r') {
+            out.push('\n');
+        }
+        out.push_str("\n[|WeatherSelection]\n");
+        if !saw_first_day {
+            out.push_str("First Day Clear Weather = true\n");
+        }
+        if !saw_algo {
+            out.push_str("Weather Selection Algorithm = Hybrid\n");
+        }
+        changed = true;
+    }
+
+    if changed {
+        std::fs::write(&cfg_path, out).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
 fn find_file_named(
     root: &std::path::Path,
     target_name: &str,
@@ -1545,6 +2145,7 @@ async fn prepare_preset_for_version(
 
     // Wesley preset: ensure default cfg exists (do not overwrite user edits).
     if tags.iter().any(|t| t.eq_ignore_ascii_case("wesley")) {
+        let _ = ensure_weather_registry_cfg(app, version);
         let _ = ensure_wesley_moonscripts_cfg(app, version);
     }
 
