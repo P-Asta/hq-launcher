@@ -540,7 +540,16 @@ pub async fn purge_remote_disabled_mods_on_startup(app: tauri::AppHandle) -> Res
     };
     let (_remote_manifest_version, mods_cfg, _chain_config, _manifests) = remote;
 
-    let disabled: Vec<_> = mods_cfg.mods.into_iter().filter(|m| !m.enabled).collect();
+    // Only purge "truly disabled" base mods.
+    //
+    // Taggable/optional mods (e.g. Brutal/Wesley preset mods) may be represented in the manifest
+    // with `enabled=false` so they are not installed by default, but they should NOT be purged
+    // if the user installed them via a preset run.
+    let disabled: Vec<_> = mods_cfg
+        .mods
+        .into_iter()
+        .filter(|m| !m.enabled && m.tags.is_empty())
+        .collect();
     if disabled.is_empty() {
         return Ok(());
     }
@@ -1056,6 +1065,7 @@ pub async fn sync_latest_install_from_manifest(app: tauri::AppHandle) -> Result<
             &game_root,
             game_version,
             &mods_cfg,
+            None,
             |done, total, detail| {
                 let step_progress = if total == 0 {
                     1.0
@@ -1516,6 +1526,7 @@ pub async fn download_and_setup(
             &extract_dir,
             version,
             &mods_cfg,
+            Some(cancel.clone()),
             |done, total, detail| {
                 let step_progress = if total == 0 {
                     1.0

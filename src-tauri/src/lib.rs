@@ -23,6 +23,207 @@ use crate::{
     progress::{TaskFinishedPayload, TaskUpdatableProgressPayload},
 };
 
+async fn prepare_tagged_mods_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+    tags: &[String],
+    step_name: &str,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<Vec<(String, String)>, String> {
+    if tags.is_empty() {
+        return Ok(vec![]);
+    }
+    let game_root = version_dir(app, version)?;
+    if !game_root.exists() {
+        return Err(format!(
+            "version folder not found: {}",
+            game_root.to_string_lossy()
+        ));
+    }
+
+    // Tag-level minimum supported versions (hard rule, avoids accidentally offering presets on too-old game versions).
+    let mut min_required: Option<u32> = None;
+    for t in tags {
+        let tl = t.to_lowercase();
+        let req = if tl == "brutal" { Some(49) } else if tl == "wesley" || tl == "wesley's" { Some(69) } else { None };
+        if let Some(r) = req {
+            min_required = Some(min_required.map(|m| m.max(r)).unwrap_or(r));
+        }
+    }
+    if let Some(min) = min_required {
+        if version < min {
+            return Err(format!(
+                "{} preset requires game version >= v{} (current: v{})",
+                tags.join(", "),
+                min,
+                version
+            ));
+        }
+    }
+
+    let client = reqwest::Client::new();
+    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests) =
+        ModsConfig::fetch_manifest(&client).await?;
+
+    let want: Vec<String> = tags.iter().map(|t| t.to_lowercase()).collect();
+    let mut tagged: Vec<mod_config::ModEntry> = vec![];
+    for m in mods_cfg.mods {
+        // Match tags case-insensitively.
+        let has = m
+            .tags
+            .iter()
+            .any(|x| want.contains(&x.to_lowercase()));
+        if !has {
+            continue;
+        }
+        // Override enabled=false for "optional" tagged mods.
+        let mut mm = m;
+        mm.enabled = true;
+        tagged.push(mm);
+    }
+
+    // Only install compatible subset (same semantics as practice list).
+    let tagged: Vec<mod_config::ModEntry> = tagged
+        .into_iter()
+        .filter(|m| m.is_compatible(version))
+        .collect();
+    if tagged.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Return ids so the caller can force-enable these mods for this run (even if they overlap practice-disable rules).
+    let tagged_ids: Vec<(String, String)> = tagged
+        .iter()
+        .map(|m| (m.dev.clone(), m.name.clone()))
+        .collect();
+
+    const STEPS_TOTAL: u32 = 1;
+    progress::emit_progress(
+        app,
+        TaskProgressPayload {
+            version,
+            steps_total: STEPS_TOTAL,
+            step: 1,
+            step_name: step_name.to_string(),
+            step_progress: 0.0,
+            overall_percent: 0.0,
+            detail: Some(format!("Preparing tagged mods: {}", tags.join(", "))),
+            downloaded_bytes: None,
+            total_bytes: None,
+            extracted_files: Some(0),
+            total_files: Some(tagged.len() as u64),
+        },
+    );
+
+    let cfg = ModsConfig { mods: tagged };
+    mods::install_mods_with_progress(
+        app,
+        &game_root,
+        version,
+        &cfg,
+        cancel,
+        |done, total, detail| {
+            let step_progress = if total == 0 {
+                1.0
+            } else {
+                (done as f64 / total as f64).clamp(0.0, 1.0)
+            };
+            progress::emit_progress(
+                app,
+                TaskProgressPayload {
+                    version,
+                    steps_total: STEPS_TOTAL,
+                    step: 1,
+                    step_name: step_name.to_string(),
+                    step_progress,
+                    overall_percent: overall_from_step(1, step_progress, STEPS_TOTAL),
+                    detail,
+                    downloaded_bytes: None,
+                    total_bytes: None,
+                    extracted_files: Some(done),
+                    total_files: Some(total),
+                },
+            );
+        },
+    )
+    .await?;
+
+    Ok(tagged_ids)
+}
+
+fn force_enable_mods_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+    mods_to_enable: &[(String, String)],
+) -> Result<(), String> {
+    if mods_to_enable.is_empty() {
+        return Ok(());
+    }
+
+    // Remove from disablemod.json (global source of truth used by UI).
+    let mut list = read_disablemod(app)?;
+    for (dev, name) in mods_to_enable {
+        let id = normalize_mod_id(dev, name);
+        list.mods.retain(|m| m != &id);
+    }
+    // Keep deterministic ordering.
+    list.mods
+        .sort_by(|a, b| a.dev.cmp(&b.dev).then(a.name.cmp(&b.name)));
+    list.mods.dedup();
+    write_disablemod(app, &list)?;
+
+    // Apply filesystem state for this version immediately: remove `.old` suffixes.
+    let plugins = plugins_dir(app, version)?;
+    let patchers = patchers_dir(app, version)?;
+    for (dev, name) in mods_to_enable {
+        if let Some(dir) = mod_dir_for(&plugins, dev, name) {
+            let _ = set_mod_files_old_suffix(&dir, true);
+        }
+        if let Some(dir) = mod_dir_for(&patchers, dev, name) {
+            let _ = set_mod_files_old_suffix(&dir, true);
+        }
+    }
+
+    Ok(())
+}
+
+async fn disable_irrelevant_tagged_mods_for_run(
+    app: &tauri::AppHandle,
+    version: u32,
+    active_tags: &[String],
+) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests) =
+        ModsConfig::fetch_manifest(&client).await?;
+
+    let active_lower: Vec<String> = active_tags.iter().map(|t| t.to_lowercase()).collect();
+    let plugins = plugins_dir(app, version)?;
+    let patchers = patchers_dir(app, version)?;
+
+    for m in mods_cfg.mods {
+        if m.tags.is_empty() {
+            continue;
+        }
+        let matches_active = m
+            .tags
+            .iter()
+            .any(|t| active_lower.contains(&t.to_lowercase()));
+
+        // If this mod has tags but doesn't match the current run's tags, disable it
+        // for this run only (do NOT write to disablemod.json).
+        if !matches_active {
+            if let Some(dir) = mod_dir_for(&plugins, &m.dev, &m.name) {
+                let _ = set_mod_files_old_suffix(&dir, false);
+            }
+            if let Some(dir) = mod_dir_for(&patchers, &m.dev, &m.name) {
+                let _ = set_mod_files_old_suffix(&dir, false);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn overall_from_step(step: u32, step_progress: f64, steps_total: u32) -> f64 {
     if steps_total == 0 {
         return 0.0;
@@ -104,6 +305,10 @@ fn find_file_named(
 
 fn plugins_dir(app: &tauri::AppHandle, version: u32) -> Result<std::path::PathBuf, String> {
     Ok(version_dir(app, version)?.join("BepInEx").join("plugins"))
+}
+
+fn patchers_dir(app: &tauri::AppHandle, version: u32) -> Result<std::path::PathBuf, String> {
+    Ok(version_dir(app, version)?.join("BepInEx").join("patchers"))
 }
 
 fn mod_folder_name(dev: &str, name: &str) -> String {
@@ -304,8 +509,12 @@ fn set_mod_files_old_suffix(mod_dir: &std::path::Path, enabled: bool) -> Result<
 fn apply_disabled_mods_for_version(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
     let list = read_disablemod(app)?;
     let plugins = plugins_dir(app, version)?;
+    let patchers = patchers_dir(app, version)?;
     for m in list.mods {
         if let Some(dir) = mod_dir_for(&plugins, &m.dev, &m.name) {
+            let _ = set_mod_files_old_suffix(&dir, false);
+        }
+        if let Some(dir) = mod_dir_for(&patchers, &m.dev, &m.name) {
             let _ = set_mod_files_old_suffix(&dir, false);
         }
     }
@@ -347,8 +556,12 @@ fn ensure_practice_mods_disabled_for_version(app: &tauri::AppHandle, version: u3
 
     // Apply for this version immediately.
     let plugins = plugins_dir(app, version)?;
+    let patchers = patchers_dir(app, version)?;
     for m in practice {
         if let Some(dir) = mod_dir_for(&plugins, &m.dev, &m.name) {
+            let _ = set_mod_files_old_suffix(&dir, false);
+        }
+        if let Some(dir) = mod_dir_for(&patchers, &m.dev, &m.name) {
             let _ = set_mod_files_old_suffix(&dir, false);
         }
     }
@@ -356,7 +569,11 @@ fn ensure_practice_mods_disabled_for_version(app: &tauri::AppHandle, version: u3
     Ok(())
 }
 
-async fn prepare_practice_mods_for_version(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
+async fn prepare_practice_mods_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<(), String> {
     let game_root = version_dir(app, version)?;
     if !game_root.exists() {
         return Err(format!(
@@ -401,6 +618,7 @@ async fn prepare_practice_mods_for_version(app: &tauri::AppHandle, version: u32)
         &game_root,
         version,
         &cfg,
+        cancel,
         |done, total, detail| {
             let step_progress = if total == 0 {
                 1.0
@@ -508,6 +726,18 @@ struct DownloadState {
 }
 
 struct ActiveDownload {
+    version: u32,
+    cancel: Arc<AtomicBool>,
+}
+
+#[derive(Default)]
+struct PrepareState {
+    next_id: std::sync::atomic::AtomicU64,
+    active: Mutex<Option<ActivePrepare>>,
+}
+
+struct ActivePrepare {
+    id: u64,
     version: u32,
     cancel: Arc<AtomicBool>,
 }
@@ -903,9 +1133,6 @@ fn launch_game(
         *guard = None;
     }
 
-    // Non-practice run: force-disable practice mods.
-    ensure_practice_mods_disabled_for_version(&app, version)?;
-
     // Ensure disabled mods are applied for this version before launch.
     let _ = apply_disabled_mods_for_version(&app, version);
     // For HQoL specifically, also ensure `.old` matches disablemod.json on normal runs.
@@ -1012,7 +1239,7 @@ async fn launch_game_practice(
     }
 
     // Practice run: install + enable practice mods (compatible with this game version).
-    prepare_practice_mods_for_version(&app, version).await?;
+    prepare_practice_mods_for_version(&app, version, None).await?;
 
     // Ensure disabled mods are applied for this version before launch.
     let _ = apply_disabled_mods_for_version(&app, version);
@@ -1072,6 +1299,264 @@ async fn launch_game_practice(
         .map_err(|_| "game state lock poisoned".to_string())?;
     *guard = Some(child);
     Ok(pid)
+}
+
+#[tauri::command]
+async fn launch_game_preset(
+    app: tauri::AppHandle,
+    version: u32,
+    preset: String,
+    practice: bool,
+    state: State<'_, GameState>,
+) -> Result<u32, String> {
+    // Normalize preset and map to manifest tags.
+    let p = preset.trim().to_lowercase();
+    let tags: Vec<String> = match p.as_str() {
+        "brutal" | "bc" => vec!["Brutal".to_string()],
+        "wesley" | "wesley's" | "wesleys" => vec!["Wesley".to_string()],
+        "smhq" => vec!["SMHQ".to_string()],
+        "wesley_smhq" | "wesleys_smhq" | "wesley-smhq" | "wesleys-smhq" => {
+            vec!["Wesley".to_string(), "SMHQ".to_string()]
+        }
+        // Allow future expansion without breaking the UI:
+        // treat unknown preset as "no extra tags".
+        _ => vec![],
+    };
+
+    if practice {
+        // Practice run: install + enable practice mods (compatible with this game version).
+        prepare_practice_mods_for_version(&app, version, None).await?;
+    }
+
+    // Install preset-tagged mods additively (no overwrite).
+    // For practice runs, install these AFTER practice mods so preset-specific pins can win.
+    // (Practice list has its own pinning, e.g. for LethalNetworkAPI.)
+    let preset_ids =
+        prepare_tagged_mods_for_version(&app, version, &tags, "Preset Mods", None).await?;
+    // Ensure preset mods are enabled for this run (even if they overlap practice-disable rules).
+    // For practice runs we can apply immediately; for non-practice runs we must apply after
+    // `ensure_practice_mods_disabled_for_version` which rewrites disablemod.json.
+    if practice {
+        let _ = force_enable_mods_for_version(&app, version, &preset_ids);
+    }
+
+    // Reuse normal launch path (includes "force-disable practice mods" for non-practice runs).
+    // We inline the logic here to avoid refactoring large chunks right now.
+    let dir = version_dir(&app, version)?;
+    if !dir.exists() {
+        return Err(format!(
+            "version folder not found: {}",
+            dir.to_string_lossy()
+        ));
+    }
+
+    let exe_name = "Lethal Company.exe";
+    let exe_path = dir.join(exe_name);
+    let exe_path = if exe_path.exists() {
+        exe_path
+    } else {
+        find_file_named(&dir, exe_name, 3)
+            .ok_or_else(|| format!("{exe_name} not found under {}", dir.to_string_lossy()))?
+    };
+    let exe_dir = exe_path
+        .parent()
+        .ok_or_else(|| "invalid exe path".to_string())?;
+
+    // If already running, return an error.
+    {
+        let mut guard = state
+            .child
+            .lock()
+            .map_err(|_| "game state lock poisoned".to_string())?;
+        if let Some(child) = guard.as_mut() {
+            if child.try_wait().map_err(|e| e.to_string())?.is_none() {
+                return Err("game is already running".to_string());
+            }
+        }
+        *guard = None;
+    }
+
+    if !practice {
+        // Non-practice run: force-disable practice mods.
+        ensure_practice_mods_disabled_for_version(&app, version)?;
+        // Re-enable preset mods for this run (Wesley includes LethalNetworkAPI which is otherwise forced off).
+        let _ = force_enable_mods_for_version(&app, version, &preset_ids);
+    }
+
+    // Ensure disabled mods are applied for this version before launch.
+    let _ = apply_disabled_mods_for_version(&app, version);
+    // For HQoL specifically, also ensure `.old` matches disablemod.json on normal runs.
+    let _ = sync_hqol_with_disablemod_for_version(&app, version);
+
+    // Runtime-only tag gating: disable tagged mods not relevant to this run.
+    // (No disablemod.json writes; next run will re-evaluate.)
+    let _ = disable_irrelevant_tagged_mods_for_run(&app, version, &tags).await;
+
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new(&exe_path);
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg("-a");
+        cmd.arg(&exe_path);
+        cmd
+    };
+
+    #[cfg(target_os = "linux")]
+    let (proton_binary, compat_data_path) = {
+        let proton_env_path =
+            installer::proton_env_dir(&app).map_err(|e| format!("proton_env path not found: {e}"))?;
+        let proton_bin_path = installer::get_current_proton_dir_impl(&app)
+            .map_err(|e| format!("proton path not found: {e}"))?
+            .ok_or("found proton path but is None")?;
+        let compat_pre_path = proton_env_path.join("wine_prefix");
+        if !compat_pre_path.exists() {
+            std::fs::create_dir(&compat_pre_path).map_err(|e| format!("could not make prefix: {e}"))?;
+        }
+        (proton_bin_path.join("proton"), compat_pre_path)
+    };
+
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let app_path =
+            app.path().app_data_dir().map_err(|e| format!("app path not found: {e}"))?;
+        let steam_path = get_steam_client_path(&app_path);
+        let mut cmd = std::process::Command::new(&proton_binary);
+        cmd.arg("run");
+        cmd.arg(&exe_path);
+        cmd.env("STEAM_COMPAT_DATA_PATH", &compat_data_path);
+        cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_path);
+        cmd.env("WINEDLLOVERRIDES", "winhttp=n,b");
+        cmd.env_remove("PYTHONPATH");
+        cmd.env_remove("PYTHONHOME");
+        cmd
+    };
+
+    let child = command
+        .current_dir(exe_dir)
+        .spawn()
+        .map_err(|e| format!("failed to launch: {e}"))?;
+
+    let pid = child.id();
+    let mut guard = state
+        .child
+        .lock()
+        .map_err(|_| "game state lock poisoned".to_string())?;
+    *guard = Some(child);
+    Ok(pid)
+}
+
+async fn prepare_preset_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+    preset: &str,
+    practice: bool,
+    cancel: Arc<AtomicBool>,
+) -> Result<bool, String> {
+    let p = preset.trim().to_lowercase();
+    let tags: Vec<String> = match p.as_str() {
+        "brutal" | "bc" => vec!["Brutal".to_string()],
+        "wesley" | "wesley's" | "wesleys" => vec!["Wesley".to_string()],
+        "smhq" => vec!["SMHQ".to_string()],
+        "wesley_smhq" | "wesleys_smhq" | "wesley-smhq" | "wesleys-smhq" => {
+            vec!["Wesley".to_string(), "SMHQ".to_string()]
+        }
+        _ => vec![],
+    };
+
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Cancelled".to_string());
+    }
+
+    if practice {
+        prepare_practice_mods_for_version(app, version, Some(cancel.clone())).await?;
+    } else {
+        // Selecting a non-practice run should disable practice mods now (not at launch).
+        ensure_practice_mods_disabled_for_version(app, version)?;
+    }
+
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Cancelled".to_string());
+    }
+
+    let preset_ids =
+        prepare_tagged_mods_for_version(app, version, &tags, "Preset Mods", Some(cancel.clone()))
+            .await?;
+
+    // Ensure preset mods are enabled (can override practice-disable overlap).
+    let _ = force_enable_mods_for_version(app, version, &preset_ids);
+
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Cancelled".to_string());
+    }
+
+    // Apply persisted disable list (user + practice) now.
+    let _ = apply_disabled_mods_for_version(app, version);
+    let _ = sync_hqol_with_disablemod_for_version(app, version);
+
+    // Runtime-only tag gating: disable tagged mods not relevant to this selected run.
+    let _ = disable_irrelevant_tagged_mods_for_run(app, version, &tags).await;
+
+    Ok(true)
+}
+
+#[tauri::command]
+async fn prepare_preset(
+    app: tauri::AppHandle,
+    version: u32,
+    preset: String,
+    practice: bool,
+    state: State<'_, PrepareState>,
+) -> Result<bool, String> {
+    // Only allow one active prepare at a time; new prepares cancel previous ones.
+    let cancel = Arc::new(AtomicBool::new(false));
+    let id = state.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+    {
+        let mut guard = state
+            .active
+            .lock()
+            .map_err(|_| "prepare state lock poisoned".to_string())?;
+        if let Some(active) = guard.as_ref() {
+            active.cancel.store(true, Ordering::Relaxed);
+        }
+        *guard = Some(ActivePrepare {
+            id,
+            version,
+            cancel: cancel.clone(),
+        });
+    }
+
+    let res = prepare_preset_for_version(&app, version, &preset, practice, cancel.clone()).await;
+
+    // Clear active prepare if it is still ours.
+    {
+        let mut guard = state
+            .active
+            .lock()
+            .map_err(|_| "prepare state lock poisoned".to_string())?;
+        if guard.as_ref().is_some_and(|a| a.id == id) {
+            *guard = None;
+        }
+    }
+
+    res
+}
+
+#[tauri::command]
+fn cancel_prepare(version: u32, state: State<'_, PrepareState>) -> Result<bool, String> {
+    let mut did = false;
+    let guard = state
+        .active
+        .lock()
+        .map_err(|_| "prepare state lock poisoned".to_string())?;
+    if let Some(active) = guard.as_ref() {
+        if active.version == version {
+            active.cancel.store(true, Ordering::Relaxed);
+            did = true;
+        }
+    }
+    Ok(did)
 }
 
 #[tauri::command]
@@ -1152,6 +1637,10 @@ fn set_mod_enabled(
     // Apply to current version immediately (still add-only / no overwrite).
     let plugins = plugins_dir(&app, version)?;
     if let Some(dir) = mod_dir_for(&plugins, &dev, &name) {
+        let _ = set_mod_files_old_suffix(&dir, enabled);
+    }
+    let patchers = patchers_dir(&app, version)?;
+    if let Some(dir) = mod_dir_for(&patchers, &dev, &name) {
         let _ = set_mod_files_old_suffix(&dir, enabled);
     }
     Ok(true)
@@ -1813,6 +2302,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(GameState::default())
         .manage(DownloadState::default())
+        .manage(PrepareState::default())
         .manage(downloader::DepotLoginState::default())
         .setup(|app| {
             // File logging (AppDataDir/logs/hq-launcher.log)
@@ -1844,11 +2334,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             download,
             cancel_download,
+            prepare_preset,
+            cancel_prepare,
             sync_latest_install_from_manifest,
             check_mod_updates,
             apply_mod_updates,
             launch_game,
             launch_game_practice,
+            launch_game_preset,
             get_game_status,
             stop_game,
             get_disabled_mods,

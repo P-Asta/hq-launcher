@@ -1,8 +1,16 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.4.0 (2026-03-07)
+- Support MODDED HQ
+  - Brutal
+  - Wesley's
+- fix issue with practice mode for linux
+- change some UX
+  - download UI
+
 ## 1.3.7 (2026-01-26)
-- Add v40 practice mods
+- Add some v40 practice mods
   - DanceTools
   - FreeCammer
 

@@ -100,6 +100,8 @@ export default function LauncherPage({
   const [updatePrompt, setUpdatePrompt] = useState({ open: false });
   const [practicePrompt, setPracticePrompt] = useState({ open: false });
   const [practiceTask, setPracticeTask] = useState(null); // last Practice Mods progress payload
+  const [presetPrompt, setPresetPrompt] = useState({ open: false });
+  const [presetTask, setPresetTask] = useState(null); // last Preset Mods progress payload
 
   const [checkUpdatePrompt, setCheckUpdatePrompt] = useState({
     open: false,
@@ -144,8 +146,25 @@ export default function LauncherPage({
   });
 
   const [gameStatus, setGameStatus] = useState({ running: false, pid: null });
-  const [runMode, setRunMode] = useState("normal"); // normal | practice
+  const [runMode, setRunMode] = useState("hq"); // hq | practice | brutal | brutal_practice | wesley | wesley_practice | smhq
   const autoCheckedRef = useRef(new Set());
+  const practicePromptOpenRef = useRef(false);
+  const presetPromptOpenRef = useRef(false);
+  const practiceTaskRef = useRef(null);
+  const presetTaskRef = useRef(null);
+
+  useEffect(() => {
+    practicePromptOpenRef.current = !!practicePrompt.open;
+  }, [practicePrompt.open]);
+  useEffect(() => {
+    presetPromptOpenRef.current = !!presetPrompt.open;
+  }, [presetPrompt.open]);
+  useEffect(() => {
+    practiceTaskRef.current = practiceTask;
+  }, [practiceTask]);
+  useEffect(() => {
+    presetTaskRef.current = presetTask;
+  }, [presetTask]);
 
   const isInstalled = useMemo(() => {
     const s = new Set(installedVersions);
@@ -161,7 +180,11 @@ export default function LauncherPage({
 
   const filteredMods = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const mods = Array.isArray(manifest.mods) ? manifest.mods : [];
+    const modsAll = Array.isArray(manifest.mods) ? manifest.mods : [];
+    // Hide tagged/preset-only mods from the regular mod list UI.
+    const mods = modsAll.filter(
+      (m) => !(Array.isArray(m?.tags) && m.tags.length > 0)
+    );
 
     const selectedKeyLower = selectedMod
       ? `${String(selectedMod.dev).toLowerCase()}::${String(
@@ -212,7 +235,7 @@ export default function LauncherPage({
       return hay.includes(q);
     };
 
-    // 1) Build chain groups using ALL mods (so search can match any member,
+    // 1) Build chain groups using ALL visible mods (so search can match any member,
     // but representative can still prefer an installed member even if it doesn't match the query).
     const groups = new Map(); // chainId -> [mods]
     const noChain = [];
@@ -303,9 +326,19 @@ export default function LauncherPage({
     installedModVersions,
   ]);
 
+  // If a tagged/preset-only mod was selected (e.g. before this filtering), clear the selection.
+  useEffect(() => {
+    if (!selectedMod) return;
+    if (Array.isArray(selectedMod?.tags) && selectedMod.tags.length > 0) {
+      setSelectedMod(null);
+    }
+  }, [selectedMod]);
+
   // Best-effort prefetch of config-file matches per mod so chain-dedup is accurate.
   useEffect(() => {
-    const mods = Array.isArray(manifest.mods) ? manifest.mods : [];
+    const mods = (Array.isArray(manifest.mods) ? manifest.mods : []).filter(
+      (m) => !(Array.isArray(m?.tags) && m.tags.length > 0)
+    );
     if (mods.length === 0) return;
 
     let cancelled = false;
@@ -498,22 +531,45 @@ export default function LauncherPage({
 
     (async () => {
       unlistenProgress = await listen("download://progress", (event) => {
+        const p = event?.payload ?? {};
+        const totalFiles = Number(p?.total_files ?? 0);
+        const extractedFiles = Number(p?.extracted_files ?? 0);
+        const stepProgress = Number(p?.step_progress ?? 0);
+        const overall = Number(p?.overall_percent ?? 0);
+        const didFinish =
+          (Number.isFinite(totalFiles) &&
+            totalFiles > 0 &&
+            Number.isFinite(extractedFiles) &&
+            extractedFiles >= totalFiles) ||
+          (Number.isFinite(stepProgress) && stepProgress >= 1) ||
+          (Number.isFinite(overall) && overall >= 100);
+
         // Practice install modal: only show when practice actually installs missing plugins.
-        if (event?.payload?.step_name === "Practice Mods") {
+        if (p?.step_name === "Practice Mods") {
           setPracticeTask({
-            status: "working",
-            ...event.payload,
+            status: didFinish ? "done" : "working",
+            ...p,
             error: null,
           });
-          const totalFiles = Number(event.payload?.total_files ?? 0);
           if (Number.isFinite(totalFiles) && totalFiles > 0) {
             setPracticePrompt({ open: true });
+          }
+        }
+        // Preset install modal (tagged mods like Brutal/Wesley).
+        if (p?.step_name === "Preset Mods") {
+          setPresetTask({
+            status: didFinish ? "done" : "working",
+            ...p,
+            error: null,
+          });
+          if (Number.isFinite(totalFiles) && totalFiles > 0) {
+            setPresetPrompt({ open: true });
           }
         }
         setTask((t) => ({
           ...t,
           status: "working",
-          ...event.payload,
+          ...p,
           error: null,
         }));
       });
@@ -533,8 +589,23 @@ export default function LauncherPage({
       });
       unlistenError = await listen("download://error", (event) => {
         // If practice setup fails, keep the modal open and show the error.
-        if (practicePrompt.open && practiceTask?.step_name === "Practice Mods") {
+        if (
+          practicePromptOpenRef.current &&
+          practiceTaskRef.current?.step_name === "Practice Mods"
+        ) {
           setPracticeTask((t) => ({
+            ...(t ?? {}),
+            status: "error",
+            version: event.payload?.version ?? t?.version,
+            error: event.payload?.message ?? "Unknown error",
+          }));
+        }
+        // If preset setup fails, keep the modal open and show the error.
+        if (
+          presetPromptOpenRef.current &&
+          presetTaskRef.current?.step_name === "Preset Mods"
+        ) {
+          setPresetTask((t) => ({
             ...(t ?? {}),
             status: "error",
             version: event.payload?.version ?? t?.version,
@@ -556,6 +627,25 @@ export default function LauncherPage({
       if (typeof unlistenError === "function") unlistenError();
     };
   }, []);
+
+  // Auto-close setup modals on success.
+  useEffect(() => {
+    if (!practicePrompt.open) return;
+    if ((practiceTask?.status ?? "working") !== "done") return;
+    const t = setTimeout(() => {
+      setPracticePrompt({ open: false });
+    }, 350);
+    return () => clearTimeout(t);
+  }, [practicePrompt.open, practiceTask?.status]);
+
+  useEffect(() => {
+    if (!presetPrompt.open) return;
+    if ((presetTask?.status ?? "working") !== "done") return;
+    const t = setTimeout(() => {
+      setPresetPrompt({ open: false });
+    }, 350);
+    return () => clearTimeout(t);
+  }, [presetPrompt.open, presetTask?.status]);
 
   // listen to backend check mods update events
   useEffect(() => {
@@ -718,6 +808,11 @@ export default function LauncherPage({
     }));
     try {
       await invoke("download", { version: v });
+      // If user already selected a preset run mode, prepare its mods right after download.
+      // This keeps "Start Run" fast and avoids doing installs at launch time.
+      try {
+        await prepareRunMode(runMode, v);
+      } catch {}
     } catch (e) {
       if (
         !didRetryAfterLogin &&
@@ -1012,9 +1107,30 @@ export default function LauncherPage({
     return toggleModEnabledForMod(selectedMod, nextEnabled);
   }
 
+  const minRequiredVersion = useMemo(() => {
+    // Gate versions shown in the version selector depending on the selected run mode.
+    // Brutal: v49+, Wesley: v69+
+    if (runMode === "brutal" || runMode === "brutal_practice") return 49;
+    if (
+      runMode === "wesley" ||
+      runMode === "wesley_practice" ||
+      runMode === "wesley_smhq"
+    )
+      return 69;
+    return null;
+  }, [runMode]);
+
+  function minRequiredForRunMode(mode) {
+    if (mode === "brutal" || mode === "brutal_practice") return 49;
+    if (mode === "wesley" || mode === "wesley_practice" || mode === "wesley_smhq")
+      return 69;
+    return null;
+  }
+
   const versionOptions = useMemo(() => {
     const set = new Set(installedVersions);
     set.add(selectedVersion);
+    if (typeof minRequiredVersion === "number") set.add(minRequiredVersion);
     // show versions provided by remote manifest (version -> download_manifest)
     const remoteV =
       manifest?.manifests && typeof manifest.manifests === "object"
@@ -1023,8 +1139,32 @@ export default function LauncherPage({
             .filter((n) => Number.isFinite(n))
         : [];
     remoteV.forEach((v) => set.add(v));
-    return Array.from(set).sort((a, b) => b - a);
-  }, [installedVersions, selectedVersion, manifest]);
+    let list = Array.from(set).sort((a, b) => b - a);
+    if (typeof minRequiredVersion === "number") {
+      list = list.filter((v) => v >= minRequiredVersion);
+    }
+    return list;
+  }, [installedVersions, selectedVersion, manifest, minRequiredVersion]);
+
+  // If the selected version is below the minimum for this run mode, bump it up.
+  useEffect(() => {
+    if (typeof minRequiredVersion !== "number") return;
+    if (!Number.isFinite(Number(selectedVersion))) return;
+    if (selectedVersion >= minRequiredVersion) return;
+
+    const nextV = minRequiredVersion;
+    setSelectedVersion(nextV);
+    if (isInstalled(nextV)) {
+      invoke("apply_disabled_mods", { version: nextV })
+        .catch(() => {})
+        .finally(() => {
+          // After bumping the version, also prepare the selected run mode now.
+          prepareRunMode(runMode, nextV).catch(() => {});
+        });
+    } else {
+      openDownloadPrompt(nextV);
+    }
+  }, [minRequiredVersion, selectedVersion, installedVersions, runMode]);
 
   const selectedInstalled = isInstalled(selectedVersion);
   const promptVersion = downloadPrompt.version;
@@ -1073,15 +1213,165 @@ export default function LauncherPage({
   const updateIsDone = updatePrompt.open && task.status === "done";
   const updateIsError = updatePrompt.open && task.status === "error";
 
-  async function startRun() {
-    if (gameStatus.running) {
-      try {
-        await invoke("stop_game");
-      } finally {
-        setGameStatus({ running: false, pid: null });
+  const RUN_OPTIONS = useMemo(
+    () => [
+      {
+        value: "hq",
+        label: "HQ Run",
+        buttonLabel: "HQ Run",
+        preset: "hq",
+        practice: false,
+        title: "Normal run (HQ): practice mods are disabled",
+      },
+      {
+        value: "smhq",
+        label: "SMHQ Run",
+        preset: "smhq",
+        practice: false,
+        title: "SMHQ preset run",
+      },
+      {
+        value: "practice",
+        label: "Normal Practice",
+        buttonLabel: "Normal Practice",
+        preset: "hq",
+        practice: true,
+        title: "Practice run: installs/enables practice mods for this run",
+      },
+      {
+        value: "brutal",
+        label: "Brutal Run",
+        preset: "brutal",
+        practice: false,
+        title: "Brutal preset: installs Brutal-tagged mods (v49+)",
+      },
+      {
+        value: "brutal_practice",
+        label: "Brutal Practice",
+        preset: "brutal",
+        practice: true,
+        title:
+          "Brutal preset: installs Brutal-tagged mods + practice mods (v49+)",
+      },
+      {
+        value: "wesley",
+        label: "Wesley's Run",
+        preset: "wesley",
+        practice: false,
+        title: "Wesley preset: installs Wesley-tagged mods (v69+)",
+      },
+      {
+        value: "wesley_smhq",
+        label: "Wesley's SMHQ",
+        preset: "wesley_smhq",
+        practice: false,
+        title:
+          "Wesley + SMHQ preset: installs Wesley-tagged and SMHQ-tagged mods (v69+)",
+      },
+      {
+        value: "wesley_practice",
+        label: "Wesley's Practice",
+        preset: "wesley",
+        practice: true,
+        title:
+          "Wesley preset: installs Wesley-tagged mods + practice mods (v69+)",
+      },
+    ],
+    [],
+  );
+
+  const selectedRunOption = useMemo(() => {
+    return (
+      RUN_OPTIONS.find((o) => o.value === runMode) ??
+      RUN_OPTIONS.find((o) => o.value === "hq") ??
+      RUN_OPTIONS[0]
+    );
+  }, [RUN_OPTIONS, runMode]);
+
+  const latestPrepareKeyRef = useRef("");
+
+  async function prepareRunMode(nextRunMode, nextVersion) {
+    if (gameStatus.running) return;
+    if (!isInstalled(nextVersion)) return;
+    const opt =
+      RUN_OPTIONS.find((o) => o.value === nextRunMode) ??
+      RUN_OPTIONS.find((o) => o.value === "hq") ??
+      RUN_OPTIONS[0];
+
+    const key = `${nextRunMode}:${nextVersion}`;
+    latestPrepareKeyRef.current = key;
+
+    // Reset modal state; the modals open only if backend emits progress.
+    setPresetPrompt({ open: false });
+    setPresetTask(null);
+    setPracticePrompt({ open: false });
+    setPracticeTask(null);
+
+    try {
+      await invoke("prepare_preset", {
+        version: nextVersion,
+        preset: opt?.preset ?? "hq",
+        practice: !!opt?.practice,
+      });
+
+      // Ignore stale completions.
+      if (latestPrepareKeyRef.current !== key) return;
+
+      invoke("get_disabled_mods")
+        .then((dm) => setDisabledMods(Array.isArray(dm) ? dm : []))
+        .catch(() => {});
+    } catch (e) {
+      console.error(e);
+      // Ignore stale errors (e.g., cancelled because user picked another mode/version).
+      if (latestPrepareKeyRef.current !== key) return;
+
+      const msg = e?.message ?? String(e);
+      if (String(msg).toLowerCase().includes("cancelled")) {
+        setPresetPrompt({ open: false });
+        setPracticePrompt({ open: false });
+        return;
       }
-      return;
+
+      if (opt?.practice) {
+        setPracticePrompt({ open: true });
+        setPracticeTask((t) => ({
+          ...(t ?? {}),
+          status: "error",
+          version: nextVersion,
+          step_name: t?.step_name ?? "Practice Mods",
+          detail: t?.detail ?? "Failed to prepare practice mods",
+          error: msg,
+        }));
+      }
+      setPresetPrompt({ open: true });
+      setPresetTask((t) => ({
+        ...(t ?? {}),
+        status: "error",
+        version: nextVersion,
+        step_name: t?.step_name ?? "Preset Mods",
+        detail: t?.detail ?? "Failed to prepare preset mods",
+        error: msg,
+      }));
+      setTask((t) => ({
+        ...t,
+        status: "error",
+        version: nextVersion,
+        error: msg,
+      }));
     }
+  }
+
+  async function stopRun() {
+    if (!gameStatus.running) return;
+    try {
+      await invoke("stop_game");
+    } finally {
+      setGameStatus({ running: false, pid: null });
+    }
+  }
+
+  async function startSelectedRun() {
+    if (gameStatus.running) return stopRun();
     if (!isInstalled(selectedVersion)) {
       openDownloadPrompt(selectedVersion);
       return;
@@ -1092,10 +1382,6 @@ export default function LauncherPage({
         running: true,
         pid: typeof pid === "number" ? pid : null,
       });
-      // backend may force-disable practice mods on normal run
-      invoke("get_disabled_mods")
-        .then((dm) => setDisabledMods(Array.isArray(dm) ? dm : []))
-        .catch(() => {});
     } catch (e) {
       console.error(e);
       setTask((t) => ({
@@ -1106,55 +1392,6 @@ export default function LauncherPage({
       }));
     }
   }
-
-  async function startPracticeRun() {
-    if (gameStatus.running) return;
-    if (!isInstalled(selectedVersion)) {
-      openDownloadPrompt(selectedVersion);
-      return;
-    }
-    try {
-      // Reset practice modal state; it will open only if backend reports installs needed.
-      setPracticePrompt({ open: false });
-      setPracticeTask(null);
-      const pid = await invoke("launch_game_practice", { version: selectedVersion });
-      setPracticePrompt({ open: false });
-      setGameStatus({
-        running: true,
-        pid: typeof pid === "number" ? pid : null,
-      });
-      // backend may enable/disable practice mods for this version
-      invoke("get_disabled_mods")
-        .then((dm) => setDisabledMods(Array.isArray(dm) ? dm : []))
-        .catch(() => {});
-    } catch (e) {
-      console.error(e);
-      // If there's an error without progress, show it via the practice modal too.
-      setPracticePrompt({ open: true });
-      setPracticeTask((t) => ({
-        ...(t ?? {}),
-        status: "error",
-        version: selectedVersion,
-        step_name: t?.step_name ?? "Practice Mods",
-        detail: t?.detail ?? "Failed to prepare practice mods",
-        error: e?.message ?? String(e),
-      }));
-      setTask((t) => ({
-        ...t,
-        status: "error",
-        version: selectedVersion,
-        error: e?.message ?? String(e),
-      }));
-    }
-  }
-
-  async function startSelectedRun() {
-    if (gameStatus.running) return startRun(); // stop
-    if (runMode === "practice") return startPracticeRun();
-    return startRun();
-  }
-
-  const runModeLabel = runMode === "practice" ? "Practice" : "Normal";
 
   return (
     <div className="h-full text-white">
@@ -1162,20 +1399,42 @@ export default function LauncherPage({
         {/* Top bar */}
         <div className="flex items-center gap-3">
           {gameStatus.running ? (
-            <Button variant="secondary" className="h-11 px-5" onClick={startRun} title="Stop">
+            <Button
+              variant="secondary"
+              className="h-11 px-5"
+              onClick={stopRun}
+              title="Stop"
+            >
               <Play className="h-4 w-4" />
-              {runModeLabel} Stop
+              Stop
             </Button>
           ) : (
-            <Select value={runMode} onValueChange={(v) => setRunMode(v)}>
+            <Select
+              value={runMode}
+              onValueChange={async (v) => {
+                const minV = minRequiredForRunMode(v);
+                const effectiveV =
+                  typeof minV === "number" ? Math.max(Number(selectedVersion), minV) : selectedVersion;
+
+                setRunMode(v);
+                if (effectiveV !== selectedVersion) {
+                  setSelectedVersion(effectiveV);
+                  if (isInstalled(effectiveV)) {
+                    try {
+                      await invoke("apply_disabled_mods", { version: effectiveV });
+                    } catch {}
+                  } else {
+                    openDownloadPrompt(effectiveV);
+                    return;
+                  }
+                }
+                await prepareRunMode(v, effectiveV);
+              }}
+            >
               <SelectTrigger
                 showIcon={false}
                 className="h-11 w-fit font-semibold overflow-hidden rounded-xl border-white/10 bg-white px-0 text-black hover:bg-white/90 focus:ring-white/15"
-                title={
-                  runMode === "practice"
-                    ? "Practice run: installs/enables practice mods for this run"
-                    : "Normal run: practice mods are disabled"
-                }
+                title={selectedRunOption?.title ?? ""}
               >
                 <div className="flex h-full w-full items-stretch">
                   <div
@@ -1191,7 +1450,9 @@ export default function LauncherPage({
                     }}
                   >
                     <Play className="h-4 w-4" />
-                    {runMode === "practice" ? "Practice Run" : "Start Run"}
+                    {selectedRunOption?.buttonLabel ??
+                      selectedRunOption?.label ??
+                      "Start Run"}
                   </div>
                   <div className="flex w-10 items-center justify-center border-l border-black/10">
                     <ChevronDown className="h-4 w-4 text-black/70" />
@@ -1200,8 +1461,11 @@ export default function LauncherPage({
                 </div>
               </SelectTrigger>
               <SelectContent className="min-w-48" align="start">
-                <SelectItem value="normal">Normal Run</SelectItem>
-                <SelectItem value="practice">Practice Run</SelectItem>
+                {RUN_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           )}
@@ -1209,13 +1473,14 @@ export default function LauncherPage({
           <div className="w-fit">
             <Select
               value={String(selectedVersion)}
-              onValueChange={(v) => {
+              onValueChange={async (v) => {
                 const nextV = Number(v);
                 if (isInstalled(nextV)) {
                   setSelectedVersion(nextV);
-                  invoke("apply_disabled_mods", { version: nextV }).catch(
-                    () => {}
-                  );
+                  try {
+                    await invoke("apply_disabled_mods", { version: nextV });
+                  } catch {}
+                  await prepareRunMode(runMode, nextV);
                 } else {
                   openDownloadPrompt(nextV);
                 }
@@ -2208,10 +2473,111 @@ export default function LauncherPage({
               <Button
                 variant="secondary"
                 className="h-10 min-w-[120px]"
-                disabled={(practiceTask?.status ?? "working") === "working"}
-                onClick={() => setPracticePrompt({ open: false })}
+                onClick={async () => {
+                  const st = practiceTask?.status ?? "working";
+                  if (st === "working") {
+                    const v = Number(practiceTask?.version ?? selectedVersion);
+                    if (!Number.isFinite(v)) return;
+                    try {
+                      await invoke("cancel_prepare", { version: v });
+                    } catch (e) {
+                      console.error(e);
+                    }
+                  } else {
+                    setPracticePrompt({ open: false });
+                  }
+                }}
               >
-                Close
+                {(practiceTask?.status ?? "working") === "working" ? "Cancel" : "Close"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Preset install modal (only shows when installing preset/tagged plugins) */}
+      {presetPrompt.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <button
+            className="absolute inset-0 bg-black/60"
+            onClick={() => {
+              const st = presetTask?.status ?? "working";
+              if (st !== "working") setPresetPrompt({ open: false });
+            }}
+            aria-label="Close"
+          />
+
+          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-white/10 bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-lg font-semibold">
+                  {presetTask?.status === "error"
+                    ? "Preset setup failed"
+                    : "Installing preset mods..."}
+                </div>
+                <div className="mt-1 text-sm text-white/55">
+                  Preset-tagged plugins are being installed for this run.
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold">
+                    {presetTask?.step_name ?? "Preset Mods"}
+                  </div>
+                  <div className="truncate text-xs text-white/50">
+                    {presetTask?.detail ?? ""}
+                  </div>
+                  {presetTask?.error && (
+                    <div className="mt-1 text-xs text-red-300">
+                      {presetTask.error}
+                    </div>
+                  )}
+                </div>
+                <div className="shrink-0 text-sm text-white/70">
+                  {Number.isFinite(Number(presetTask?.overall_percent))
+                    ? `${Math.round(Number(presetTask?.overall_percent))}%`
+                    : ""}
+                </div>
+              </div>
+              <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-white/10">
+                <div
+                  className={cn(
+                    "h-full rounded-full transition-[width]",
+                    presetTask?.status === "error" ? "bg-red-400" : "bg-emerald-400"
+                  )}
+                  style={{
+                    width: `${Math.max(
+                      0,
+                      Math.min(100, Number(presetTask?.overall_percent ?? 0))
+                    )}%`,
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <Button
+                variant="secondary"
+                className="h-10 min-w-[120px]"
+                onClick={async () => {
+                  const st = presetTask?.status ?? "working";
+                  if (st === "working") {
+                    const v = Number(presetTask?.version ?? selectedVersion);
+                    if (!Number.isFinite(v)) return;
+                    try {
+                      await invoke("cancel_prepare", { version: v });
+                    } catch (e) {
+                      console.error(e);
+                    }
+                  } else {
+                    setPresetPrompt({ open: false });
+                  }
+                }}
+              >
+                {(presetTask?.status ?? "working") === "working" ? "Cancel" : "Close"}
               </Button>
             </div>
           </div>

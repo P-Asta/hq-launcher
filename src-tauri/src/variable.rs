@@ -23,6 +23,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
         ModEntry {
             dev: "giosuel".to_string(),
             name: "Imperium".to_string(),
+            tags: vec![],
             enabled: true,
             low_cap: Some(50),
             high_cap: None,
@@ -40,6 +41,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
         ModEntry {
             dev: "Lordfirespeed".to_string(),
             name: "OdinSerializer".to_string(),
+            tags: vec![],
             enabled: true,
             low_cap: Some(56),
             high_cap: None,
@@ -48,6 +50,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
         ModEntry {
             dev: "xilophor".to_string(),
             name: "LethalNetworkAPI".to_string(),
+            tags: vec![],
             enabled: true,
             low_cap: Some(56),
             high_cap: None,
@@ -63,6 +66,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
         ModEntry {
             dev: "megumin".to_string(),
             name: "LethalDevMode".to_string(),
+            tags: vec![],
             enabled: true,
             low_cap: Some(45),
             high_cap: None,
@@ -71,6 +75,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
         ModEntry {
             dev: "aoirint".to_string(),
             name: "CruiserJumpPractice".to_string(),
+            tags: vec![],
             enabled: true,
             low_cap: Some(56),
             high_cap: None,
@@ -79,6 +84,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
         ModEntry {
             dev: "Shinobi".to_string(),
             name: "DanceTools".to_string(),
+            tags: vec![],
             enabled: true,
             low_cap: None,
             high_cap: Some(44),
@@ -87,6 +93,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
         ModEntry {
             dev: "the_croods".to_string(),
             name: "FreeCammer".to_string(),
+            tags: vec![],
             enabled: true,
             low_cap: None,
             high_cap: Some(49),

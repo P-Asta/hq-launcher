@@ -44,12 +44,24 @@ pub async fn fetch_community_packages(
         .as_secs();
     if cache_path.exists() {
         let content = std::fs::read_to_string(cache_path).map_err(|e| e.to_string())?;
-        let cache: ThunderstoreCache = serde_json::from_str(&content).map_err(|e| e.to_string())?;
-        if now - cache.time < 60 * 60 {
-            log::info!(target: "fetch_packages", "Using cached packages");
-            return Ok(cache.packages);
+        match serde_json::from_str::<ThunderstoreCache>(&content) {
+            Ok(cache) => {
+                if now - cache.time < 60 * 60 {
+                    log::info!(target: "fetch_packages", "Using cached packages");
+                    return Ok(cache.packages);
+                }
+                log::info!(target: "fetch_packages", "Cache expired, fetching new packages");
+            }
+            Err(e) => {
+                // Cache may be empty/corrupted (e.g. interrupted write). Don't fail installs for it.
+                log::warn!(
+                    target: "fetch_packages",
+                    "Failed to parse cache file {}: {e} (will refetch)",
+                    cache_path.to_string_lossy()
+                );
+                let _ = std::fs::remove_file(cache_path);
+            }
         }
-        log::info!(target: "fetch_packages", "Cache expired, fetching new packages");
     }
 
     let url = "https://thunderstore.io/c/lethal-company/api/v1/package/".to_string();

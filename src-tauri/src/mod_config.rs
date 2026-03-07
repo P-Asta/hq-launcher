@@ -13,6 +13,11 @@ pub struct ModEntry {
     pub name: String,
     pub dev: String,
 
+    /// Optional tags for grouping mods by run presets (e.g. "Brutal", "Wesley").
+    /// Missing field => empty tags.
+    #[serde(default)]
+    pub tags: Vec<String>,
+
     #[serde(default = "default_true")]
     pub enabled: bool,
 
@@ -89,19 +94,55 @@ impl ModsConfig {
     pub async fn fetch_manifest(
         client: &reqwest::Client,
     ) -> Result<(u32, Self, Vec<Vec<String>>, BTreeMap<u32, String>), String> {
-        // Use stable manifest only.
-        let url = "https://f.asta.rs/hq-launcher/manifest.json";
-        log::info!("Fetching manifest from {url}");
-        let manifest = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?
-            .error_for_status()
-            .map_err(|e| e.to_string())?
-            .json::<RemoteManifest>()
-            .await
-            .map_err(|e| e.to_string())?;
+        // Test mode: if a local `manifest.json` exists next to the repo/current folder,
+        // prefer it over the remote manifest. This enables rapid iteration without publishing.
+        fn try_read_local_manifest() -> Option<(std::path::PathBuf, RemoteManifest)> {
+            let mut candidates: Vec<std::path::PathBuf> = vec![];
+
+            if let Ok(cwd) = std::env::current_dir() {
+                candidates.push(cwd.join("manifest.json"));
+                candidates.push(cwd.join("..").join("manifest.json"));
+            }
+
+            if let Ok(exe) = std::env::current_exe() {
+                // Walk up a few levels; in `tauri dev` this often lands under `target/`.
+                let mut p = exe.parent().map(|p| p.to_path_buf());
+                for _ in 0..8 {
+                    let Some(dir) = p.take() else { break };
+                    candidates.push(dir.join("manifest.json"));
+                    p = dir.parent().map(|pp| pp.to_path_buf());
+                }
+            }
+
+            for path in candidates {
+                if !path.exists() {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).ok()?;
+                let mf = serde_json::from_str::<RemoteManifest>(&text).ok()?;
+                return Some((path, mf));
+            }
+            None
+        }
+
+        let manifest = if let Some((path, mf)) = try_read_local_manifest() {
+            log::info!("Using local manifest: {}", path.to_string_lossy());
+            mf
+        } else {
+            // Use stable remote manifest only.
+            let url = "https://f.asta.rs/hq-launcher/manifest.json";
+            log::info!("Fetching manifest from {url}");
+            client
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?
+                .error_for_status()
+                .map_err(|e| e.to_string())?
+                .json::<RemoteManifest>()
+                .await
+                .map_err(|e| e.to_string())?
+        };
 
         let manifests = manifest.manifests.clone();
         let mut cfg = ModsConfig {

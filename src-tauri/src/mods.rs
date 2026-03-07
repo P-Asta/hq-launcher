@@ -2,10 +2,14 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use std::sync::atomic::Ordering as AtomicOrdering;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
 use crate::bepinex_cfg::read_manifest;
 use crate::mod_config::{ModEntry, ModsConfig};
 use crate::thunderstore::{self, PackageListing};
-use crate::zip_utils::extract_thunderstore_into_plugins_with_progress;
+use crate::zip_utils::extract_thunderstore_into_bepinex_with_progress;
 use semver::Version;
 
 fn read_manifest_allow_old(mod_dir: &Path) -> Result<crate::bepinex_cfg::BepInExManifest, String> {
@@ -77,6 +81,7 @@ pub async fn install_mods_with_progress<F>(
     game_root: &Path,
     game_version: u32,
     cfg: &ModsConfig,
+    cancel: Option<Arc<AtomicBool>>,
     mut on_progress: F,
 ) -> Result<(), String>
 where
@@ -109,6 +114,12 @@ where
     on_progress(0, total_mods, Some("Starting...".to_string()));
 
     for (idx, spec) in cfg.mods.iter().enumerate() {
+        if cancel
+            .as_ref()
+            .is_some_and(|c| c.load(AtomicOrdering::Relaxed))
+        {
+            return Err("Cancelled".to_string());
+        }
         // Add-only: if a plugin folder already exists for this mod, skip it.
         // Folder name is deterministic (does not include the mod version).
         let already_dir = target_plugins.join(format!("{}-{}", spec.dev, spec.name));
@@ -121,47 +132,52 @@ where
                 spec.name
             );
 
-            let manifest = read_manifest_allow_old(&already_dir)?;
+            let manifest = match read_manifest_allow_old(&already_dir) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    // If an existing plugin folder has a broken/empty manifest.json,
+                    // don't fail the whole install. Force a reinstall for this mod.
+                    log::warn!(
+                        "Failed to read existing manifest for {}-{}: {e} (will reinstall)",
+                        spec.dev,
+                        spec.name
+                    );
+                    None
+                }
+            };
 
-            let version_limit = spec
-                .version_config
-                .get(&game_version)
-                .unwrap_or(&"0.0.0".to_string())
-                .clone();
             installed = installed.saturating_add(1);
-            if version_limit == "0.0.0" {
-                let new_version = packages
-                    .clone()
-                    .iter()
-                    .find(|p| {
-                        p.owner.to_lowercase() == spec.dev.to_lowercase()
-                            && p.name.to_lowercase() == spec.name.to_lowercase()
-                    })
-                    .map(|p| {
-                        p.versions
-                            .first()
+            // Decide the desired version using the SAME semantics as install:
+            // - If pinned_version_for(game_version) exists: prefer it (if available), else fallback to latest (semver max)
+            // - Else: latest (semver max)
+            let key = (spec.dev.to_lowercase(), spec.name.to_lowercase());
+            let desired_version = package_map
+                .get(&key)
+                .map(|pkg| {
+                    if let Some(pin) = spec.pinned_version_for(game_version) {
+                        if pkg.versions.iter().any(|v| v.version_number == pin) {
+                            pin.to_string()
+                        } else {
+                            latest_pkg_version(&pkg.versions)
+                                .map(|v| v.version_number.clone())
+                                .unwrap_or_else(|| "0.0.0".to_string())
+                        }
+                    } else {
+                        latest_pkg_version(&pkg.versions)
                             .map(|v| v.version_number.clone())
                             .unwrap_or_else(|| "0.0.0".to_string())
-                    })
-                    .unwrap_or_else(|| "0.0.0".to_string());
+                    }
+                })
+                .unwrap_or_else(|| {
+                    // If package list lookup fails, don't force reinstall based on an unknown desired version.
+                    "0.0.0".to_string()
+                });
 
-                if manifest.version_number == new_version {
-                    continue;
-                }
-                log::info!(
-                    "Updating {}-{} from {old_version} to {new_version}",
-                    spec.dev,
-                    spec.name,
-                    old_version = manifest.version_number
-                );
-            } else if manifest.version_number != version_limit {
-                log::info!(
-                    "Updating {}-{} from {old_version} to {version_limit}",
-                    spec.dev,
-                    spec.name,
-                    old_version = manifest.version_number
-                );
-            } else {
+            if desired_version != "0.0.0"
+                && manifest
+                    .as_ref()
+                    .is_some_and(|m| m.version_number == desired_version)
+            {
                 on_progress(
                     installed,
                     total_mods,
@@ -174,6 +190,19 @@ where
                     )),
                 );
                 continue;
+            }
+
+            // If we couldn't read the manifest, or desired version differs, continue to (re)install.
+            if desired_version != "0.0.0" {
+                log::info!(
+                    "Updating {}-{} from {old_version} to {desired_version}",
+                    spec.dev,
+                    spec.name,
+                    old_version = manifest
+                        .as_ref()
+                        .map(|m| m.version_number.as_str())
+                        .unwrap_or("?")
+                );
             }
 
             // log::info!("\tcurrent_version: {:#?}", current_version);
@@ -249,6 +278,12 @@ where
         let zip_path = temp_root.join(format!("{}-{}-{}.zip", spec.dev, spec.name, ver));
 
         // Download zip
+        if cancel
+            .as_ref()
+            .is_some_and(|c| c.load(AtomicOrdering::Relaxed))
+        {
+            return Err("Cancelled".to_string());
+        }
         on_progress(
             installed,
             total_mods,
@@ -268,7 +303,14 @@ where
 
         std::fs::write(&zip_path, &bytes).map_err(|e| e.to_string())?;
 
-        // Extract directly into BepInEx/plugins, then delete the zip.
+        // Extract into correct BepInEx locations (plugins/patchers), then delete the zip.
+        if cancel
+            .as_ref()
+            .is_some_and(|c| c.load(AtomicOrdering::Relaxed))
+        {
+            let _ = std::fs::remove_file(&zip_path);
+            return Err("Cancelled".to_string());
+        }
         on_progress(
             installed,
             total_mods,
@@ -276,9 +318,9 @@ where
         );
         let folder_name = format!("{}-{}", spec.dev, spec.name);
 
-        if let Err(e) = extract_thunderstore_into_plugins_with_progress(
+        if let Err(e) = extract_thunderstore_into_bepinex_with_progress(
             &zip_path,
-            &target_plugins,
+            game_root,
             &folder_name,
             |_d, _t, _n| {},
         ) {
@@ -617,9 +659,9 @@ where
             }
         }
 
-        if let Err(e) = extract_thunderstore_into_plugins_with_progress(
+        if let Err(e) = extract_thunderstore_into_bepinex_with_progress(
             &zip_path,
-            &target_plugins,
+            game_root,
             &folder_name,
             |_d, _t, _n| {},
         ) {
