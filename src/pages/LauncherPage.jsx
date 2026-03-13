@@ -67,14 +67,31 @@ function isAuthError(e) {
   );
 }
 
+const RUN_MODE_VALUES = [
+  "hq",
+  "smhq",
+  "practice",
+  "brutal",
+  "brutal_practice",
+  "wesley",
+  "wesley_smhq",
+  "wesley_practice",
+];
+
+function getInitialRunMode() {
+  const savedRunMode = localStorage.getItem("selectedRunMode");
+  return RUN_MODE_VALUES.includes(savedRunMode) ? savedRunMode : "hq";
+}
+
 export default function LauncherPage({
   loginState,
   onLogout,
   onRequireLogin,
   bootstrapError,
+  onInstalledVersionsChange,
 }) {
   const [installedVersions, setInstalledVersions] = useState([]);
-  const [selectedVersion, setSelectedVersion] = useState(56);
+  const [selectedVersion, setSelectedVersion] = useState(null);
   const [manifest, setManifest] = useState({
     version: null,
     mods: [],
@@ -146,12 +163,18 @@ export default function LauncherPage({
   });
 
   const [gameStatus, setGameStatus] = useState({ running: false, pid: null });
-  const [runMode, setRunMode] = useState("hq"); // hq | practice | brutal | brutal_practice | wesley | wesley_practice | smhq
+  const [runMode, setRunMode] = useState(getInitialRunMode); // hq | practice | brutal | brutal_practice | wesley | wesley_practice | smhq
   const autoCheckedRef = useRef(new Set());
   const practicePromptOpenRef = useRef(false);
   const presetPromptOpenRef = useRef(false);
   const practiceTaskRef = useRef(null);
   const presetTaskRef = useRef(null);
+
+  function updateInstalledVersionsState(nextVersions) {
+    const normalized = Array.isArray(nextVersions) ? nextVersions : [];
+    setInstalledVersions(normalized);
+    onInstalledVersionsChange?.(normalized);
+  }
 
   useEffect(() => {
     practicePromptOpenRef.current = !!practicePrompt.open;
@@ -428,11 +451,11 @@ export default function LauncherPage({
         invoke("list_installed_versions"),
         invoke("get_manifest"),
       ]);
-      setInstalledVersions(Array.isArray(versions) ? versions : []);
+      const vList = Array.isArray(versions) ? versions : [];
+      updateInstalledVersionsState(vList);
       setManifest(mf ?? { version: null, mods: [], manifests: {} });
 
       // pick best default selected version
-      const vList = Array.isArray(versions) ? versions : [];
       const remoteV =
         mf?.manifests && typeof mf.manifests === "object"
           ? Object.keys(mf.manifests)
@@ -440,9 +463,17 @@ export default function LauncherPage({
               .filter((n) => Number.isFinite(n))
           : [];
       remoteV.sort((a, b) => a - b);
-      if (vList.length > 0) setSelectedVersion(vList[vList.length - 1]);
-      else if (remoteV.length > 0)
-        setSelectedVersion(remoteV[remoteV.length - 1]);
+
+      const availableVersions = new Set([...vList, ...remoteV]);
+      const saved = localStorage.getItem("selectedVersion");
+      const savedNum = saved == null ? null : Number(saved);
+      if (Number.isFinite(savedNum) && availableVersions.has(savedNum)) {
+        setSelectedVersion(savedNum);
+      } else {
+        if (vList.length > 0) setSelectedVersion(vList[vList.length - 1]);
+        else if (remoteV.length > 0)
+          setSelectedVersion(remoteV[remoteV.length - 1]);
+      }
 
       // initial running status
       try {
@@ -458,7 +489,7 @@ export default function LauncherPage({
     })().catch((e) => {
       console.error(e);
     });
-  }, []);
+  }, [onInstalledVersionsChange]);
 
   // Let the Titlebar know what version is currently selected
   useEffect(() => {
@@ -588,7 +619,7 @@ export default function LauncherPage({
         }));
         // refresh installed versions list after install
         invoke("list_installed_versions")
-          .then((v) => setInstalledVersions(Array.isArray(v) ? v : []))
+          .then((v) => updateInstalledVersionsState(v))
           .catch(() => {});
         // refresh installed plugin versions for this game version
         const v = Number(event.payload?.version);
@@ -691,7 +722,7 @@ export default function LauncherPage({
           }));
           // refresh installed versions list after install
           invoke("list_installed_versions")
-            .then((v) => setInstalledVersions(Array.isArray(v) ? v : []))
+            .then((v) => updateInstalledVersionsState(v))
             .catch(() => {});
         }
       );
@@ -827,7 +858,8 @@ export default function LauncherPage({
         typeof onRequireLogin === "function"
       ) {
         try {
-          await onRequireLogin();
+          const didLogin = await onRequireLogin();
+          if (!didLogin) throw e;
           // After login, retry once automatically.
           return await downloadVersion(v, true);
         } catch {}
@@ -1426,6 +1458,19 @@ export default function LauncherPage({
       }));
     }
   }
+
+  // Save selectedVersion to localStorage
+  useEffect(() => {
+    if (selectedVersion != null) {
+      localStorage.setItem("selectedVersion", String(selectedVersion));
+    }
+  }, [selectedVersion]);
+
+  useEffect(() => {
+    if (runMode) {
+      localStorage.setItem("selectedRunMode", runMode);
+    }
+  }, [runMode]);
 
   return (
     <div className="h-full text-white">

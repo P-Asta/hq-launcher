@@ -28,6 +28,7 @@ export default function AppRoot() {
   const [updateInfo, setUpdateInfo] = useState(null);
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const updateCheckedRef = useRef(false);
+  const [installedVersions, setInstalledVersions] = useState([]);
 
   async function refreshLoginState() {
     try {
@@ -78,6 +79,12 @@ export default function AppRoot() {
     });
   }
 
+  function closeLoginDialog(result = false) {
+    setLoginOpen(false);
+    if (loginResolveRef.current) loginResolveRef.current(result);
+    loginResolveRef.current = null;
+  }
+
   async function logout() {
     try {
       await invoke("depot_logout");
@@ -87,7 +94,7 @@ export default function AppRoot() {
 
   return (
     <div className="h-full w-full overflow-hidden">
-      <Titlebar className="fixed top-0 left-0 h-10" />
+      <Titlebar className="fixed top-0 left-0 h-10" installedVersions={installedVersions} />
       <div className="relative h-[calc(100vh-32px)] w-full mt-10">
         {loginState.status === "loading" ? (
           <Splash message="Starting up..." />
@@ -97,20 +104,22 @@ export default function AppRoot() {
             onLogout={logout}
             onRequireLogin={requestLogin}
             bootstrapError={bootstrapError}
+            onInstalledVersionsChange={setInstalledVersions}
           />
         )}
 
         <LoginDialog
           open={loginOpen}
+          onOpenChange={(nextOpen) => {
+            if (!nextOpen) closeLoginDialog(false);
+          }}
           onLoggedIn={(s) => {
             setLoginState({
               status: "ready",
               is_logged_in: !!s?.is_logged_in,
               username: s?.username ?? null,
             });
-            setLoginOpen(false);
-            if (loginResolveRef.current) loginResolveRef.current(true);
-            loginResolveRef.current = null;
+            closeLoginDialog(true);
           }}
         />
 

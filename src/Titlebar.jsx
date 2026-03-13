@@ -10,7 +10,7 @@ import { Dialog, DialogContent } from './components/ui/dialog';
 import { Button } from './components/ui/button';
 
 
-export default function Titlebar({ ...props }) {
+export default function Titlebar({ installedVersions, ...props }) {
     const [isMaximized, setIsMaximized] = useState(false);
     const [configLinkState, setConfigLinkState] = useState(null);
     const [configLinkBusy, setConfigLinkBusy] = useState(false);

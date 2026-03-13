@@ -1522,6 +1522,7 @@ async fn open_version_folder(app: tauri::AppHandle) -> Result<bool, String> {
         .app_data_dir()
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?
         .join("versions");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create versions dir: {e}"))?;
     let _ = opener::open(dir).map_err(|e| e.to_string())?;
     Ok(true)
 }

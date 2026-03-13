@@ -10,7 +10,7 @@ function isTwoFactorRequiredError(e) {
   return msg.toLowerCase().includes("two-factor authentication required");
 }
 
-export function LoginDialog({ open, onLoggedIn }) {
+export function LoginDialog({ open, onOpenChange, onLoggedIn }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [twoFactorCode, setTwoFactorCode] = useState("");
@@ -159,11 +159,22 @@ export function LoginDialog({ open, onLoggedIn }) {
     }
   }
 
+  const canClose = !loginRunning && !busy;
+
+  function handleOpenChange(nextOpen) {
+    if (!nextOpen && !canClose) return;
+    onOpenChange?.(nextOpen);
+  }
+
   return (
-    <Dialog open={open} onOpenChange={() => {}}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
-        onEscapeKeyDown={(e) => e.preventDefault()}
-        onPointerDownOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => {
+          if (!canClose) e.preventDefault();
+        }}
+        onPointerDownOutside={(e) => {
+          if (!canClose) e.preventDefault();
+        }}
       >
         <div className="flex flex-col gap-4">
           <div>
@@ -259,6 +270,14 @@ export function LoginDialog({ open, onLoggedIn }) {
           )}
 
           <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="outline"
+              className="h-10"
+              disabled={!canClose}
+              onClick={() => handleOpenChange(false)}
+            >
+              Close
+            </Button>
             <Button
               variant="default"
               className="h-10"
