@@ -194,7 +194,7 @@ export default function Titlebar({ installedVersions, ...props }) {
 
             <div 
                 data-tauri-drag-region 
-                className={cn('w-full flex items-center justify-between px-2 border-b border-white/10 bg-[#0b0c10] z-50', props.className)}
+                className={cn('w-full flex items-center justify-between px-2 border-b border-white/10 bg-[#0b0c10]/80 backdrop-blur-sm z-50', props.className)}
             >
                 {/* Left side - Menu items */}
                 <div className="flex items-center gap-1">

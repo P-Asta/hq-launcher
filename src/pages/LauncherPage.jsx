@@ -78,7 +78,7 @@ const RUN_MODE_VALUES = [
   "wesley_practice",
 ];
 
-const DISCORD_DOWNLOAD_URL = "https://p-asta.github.io/hq-launcher/";
+const DISCORD_DOWNLOAD_URL = "https://asta.rs/hq-launcher/";
 
 function getInitialRunMode() {
   const savedRunMode = localStorage.getItem("selectedRunMode");
@@ -1335,13 +1335,18 @@ export default function LauncherPage({
     );
   }, [RUN_OPTIONS, runMode]);
 
+  const discordRunLabel = useMemo(() => {
+    if (!selectedRunOption) return "High Quota Run";
+    if (selectedRunOption.value === "hq") return "High Quota Run";
+    if (selectedRunOption.value === "practice") return "High Quota Practice";
+    return selectedRunOption.label;
+  }, [selectedRunOption]);
+
   const discordPresence = useMemo(() => {
     if (gameStatus.running) {
       return {
-        details: Number.isFinite(Number(selectedVersion))
-          ? `v${selectedVersion} ${selectedRunOption?.label ?? "HQ Run"}`
-          : selectedRunOption?.label ?? "HQ Run",
-        state: "High Quota Launcher",
+        details: `Playing ${discordRunLabel}`,
+        state: `v${selectedVersion}`,
         large_image: "orange",
         large_text: "HQ Launcher",
         button_label: "Download",
@@ -1351,15 +1356,15 @@ export default function LauncherPage({
 
     return {
       details: "Idle",
-      state: "High Quota Launcher",
       large_image: "black",
       large_text: "HQ Launcher",
+      // state: selectedVersion? `v${selectedVersion}`: "",
       button_label: "Download",
       button_url: DISCORD_DOWNLOAD_URL,
     };
   }, [
+    discordRunLabel,
     gameStatus.running,
-    selectedRunOption,
     selectedVersion,
   ]);
 

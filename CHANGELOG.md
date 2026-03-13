@@ -1,6 +1,14 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.4.8 (2026-03-13)
+- Remember the last selected version and run mode when reopening the launcher
+- Allow opening the versions folder even before any version is installed
+- Improve Steam login UX
+- Add Discord Rich Presence support
+- Update Discord Rich Presence
+- Prevent launching multiple launcher instances at the same time
+
 ## 1.4.7 (2026-03-07)
 - Practice mod bug fix
 
