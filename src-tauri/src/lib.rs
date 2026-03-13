@@ -1,4 +1,5 @@
 mod bepinex_cfg;
+mod discord_presence;
 mod downloader;
 mod installer;
 mod logger;
@@ -2999,6 +3000,7 @@ pub fn run() {
         .manage(GameState::default())
         .manage(DownloadState::default())
         .manage(PrepareState::default())
+        .manage(discord_presence::DiscordPresenceState::default())
         .manage(downloader::DepotLoginState::default())
         .setup(|app| {
             // File logging (AppDataDir/logs/hq-launcher.log)
@@ -3075,7 +3077,9 @@ pub fn run() {
             installer::install_proton_ge,
             installer::get_current_proton_dir,
             open_version_folder,
-            get_global_shortcut
+            get_global_shortcut,
+            discord_presence::set_discord_presence,
+            discord_presence::clear_discord_presence
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

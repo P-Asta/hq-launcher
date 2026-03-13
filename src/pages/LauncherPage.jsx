@@ -78,6 +78,8 @@ const RUN_MODE_VALUES = [
   "wesley_practice",
 ];
 
+const DISCORD_DOWNLOAD_URL = "https://p-asta.github.io/hq-launcher/";
+
 function getInitialRunMode() {
   const savedRunMode = localStorage.getItem("selectedRunMode");
   return RUN_MODE_VALUES.includes(savedRunMode) ? savedRunMode : "hq";
@@ -1206,6 +1208,12 @@ export default function LauncherPage({
   }, [minRequiredVersion, selectedVersion, installedVersions, runMode]);
 
   const selectedInstalled = isInstalled(selectedVersion);
+  const selectedVersionValue = Number.isFinite(Number(selectedVersion))
+    ? String(selectedVersion)
+    : "";
+  const selectedVersionLabel = Number.isFinite(Number(selectedVersion))
+    ? `v${selectedVersion}`
+    : "Select version";
   const promptVersion = downloadPrompt.version;
   const promptIsWorking =
     downloadPrompt.open &&
@@ -1326,6 +1334,44 @@ export default function LauncherPage({
       RUN_OPTIONS[0]
     );
   }, [RUN_OPTIONS, runMode]);
+
+  const discordPresence = useMemo(() => {
+    if (gameStatus.running) {
+      return {
+        details: Number.isFinite(Number(selectedVersion))
+          ? `v${selectedVersion} ${selectedRunOption?.label ?? "HQ Run"}`
+          : selectedRunOption?.label ?? "HQ Run",
+        state: "High Quota Launcher",
+        large_image: "orange",
+        large_text: "HQ Launcher",
+        button_label: "Download",
+        button_url: DISCORD_DOWNLOAD_URL,
+      };
+    }
+
+    return {
+      details: "Idle",
+      state: "High Quota Launcher",
+      large_image: "black",
+      large_text: "HQ Launcher",
+      button_label: "Download",
+      button_url: DISCORD_DOWNLOAD_URL,
+    };
+  }, [
+    gameStatus.running,
+    selectedRunOption,
+    selectedVersion,
+  ]);
+
+  useEffect(() => {
+    invoke("set_discord_presence", { payload: discordPresence }).catch(() => {});
+  }, [discordPresence]);
+
+  useEffect(() => {
+    return () => {
+      invoke("clear_discord_presence").catch(() => {});
+    };
+  }, []);
 
   const latestPrepareKeyRef = useRef("");
   const preparePrevRef = useRef(null); // { key, prevRunMode, prevVersion }
@@ -1556,7 +1602,7 @@ export default function LauncherPage({
 
           <div className="w-fit">
             <Select
-              value={String(selectedVersion)}
+              value={selectedVersionValue}
               onValueChange={async (v) => {
                 const nextV = Number(v);
                 if (isInstalled(nextV)) {
@@ -1578,7 +1624,7 @@ export default function LauncherPage({
               <SelectTrigger className="h-11 px-3">
                 <div className="mr-2 flex items-center gap-2">
                   <div className="text-sm font-semibold">
-                    v{selectedVersion}
+                    {selectedVersionLabel}
                   </div>
                   {selectedInstalled ? (
                     <CheckCircle2 className="h-4 w-4 text-emerald-400" />
@@ -1628,7 +1674,7 @@ export default function LauncherPage({
             <Input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search Mod"
+              placeholder="Search mods"
               className="h-11 pl-10"
             />
           </div>
@@ -1663,7 +1709,7 @@ export default function LauncherPage({
             {loginState?.username ? (
               <div className="hidden items-center gap-2 md:flex">
                 <div className="text-sm text-white/55">
-                  logged In
+                  Logged in
                 </div>
               </div>
             ) : null}

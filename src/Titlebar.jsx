@@ -150,10 +150,10 @@ export default function Titlebar({ installedVersions, ...props }) {
             <Dialog open={linkWarnOpen} onOpenChange={setLinkWarnOpen}>
                 <DialogContent
                     onEscapeKeyDown={(e) => {
-                        if (!configLinkBusy) e.preventDefault();
+                        if (configLinkBusy) e.preventDefault();
                     }}
                     onPointerDownOutside={(e) => {
-                        if (!configLinkBusy) e.preventDefault();
+                        if (configLinkBusy) e.preventDefault();
                     }}
                 >
                     <div className="flex flex-col gap-4">
@@ -194,7 +194,7 @@ export default function Titlebar({ installedVersions, ...props }) {
 
             <div 
                 data-tauri-drag-region 
-                className={cn('w-full flex items-center justify-between px-2 border-b border-white/10 bg-[#0b0c10]/80 backdrop-blur-sm z-50', props.className)}
+                className={cn('w-full flex items-center justify-between px-2 border-b border-white/10 bg-[#0b0c10] z-50', props.className)}
             >
                 {/* Left side - Menu items */}
                 <div className="flex items-center gap-1">
@@ -246,6 +246,8 @@ export default function Titlebar({ installedVersions, ...props }) {
 
 function TitlebarMenu({ name, items }) {
     let registeredShortcuts = [];
+    const formatShortcut = (shortcut) =>
+        String(shortcut ?? "").replaceAll("CommandOrControl", "Ctrl");
 
 
     useEffect(() => {
@@ -308,7 +310,7 @@ function TitlebarMenu({ name, items }) {
                         >
                             <span>{item.label}</span>
                             {item.shortcut && (
-                                <span className="text-xs text-white/50 ml-4">{invoke('get_global_shortcut', { shortcut: item.shortcut })}</span>
+                                <span className="text-xs text-white/50 ml-4">{formatShortcut(item.shortcut)}</span>
                             )}
                         </DropdownMenu.Item>
                             );
