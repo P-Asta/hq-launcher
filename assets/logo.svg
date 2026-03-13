@@ -1,0 +1,42 @@
+<svg width="576" height="576" viewBox="0 0 576 576" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g filter="url(#filter0_d_75_625)">
+<path d="M64 64H160V96H192V64H224H448V96H480V448H448V480H64V64Z" fill="#F24713"/>
+<path d="M464 48V80H496V464H464V496H48V48H464Z" stroke="#3F240D" stroke-width="32"/>
+</g>
+<rect x="288" y="128" width="32" height="96" fill="white"/>
+<rect x="416" y="128" width="32" height="64" fill="white"/>
+<rect x="384" y="224" width="32" height="64" transform="rotate(90 384 224)" fill="white"/>
+<rect x="416" y="96" width="32" height="96" transform="rotate(90 416 96)" fill="white"/>
+<rect x="384" y="192" width="32" height="32" fill="white"/>
+<rect x="416" y="224" width="32" height="32" fill="white"/>
+<rect x="96" y="96" width="32" height="160" fill="white"/>
+<rect x="224" y="96" width="32" height="160" fill="white"/>
+<rect x="224" y="160" width="32" height="96" transform="rotate(90 224 160)" fill="white"/>
+<rect x="96" y="288" width="32" height="160" fill="white"/>
+<rect x="256" y="416" width="32" height="128" transform="rotate(90 256 416)" fill="white"/>
+<rect x="288" y="320" width="32" height="96" fill="white"/>
+<rect x="416" y="288" width="32" height="96" transform="rotate(90 416 288)" fill="white"/>
+<rect x="416" y="416" width="32" height="96" transform="rotate(90 416 416)" fill="white"/>
+<rect x="448" y="384" width="32" height="32" transform="rotate(90 448 384)" fill="white"/>
+<rect x="448" y="320" width="32" height="32" transform="rotate(90 448 320)" fill="white"/>
+<rect y="32" width="32" height="512" fill="white"/>
+<rect x="480" width="32" height="480" transform="rotate(90 480 0)" fill="white"/>
+<rect x="512" width="32" height="512" transform="rotate(90 512 0)" fill="white"/>
+<rect x="544" y="32" width="32" height="64" transform="rotate(90 544 32)" fill="white"/>
+<rect x="576" y="64" width="32" height="64" transform="rotate(90 576 64)" fill="white"/>
+<rect x="544" y="96" width="32" height="448" fill="white"/>
+<rect x="512" y="512" width="32" height="64" fill="white"/>
+<rect x="32" y="512" width="32" height="64" fill="white"/>
+<rect x="512" y="544" width="32" height="448" transform="rotate(90 512 544)" fill="white"/>
+<defs>
+<filter id="filter0_d_75_625" x="32" y="32" width="512" height="512" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+<feFlood flood-opacity="0" result="BackgroundImageFix"/>
+<feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+<feOffset dx="32" dy="32"/>
+<feComposite in2="hardAlpha" operator="out"/>
+<feColorMatrix type="matrix" values="0 0 0 0 0.247059 0 0 0 0 0.141176 0 0 0 0 0.0509804 0 0 0 1 0"/>
+<feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_75_625"/>
+<feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_75_625" result="shape"/>
+</filter>
+</defs>
+</svg>

@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="./assets/logo.svg" type="image/svg+xml" />
     <title>HQ Launcher</title>
     <style>
       :root {
@@ -60,16 +61,23 @@
       }
 
       .brand-mark {
-        width: 38px;
-        height: 38px;
-        border-radius: 12px;
+        width: 44px;
+        height: 44px;
+        border-radius: 14px;
         border: 1px solid var(--border);
         background: rgba(255, 255, 255, 0.04);
         display: grid;
         place-items: center;
-        font-size: 13px;
-        font-weight: 700;
-        letter-spacing: 0.08em;
+        overflow: hidden;
+      }
+
+      .brand-mark img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+        transform: scale(0.92);
       }
 
       .brand-copy strong {
@@ -285,7 +293,9 @@
     <main class="page">
       <header class="nav">
         <a class="brand" href="https://github.com/p-asta/hq-launcher">
-          <span class="brand-mark">HQ</span>
+          <span class="brand-mark">
+            <img src="./assets/logo.svg" alt="HQ Launcher logo" />
+          </span>
           <span class="brand-copy">
             <strong>HQ Launcher</strong>
             <span>High Quota Launcher</span>
@@ -328,20 +338,6 @@
             <div id="releaseMeta" class="release-meta">Checking GitHub releases now.</div>
             <div id="releaseActions" class="release-actions"></div>
 
-            <div class="grid">
-              <div class="stat">
-                <div class="stat-label">Channel</div>
-                <div class="stat-value">Stable</div>
-              </div>
-              <div class="stat">
-                <div class="stat-label">Platforms</div>
-                <div class="stat-value">Windows, Linux</div>
-              </div>
-              <div class="stat">
-                <div class="stat-label">Source</div>
-                <div class="stat-value">GitHub Releases</div>
-              </div>
-            </div>
 
             <div class="note">
               If a Windows or Linux installer is not attached to the latest release,
