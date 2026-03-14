@@ -1346,9 +1346,8 @@ export default function LauncherPage({
     if (gameStatus.running) {
       return {
         details: `Playing ${discordRunLabel}`,
-        state: `v${selectedVersion}`,
         large_image: "orange",
-        large_text: "HQ Launcher",
+        large_text: `${selectedRunOption.value.indexOf("practice") == -1? "grinding": "practicing"} v${selectedVersion}`,
         button_label: "Download",
         button_url: DISCORD_DOWNLOAD_URL,
       };

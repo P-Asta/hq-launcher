@@ -42,6 +42,7 @@ fn ensure_connected(state: &DiscordPresenceState) -> Result<(), String> {
 
 fn build_activity<'a>(payload: &'a PresencePayload) -> activity::Activity<'a> {
     let mut activity = activity::Activity::new().details(payload.details.as_str());
+    activity = activity.activity_type(activity::ActivityType::Competing);
 
     if let Some(state) = payload.state.as_deref() {
         activity = activity.state(state);

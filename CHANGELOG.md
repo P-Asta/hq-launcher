@@ -1,6 +1,9 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.4.9 (2026-03-14)
+- Change Discord Rich Presence Design
+
 ## 1.4.8 (2026-03-13)
 - Remember the last selected version and run mode when reopening the launcher
 - Allow opening the versions folder even before any version is installed
