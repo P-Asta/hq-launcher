@@ -167,6 +167,7 @@ export default function LauncherPage({
   const [gameStatus, setGameStatus] = useState({ running: false, pid: null });
   const [runMode, setRunMode] = useState(getInitialRunMode); // hq | practice | brutal | brutal_practice | wesley | wesley_practice | smhq
   const autoCheckedRef = useRef(new Set());
+  const [didFinishBootstrap, setDidFinishBootstrap] = useState(false);
   const practicePromptOpenRef = useRef(false);
   const presetPromptOpenRef = useRef(false);
   const practiceTaskRef = useRef(null);
@@ -488,8 +489,11 @@ export default function LauncherPage({
         const dm = await invoke("get_disabled_mods");
         setDisabledMods(Array.isArray(dm) ? dm : []);
       } catch {}
+
+      setDidFinishBootstrap(true);
     })().catch((e) => {
       console.error(e);
+      setDidFinishBootstrap(true);
     });
   }, [onInstalledVersionsChange]);
 
@@ -525,11 +529,12 @@ export default function LauncherPage({
 
   // auto-run update check once on startup for installed selected version
   useEffect(() => {
+    if (!didFinishBootstrap) return;
     if (!isInstalled(selectedVersion)) return;
     if (autoCheckedRef.current.has(selectedVersion)) return;
     autoCheckedRef.current.add(selectedVersion);
     checkModUpdates(selectedVersion);
-  }, [selectedVersion, installedVersions]);
+  }, [didFinishBootstrap, selectedVersion, installedVersions]);
 
   // refresh installed plugin versions when selected version changes
   useEffect(() => {
@@ -1194,7 +1199,9 @@ export default function LauncherPage({
     if (selectedVersion >= minRequiredVersion) return;
 
     const nextV = minRequiredVersion;
+    const shouldRunSideEffects = didFinishBootstrap;
     setSelectedVersion(nextV);
+    if (!shouldRunSideEffects) return;
     if (isInstalled(nextV)) {
       invoke("apply_disabled_mods", { version: nextV })
         .catch(() => {})
@@ -1205,7 +1212,7 @@ export default function LauncherPage({
     } else {
       openDownloadPrompt(nextV);
     }
-  }, [minRequiredVersion, selectedVersion, installedVersions, runMode]);
+  }, [didFinishBootstrap, minRequiredVersion, selectedVersion, installedVersions, runMode]);
 
   const selectedInstalled = isInstalled(selectedVersion);
   const selectedVersionValue = Number.isFinite(Number(selectedVersion))
