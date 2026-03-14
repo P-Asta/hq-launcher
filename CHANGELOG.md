@@ -1,6 +1,9 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.5.0 (2026-03-14)
+- Fix Freeze Bug
+
 ## 1.4.10 (2026-03-14)
 - Change Discord Rich Presence Design
 - Fix Select Menu auto select bug

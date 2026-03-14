@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use serde::Deserializer;
 use serde::{Deserialize, Serialize};
@@ -134,6 +135,7 @@ impl ModsConfig {
             log::info!("Fetching manifest from {url}");
             client
                 .get(url)
+                .timeout(Duration::from_secs(12))
                 .send()
                 .await
                 .map_err(|e| e.to_string())?

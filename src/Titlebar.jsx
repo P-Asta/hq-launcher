@@ -1,11 +1,11 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Minus, Square, X } from 'lucide-react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { cn } from './lib/cn';
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
-import { register } from '@tauri-apps/plugin-global-shortcut';
+import { isRegistered, register, unregister, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
 import { Dialog, DialogContent } from './components/ui/dialog';
 import { Button } from './components/ui/button';
 
@@ -38,9 +38,12 @@ export default function Titlebar({ installedVersions, ...props }) {
         appWindow.toggleMaximize();
         setIsMaximized(!isMaximized);
     };
-    const handleClose = () => {
-        console.log('close');
-        appWindow.close()};
+    const handleClose = async () => {
+        try {
+            await unregisterAll();
+        } catch {}
+        appWindow.close();
+    };
 
     async function refreshConfigLinkState() {
         try {
@@ -143,6 +146,14 @@ export default function Titlebar({ installedVersions, ...props }) {
         }
     }
 
+    const fileMenuItems = useMemo(() => ([
+        { label: "Open Version Folder", shortcut: "CommandOrControl+O", action: () => { invoke('open_version_folder'); } }
+    ]), []);
+
+    const editMenuItems = useMemo(() => ([
+        { label: "Unlink Config", shortcut: "", disabled: unlinkDisabled, action: unlinkConfig },
+        { label: "Link Config", shortcut: "", disabled: linkDisabled, action: linkConfig }
+    ]), [linkDisabled, unlinkDisabled, configLinkState, configLinkBusy, selectedVersion]);
 
 
     return (
@@ -201,17 +212,11 @@ export default function Titlebar({ installedVersions, ...props }) {
                     <img src="/icon.svg" alt="logo" className='ml-2 w-6 h-6' />
                     <TitlebarMenu 
                         name="File" 
-                        items={[
-                            // { label: "Open App Settings", shortcut: "CommandOrControl+,", action: () => console.log('Open settings') },
-                            { label: "Open Version Folder", shortcut: "CommandOrControl+O", action: () => {invoke('open_version_folder')} }
-                        ]} 
+                        items={fileMenuItems} 
                     />
                     <TitlebarMenu 
                         name="Edit" 
-                        items={[
-                            { label: "Unlink Config", shortcut: "", disabled: unlinkDisabled, action: unlinkConfig },
-                            { label: "Link Config", shortcut: "", disabled: linkDisabled, action: linkConfig }
-                        ]} 
+                        items={editMenuItems} 
                     />
                 </div>
 
@@ -245,21 +250,43 @@ export default function Titlebar({ installedVersions, ...props }) {
 }
 
 function TitlebarMenu({ name, items }) {
-    let registeredShortcuts = [];
     const formatShortcut = (shortcut) =>
         String(shortcut ?? "").replaceAll("CommandOrControl", "Ctrl");
 
 
     useEffect(() => {
-        items.forEach(item => {
-            if (item.shortcut) {
-                if (registeredShortcuts.includes(item.shortcut)) { return }
-                register(item.shortcut, () => {
-                    item.action?.();
-                    console.log('shortcut registered', item.shortcut);
-                })
+        let disposed = false;
+        const shortcuts = [...new Set(
+            items
+                .map((item) => String(item.shortcut ?? "").trim())
+                .filter(Boolean)
+        )];
+
+        (async () => {
+            for (const shortcut of shortcuts) {
+                if (disposed) return;
+                try {
+                    if (await isRegistered(shortcut)) {
+                        await unregister(shortcut);
+                    }
+                    await register(shortcut, (event) => {
+                        if (event.state !== "Pressed") return;
+                        const item = items.find((entry) => entry.shortcut === shortcut);
+                        if (item?.disabled) return;
+                        item?.action?.();
+                    });
+                } catch (error) {
+                    console.warn(`Failed to register shortcut: ${shortcut}`, error);
+                }
             }
-        });
+        })();
+
+        return () => {
+            disposed = true;
+            if (shortcuts.length > 0) {
+                unregister(shortcuts).catch(() => {});
+            }
+        };
     }, [items]);
     return (
         <DropdownMenu.Root>

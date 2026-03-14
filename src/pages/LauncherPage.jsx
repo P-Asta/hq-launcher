@@ -6,6 +6,7 @@ import {
   ChevronDown,
   Download,
   LogOut,
+  LoaderCircle,
   Play,
   Search,
   Settings2,
@@ -83,6 +84,66 @@ const DISCORD_DOWNLOAD_URL = "https://asta.rs/hq-launcher/";
 function getInitialRunMode() {
   const savedRunMode = localStorage.getItem("selectedRunMode");
   return RUN_MODE_VALUES.includes(savedRunMode) ? savedRunMode : "hq";
+}
+
+function SkeletonBlock({ className }) {
+  return (
+    <div
+      className={cn(
+        "animate-pulse rounded-xl border border-white/5 bg-white/[0.06]",
+        className
+      )}
+    />
+  );
+}
+
+function LauncherPageSkeleton({ statusText }) {
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-3">
+        <SkeletonBlock className="h-11 w-[220px] rounded-xl" />
+        <SkeletonBlock className="h-11 w-28 rounded-xl" />
+        <SkeletonBlock className="h-11 min-w-[220px] flex-1 rounded-xl" />
+        <SkeletonBlock className="h-11 w-11 rounded-xl" />
+      </div>
+
+      <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+        <div className="flex items-center gap-2 text-sm font-medium text-white/85">
+          <LoaderCircle className="h-4 w-4 animate-spin text-white/65" />
+          <span>Preparing launcher</span>
+        </div>
+        <div className="mt-1 text-xs text-white/50">
+          {statusText || "Loading local versions and mod manifest..."}
+        </div>
+      </div>
+
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4">
+        <div className="min-h-0 rounded-2xl border border-white/10 bg-white/5 p-3">
+          <div className="mb-3 flex items-center justify-between px-1">
+            <SkeletonBlock className="h-4 w-20 rounded-md" />
+            <SkeletonBlock className="h-4 w-14 rounded-md" />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            {Array.from({ length: 6 }).map((_, index) => (
+              <div
+                key={index}
+                className="flex items-start gap-3 rounded-2xl border border-white/10 bg-black/10 px-3 py-3"
+              >
+                <SkeletonBlock className="h-11 w-11 shrink-0 rounded-xl" />
+                <div className="min-w-0 flex-1 space-y-2">
+                  <SkeletonBlock className="h-5 w-36 rounded-md" />
+                  <SkeletonBlock className="h-4 w-24 rounded-md" />
+                  <SkeletonBlock className="h-4 w-full rounded-md" />
+                </div>
+                <SkeletonBlock className="mt-2 h-6 w-10 shrink-0 rounded-full" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </>
+  );
 }
 
 export default function LauncherPage({
@@ -168,6 +229,9 @@ export default function LauncherPage({
   const [runMode, setRunMode] = useState(getInitialRunMode); // hq | practice | brutal | brutal_practice | wesley | wesley_practice | smhq
   const autoCheckedRef = useRef(new Set());
   const [didFinishBootstrap, setDidFinishBootstrap] = useState(false);
+  const [bootstrapStatus, setBootstrapStatus] = useState(
+    "Checking installed versions..."
+  );
   const practicePromptOpenRef = useRef(false);
   const presetPromptOpenRef = useRef(false);
   const practiceTaskRef = useRef(null);
@@ -449,52 +513,95 @@ export default function LauncherPage({
 
   // bootstrap data
   useEffect(() => {
+    let cancelled = false;
+
     (async () => {
-      const [versions, mf] = await Promise.all([
-        invoke("list_installed_versions"),
-        invoke("get_manifest"),
-      ]);
-      const vList = Array.isArray(versions) ? versions : [];
-      updateInstalledVersionsState(vList);
-      setManifest(mf ?? { version: null, mods: [], manifests: {} });
-
-      // pick best default selected version
-      const remoteV =
-        mf?.manifests && typeof mf.manifests === "object"
-          ? Object.keys(mf.manifests)
-              .map((k) => Number(k))
-              .filter((n) => Number.isFinite(n))
-          : [];
-      remoteV.sort((a, b) => a - b);
-
-      const availableVersions = new Set([...vList, ...remoteV]);
       const saved = localStorage.getItem("selectedVersion");
       const savedNum = saved == null ? null : Number(saved);
-      if (Number.isFinite(savedNum) && availableVersions.has(savedNum)) {
+
+      const manifestPromise = invoke("get_manifest");
+      setBootstrapStatus("Checking installed versions...");
+
+      let vList = [];
+      try {
+        const versions = await invoke("list_installed_versions");
+        vList = Array.isArray(versions) ? versions : [];
+      } catch (e) {
+        console.error(e);
+      }
+
+      if (cancelled) return;
+
+      updateInstalledVersionsState(vList);
+
+      // Pick a usable version immediately so the UI does not wait on the remote manifest.
+      if (Number.isFinite(savedNum) && (vList.length === 0 || vList.includes(savedNum))) {
         setSelectedVersion(savedNum);
-      } else {
-        if (vList.length > 0) setSelectedVersion(vList[vList.length - 1]);
-        else if (remoteV.length > 0)
-          setSelectedVersion(remoteV[remoteV.length - 1]);
+      } else if (vList.length > 0) {
+        setSelectedVersion(vList[vList.length - 1]);
+      } else if (Number.isFinite(savedNum)) {
+        setSelectedVersion(savedNum);
       }
 
       // initial running status
       try {
+        setBootstrapStatus("Checking game status...");
         const s = await invoke("get_game_status");
-        setGameStatus(s ?? { running: false, pid: null });
+        if (!cancelled) {
+          setGameStatus(s ?? { running: false, pid: null });
+        }
       } catch {}
 
       // disabled mods list
       try {
+        setBootstrapStatus("Loading mod preferences...");
         const dm = await invoke("get_disabled_mods");
-        setDisabledMods(Array.isArray(dm) ? dm : []);
+        if (!cancelled) {
+          setDisabledMods(Array.isArray(dm) ? dm : []);
+        }
       } catch {}
 
-      setDidFinishBootstrap(true);
-    })().catch((e) => {
-      console.error(e);
-      setDidFinishBootstrap(true);
-    });
+      try {
+        setBootstrapStatus("Fetching remote mod manifest...");
+        const mf = await manifestPromise;
+        if (cancelled) return;
+
+        setManifest(mf ?? { version: null, mods: [], manifests: {} });
+
+        const remoteV =
+          mf?.manifests && typeof mf.manifests === "object"
+            ? Object.keys(mf.manifests)
+                .map((k) => Number(k))
+                .filter((n) => Number.isFinite(n))
+            : [];
+        remoteV.sort((a, b) => a - b);
+
+        const availableVersions = new Set([...vList, ...remoteV]);
+        setSelectedVersion((prev) => {
+          const prevNum = Number(prev);
+          if (Number.isFinite(prevNum) && availableVersions.has(prevNum)) {
+            return prevNum;
+          }
+          if (Number.isFinite(savedNum) && availableVersions.has(savedNum)) {
+            return savedNum;
+          }
+          if (vList.length > 0) return vList[vList.length - 1];
+          if (remoteV.length > 0) return remoteV[remoteV.length - 1];
+          return Number.isFinite(prevNum) ? prevNum : null;
+        });
+      } catch (e) {
+        console.error(e);
+      } finally {
+        if (!cancelled) {
+          setBootstrapStatus("Finalizing launcher...");
+          setDidFinishBootstrap(true);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [onInstalledVersionsChange]);
 
   // Let the Titlebar know what version is currently selected
@@ -1529,9 +1636,15 @@ export default function LauncherPage({
     }
   }, [runMode]);
 
+  const showBootstrapSkeleton = !didFinishBootstrap;
+
   return (
     <div className="h-full text-white">
       <div className="mx-auto flex h-full max-w-[1600px] flex-col gap-4 p-4">
+        {showBootstrapSkeleton ? (
+          <LauncherPageSkeleton statusText={bootstrapStatus} />
+        ) : (
+          <>
         {/* Top bar */}
         <div className="flex items-center gap-3">
           {gameStatus.running ? (
@@ -2217,6 +2330,8 @@ export default function LauncherPage({
             </div>
           )}
         </div>
+          </>
+        )}
       </div>
 
       {/* Download confirm modal */}
