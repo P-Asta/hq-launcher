@@ -951,6 +951,34 @@ export default function LauncherPage({
   }, [activeConfigPath, selectedVersion, configLinkEpoch]);
 
   async function downloadVersion(v, didRetryAfterLogin = false) {
+    if (!loginState?.is_logged_in && typeof onRequireLogin === "function") {
+      const shouldRestorePrompt =
+        downloadPrompt.open && downloadPrompt.version === v;
+      if (shouldRestorePrompt) {
+        resetTaskForVersion(v);
+        setDownloadPrompt({ open: false, version: null });
+      }
+
+      try {
+        const didLogin = await onRequireLogin();
+        if (!didLogin) {
+          if (shouldRestorePrompt) {
+            setDownloadPrompt({ open: true, version: v });
+          }
+          return;
+        }
+      } catch {
+        if (shouldRestorePrompt) {
+          setDownloadPrompt({ open: true, version: v });
+        }
+        return;
+      }
+
+      if (shouldRestorePrompt) {
+        setDownloadPrompt({ open: true, version: v });
+      }
+    }
+
     setTask((t) => ({
       ...t,
       status: "working",
@@ -971,12 +999,31 @@ export default function LauncherPage({
         isAuthError(e) &&
         typeof onRequireLogin === "function"
       ) {
+        resetTaskForVersion(v);
+        const shouldRestorePrompt =
+          downloadPrompt.open && downloadPrompt.version === v;
         try {
+          if (shouldRestorePrompt) {
+            setDownloadPrompt({ open: false, version: null });
+          }
           const didLogin = await onRequireLogin();
-          if (!didLogin) throw e;
+          if (!didLogin) {
+            if (shouldRestorePrompt) {
+              setDownloadPrompt({ open: true, version: v });
+            }
+            return;
+          }
+          if (shouldRestorePrompt) {
+            setDownloadPrompt({ open: true, version: v });
+          }
           // After login, retry once automatically.
           return await downloadVersion(v, true);
-        } catch {}
+        } catch {
+          if (shouldRestorePrompt) {
+            setDownloadPrompt({ open: true, version: v });
+          }
+          return;
+        }
       }
       // Backend also emits download://error, but ensure UI reacts if invoke fails early.
       setTask((t) => ({

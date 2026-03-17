@@ -17,6 +17,12 @@ use tokio::sync::mpsc;
 
 use crate::progress::{self, TaskProgressPayload};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 fn strip_ansi(s: &str) -> String {
     // Minimal ANSI stripper for log display.
     // Removes common CSI/OSC sequences and carriage returns.
@@ -183,6 +189,22 @@ pub struct DepotDownloader {
     ipc_mode: bool,
 }
 
+fn hide_console_window(mut command: Command) -> Command {
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
+fn hide_console_window_std(command: &mut StdCommand) -> &mut StdCommand {
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 impl DepotDownloader {
     const APP_ID: &'static str = "1966720";
     const DEPOT_ID: &'static str = "1966721";
@@ -292,7 +314,7 @@ impl DepotDownloader {
             if code_present { "yes" } else { "no" }
         );
 
-        let mut child = Command::new(&self.executable_path)
+        let mut child = hide_console_window(Command::new(&self.executable_path))
             .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -531,6 +553,7 @@ impl DepotDownloader {
         // Also: ensure `current_dir` is the same config dir used for downloads,
         // otherwise remembered credentials won't be found later.
         let mut cmd = StdCommand::new(&self.executable_path);
+        hide_console_window_std(&mut cmd);
         cmd.current_dir(&self.config_dir);
         if self.ipc_mode {
             cmd.arg("-ipc");
@@ -761,7 +784,7 @@ impl DepotDownloader {
             args.push(manifest);
         }
 
-        let mut child = Command::new(&self.executable_path)
+        let mut child = hide_console_window(Command::new(&self.executable_path))
             .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -964,7 +987,7 @@ impl DepotDownloader {
 
         log::info!("Downloading {} files from depot", file_list.len());
 
-        let mut child = Command::new(&self.executable_path)
+        let mut child = hide_console_window(Command::new(&self.executable_path))
             .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

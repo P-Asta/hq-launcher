@@ -1,6 +1,10 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.5.1 (2026-03-17)
+- Open the Steam login dialog immediately when a download needs authentication, instead of leaving the download retry modal behind it.
+- Hide the DepotDownloader command prompt window on Windows.
+
 ## 1.5.0 (2026-03-14)
 - Fix Freeze Bug
 
