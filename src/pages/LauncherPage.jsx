@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
   CheckCircle2,
@@ -97,6 +97,34 @@ function SkeletonBlock({ className }) {
   );
 }
 
+function ModCover({ src, initials }) {
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [src]);
+
+  if (src && !failed) {
+    return (
+      <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-black/25">
+        <img
+          src={src}
+          alt=""
+          className="h-full w-full object-contain"
+          loading="lazy"
+          onError={() => setFailed(true)}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/10 text-base font-bold text-white/80">
+      {initials}
+    </div>
+  );
+}
+
 function LauncherPageSkeleton({ statusText }) {
   return (
     <>
@@ -169,6 +197,10 @@ export default function LauncherPage({
   const [disabledMods, setDisabledMods] = useState([]); // [{dev,name}] normalized by backend
   const [installedModVersionsByVersion, setInstalledModVersionsByVersion] =
     useState({}); // version -> { key(dev::name lower) -> version }
+  const [installedModIconsByVersion, setInstalledModIconsByVersion] =
+    useState({}); // version -> { key(dev::name lower) -> icon path }
+  const [installedModDescriptionsByVersion, setInstalledModDescriptionsByVersion] =
+    useState({}); // version -> { key(dev::name lower) -> description }
   const [modCfgFilesByKey, setModCfgFilesByKey] = useState({}); // key(dev::name lower) -> ["foo.cfg", ...]
 
   // Download confirm modal (for non-installed versions)
@@ -227,15 +259,22 @@ export default function LauncherPage({
 
   const [gameStatus, setGameStatus] = useState({ running: false, pid: null });
   const [runMode, setRunMode] = useState(getInitialRunMode); // hq | practice | brutal | brutal_practice | wesley | wesley_practice | smhq
-  const autoCheckedRef = useRef(new Set());
+  const lastAutoCheckedVersionRef = useRef(null);
   const [didFinishBootstrap, setDidFinishBootstrap] = useState(false);
   const [bootstrapStatus, setBootstrapStatus] = useState(
     "Checking installed versions..."
   );
+  const [modContextMenu, setModContextMenu] = useState({
+    open: false,
+    x: 0,
+    y: 0,
+    mod: null,
+  });
   const practicePromptOpenRef = useRef(false);
   const presetPromptOpenRef = useRef(false);
   const practiceTaskRef = useRef(null);
   const presetTaskRef = useRef(null);
+  const modContextMenuRef = useRef(null);
 
   function updateInstalledVersionsState(nextVersions) {
     const normalized = Array.isArray(nextVersions) ? nextVersions : [];
@@ -256,6 +295,55 @@ export default function LauncherPage({
     presetTaskRef.current = presetTask;
   }, [presetTask]);
 
+  useEffect(() => {
+    if (!modContextMenu.open) return;
+
+    const close = () =>
+      setModContextMenu((prev) => ({ ...prev, open: false, mod: null }));
+
+    const handlePointerDown = (event) => {
+      if (modContextMenuRef.current?.contains(event.target)) return;
+      close();
+    };
+
+    const handleEscape = (event) => {
+      if (event.key === "Escape") close();
+    };
+
+    const handleWindowChange = () => close();
+
+    const adjustPosition = () => {
+      const menu = modContextMenuRef.current;
+      if (!menu) return;
+      const rect = menu.getBoundingClientRect();
+      const nextX = Math.min(
+        modContextMenu.x,
+        Math.max(8, window.innerWidth - rect.width - 8)
+      );
+      const nextY = Math.min(
+        modContextMenu.y,
+        Math.max(8, window.innerHeight - rect.height - 8)
+      );
+      if (nextX !== modContextMenu.x || nextY !== modContextMenu.y) {
+        setModContextMenu((prev) => ({ ...prev, x: nextX, y: nextY }));
+      }
+    };
+
+    const raf = window.requestAnimationFrame(adjustPosition);
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleEscape);
+    window.addEventListener("resize", handleWindowChange);
+    window.addEventListener("scroll", handleWindowChange, true);
+
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleEscape);
+      window.removeEventListener("resize", handleWindowChange);
+      window.removeEventListener("scroll", handleWindowChange, true);
+    };
+  }, [modContextMenu.open, modContextMenu.x, modContextMenu.y]);
+
   const isInstalled = useMemo(() => {
     const s = new Set(installedVersions);
     return (v) => s.has(v);
@@ -267,6 +355,30 @@ export default function LauncherPage({
     const byV = installedModVersionsByVersion?.[v];
     return byV && typeof byV === "object" ? byV : {};
   }, [installedModVersionsByVersion, selectedVersion]);
+
+  const installedModIcons = useMemo(() => {
+    const v = Number(selectedVersion);
+    if (!Number.isFinite(v)) return {};
+    const byV = installedModIconsByVersion?.[v];
+    return byV && typeof byV === "object" ? byV : {};
+  }, [installedModIconsByVersion, selectedVersion]);
+
+  const installedModIconUrls = useMemo(() => {
+    const out = {};
+    for (const [key, path] of Object.entries(installedModIcons)) {
+      if (typeof path === "string" && path) {
+        out[key] = convertFileSrc(path);
+      }
+    }
+    return out;
+  }, [installedModIcons]);
+
+  const installedModDescriptions = useMemo(() => {
+    const v = Number(selectedVersion);
+    if (!Number.isFinite(v)) return {};
+    const byV = installedModDescriptionsByVersion?.[v];
+    return byV && typeof byV === "object" ? byV : {};
+  }, [installedModDescriptionsByVersion, selectedVersion]);
 
   const filteredMods = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -616,31 +728,50 @@ export default function LauncherPage({
     if (!Number.isFinite(vv)) return;
     if (!isInstalled(v)) {
       setInstalledModVersionsByVersion((prev) => ({ ...prev, [vv]: {} }));
+      setInstalledModIconsByVersion((prev) => ({ ...prev, [vv]: {} }));
+      setInstalledModDescriptionsByVersion((prev) => ({ ...prev, [vv]: {} }));
       return;
     }
     try {
       const list = await invoke("list_installed_mod_versions", { version: v });
       const map = {};
+      const iconMap = {};
+      const descriptionMap = {};
       for (const it of Array.isArray(list) ? list : []) {
         const k = `${String(it.dev).toLowerCase()}::${String(
           it.name
         ).toLowerCase()}`;
         map[k] = String(it.version ?? "");
+        if (typeof it.icon_path === "string" && it.icon_path) {
+          iconMap[k] = it.icon_path;
+        }
+        if (typeof it.description === "string" && it.description.trim()) {
+          descriptionMap[k] = it.description.trim();
+        }
       }
       setInstalledModVersionsByVersion((prev) => ({ ...prev, [vv]: map }));
+      setInstalledModIconsByVersion((prev) => ({ ...prev, [vv]: iconMap }));
+      setInstalledModDescriptionsByVersion((prev) => ({
+        ...prev,
+        [vv]: descriptionMap,
+      }));
     } catch {
       // best-effort (missing folder, etc)
       setInstalledModVersionsByVersion((prev) => ({ ...prev, [vv]: {} }));
+      setInstalledModIconsByVersion((prev) => ({ ...prev, [vv]: {} }));
+      setInstalledModDescriptionsByVersion((prev) => ({ ...prev, [vv]: {} }));
     }
   }
 
   // auto-run update check once on startup for installed selected version
   useEffect(() => {
     if (!didFinishBootstrap) return;
-    if (!isInstalled(selectedVersion)) return;
-    if (autoCheckedRef.current.has(selectedVersion)) return;
-    autoCheckedRef.current.add(selectedVersion);
-    checkModUpdates(selectedVersion);
+    const version = Number(selectedVersion);
+    if (!Number.isFinite(version)) return;
+    if (!isInstalled(version)) return;
+    if (lastAutoCheckedVersionRef.current === version) return;
+    lastAutoCheckedVersionRef.current = version;
+    checkModUpdates(version);
   }, [didFinishBootstrap, selectedVersion, installedVersions]);
 
   // refresh installed plugin versions when selected version changes
@@ -1417,6 +1548,36 @@ export default function LauncherPage({
     resetTaskForVersion(v);
   }
 
+  function closeModContextMenu() {
+    setModContextMenu((prev) => ({ ...prev, open: false, mod: null }));
+  }
+
+  function openModContextMenu(event, mod) {
+    event.preventDefault();
+    setModContextMenu({
+      open: true,
+      x: event.clientX,
+      y: event.clientY,
+      mod,
+    });
+  }
+
+  async function openSelectedModFolder(mod) {
+    const version = Number(selectedVersion);
+    if (!Number.isFinite(version) || !mod) return;
+    try {
+      await invoke("open_mod_folder", {
+        version,
+        dev: mod.dev,
+        name: mod.name,
+      });
+    } catch (e) {
+      window.alert(e?.message ?? String(e));
+    } finally {
+      closeModContextMenu();
+    }
+  }
+
   const updateIsWorking = updatePrompt.open && task.status === "working";
   const updateIsDone = updatePrompt.open && task.status === "done";
   const updateIsError = updatePrompt.open && task.status === "error";
@@ -1741,6 +1902,7 @@ export default function LauncherPage({
                   <div
                     className="flex h-full select-none items-center gap-2 px-5"
                     onPointerDown={(e) => {
+                      if (e.button !== 0) return;
                       e.preventDefault();
                       e.stopPropagation();
                       startSelectedRun();
@@ -1919,6 +2081,9 @@ export default function LauncherPage({
                   const keyLower = `${String(m.dev).toLowerCase()}::${String(
                     m.name
                   ).toLowerCase()}`;
+                  const coverSrc = installedModIconUrls[keyLower];
+                  const description =
+                    installedModDescriptions[keyLower] || "Click to edit config";
                   const enabled = !disabledSet.has(keyLower);
                   const installedVer = installedModVersions[keyLower];
                   const busy = modToggleBusyKeys.has(keyLower);
@@ -1926,13 +2091,14 @@ export default function LauncherPage({
                     ((!isInstalled(selectedVersion)) || installedVer) && <div
                       key={modKey(m)}
                       className={cn(
-                        "group flex w-full items-start gap-3 rounded-2xl border px-3 py-3 text-left transition",
+                        "group flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition",
                         selected
                           ? "border-white/20 bg-white/10"
                           : "border-white/10 bg-black/10 hover:bg-white/10",
                           installedVer || "opacity-40"
                       )}
                       onClick={() => setSelectedMod(m)}
+                      onContextMenu={(e) => openModContextMenu(e, m)}
                       role="button"
                       tabIndex={0}
                       onKeyDown={(e) => {
@@ -1942,9 +2108,7 @@ export default function LauncherPage({
                         }
                       }}
                     >
-                      <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white/10 text-sm font-bold text-white/80">
-                        {initials}
-                      </div>
+                      <ModCover src={coverSrc} initials={initials} />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-baseline gap-2">
                           <div className="truncate text-base font-semibold">
@@ -1954,8 +2118,17 @@ export default function LauncherPage({
                             {m.dev}
                           </div>
                         </div>
-                        <div className="mt-1 line-clamp-1 text-sm text-white/50">
-                          Click to edit config
+                        <div
+                          className="mt-1 overflow-hidden whitespace-nowrap text-sm text-white/50"
+                          title={description}
+                          style={{
+                            maskImage:
+                              "linear-gradient(90deg, black 0%, black 82%, transparent 100%)",
+                            WebkitMaskImage:
+                              "linear-gradient(90deg, black 0%, black 82%, transparent 100%)",
+                          }}
+                        >
+                          {description}
                         </div>
                       </div>
                       <div className="self-stretch flex shrink-0 items-center">
@@ -2007,12 +2180,26 @@ export default function LauncherPage({
               <div className="flex h-full flex-col gap-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="truncate text-lg font-semibold">
-                      {selectedMod.name}
+                    <div className="flex items-baseline gap-2">
+                      <div className="truncate text-lg font-semibold">
+                        {selectedMod.name}
+                      </div>
+                      <div className="truncate text-sm text-white/40">
+                        {selectedMod.dev}
+                      </div>
                     </div>
-                    <div className="truncate text-sm text-white/40">
-                      {selectedMod.dev}
-                    </div>
+                    {(() => {
+                      const k = `${String(selectedMod.dev).toLowerCase()}::${String(
+                        selectedMod.name
+                      ).toLowerCase()}`;
+                      const description = installedModDescriptions[k];
+                      if (!description) return null;
+                      return (
+                        <div className="mt-1 line-clamp-2 text-sm text-white/55">
+                          {description}
+                        </div>
+                      );
+                    })()}
                     <div className="mt-1 text-xs text-white/45">
                       {(() => {
                         const k = `${String(selectedMod.dev).toLowerCase()}::${String(
@@ -2380,6 +2567,24 @@ export default function LauncherPage({
           </>
         )}
       </div>
+
+      {modContextMenu.open && modContextMenu.mod && (
+        <div
+          ref={modContextMenuRef}
+          className="fixed z-[70] min-w-[220px] overflow-hidden rounded-2xl border border-white/10 bg-[#14161c] p-1.5 shadow-2xl shadow-black/40"
+          style={{
+            left: modContextMenu.x,
+            top: modContextMenu.y,
+          }}
+        >
+          <button
+            className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/10"
+            onClick={() => openSelectedModFolder(modContextMenu.mod)}
+          >
+            Open Mod Folder
+          </button>
+        </div>
+      )}
 
       {/* Download confirm modal */}
       {downloadPrompt.open && (

@@ -147,7 +147,8 @@ export default function Titlebar({ installedVersions, ...props }) {
     }
 
     const fileMenuItems = useMemo(() => ([
-        { label: "Open Version Folder", shortcut: "CommandOrControl+O", action: () => { invoke('open_version_folder'); } }
+        { label: "Open Version Folder", shortcut: "CommandOrControl+O", action: () => { invoke('open_version_folder'); } },
+        { label: "Open DepotDownloader Folder", shortcut: "", action: () => { invoke('open_downloader_folder'); } }
     ]), []);
 
     const editMenuItems = useMemo(() => ([

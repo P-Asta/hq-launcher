@@ -95,7 +95,7 @@ export default function AppRoot() {
   return (
     <div className="h-full w-full overflow-hidden">
       <Titlebar className="fixed top-0 left-0 h-10" installedVersions={installedVersions} />
-      <div className="relative h-[calc(100vh-32px)] w-full mt-10">
+      <div className="relative mt-10 h-[calc(100vh-40px)] w-full">
         {loginState.status === "loading" ? (
           <Splash message="Starting up..." />
         ) : (

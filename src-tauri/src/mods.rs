@@ -413,6 +413,18 @@ where
         let already_dir = target_plugins.join(format!("{}-{}", spec.dev, spec.name));
         let mod_label = format!("{}-{}", spec.dev, spec.name);
         if already_dir.exists() {
+            if !spec.is_compatible(game_version) {
+                let why = incompatible_reason(spec, game_version);
+                log::info!("Skipping incompatible installed mod {}{}", mod_label, why);
+                on_progress(
+                    idx,
+                    total_mods,
+                    Some(format!("Skipping incompatible installed mod {mod_label}{why}")),
+                    None,
+                );
+                continue;
+            }
+
             let manifest = match read_manifest_allow_old(&already_dir) {
                 Ok(m) => m,
                 Err(e) => {

@@ -1038,6 +1038,16 @@ fn mod_dir_for(
     None
 }
 
+fn find_mod_icon_path(mod_dir: &std::path::Path) -> Option<String> {
+    for file_name in ["icon.png", "icon.png.old"] {
+        let path = mod_dir.join(file_name);
+        if path.is_file() {
+            return Some(path.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct DisabledMod {
     dev: String,
@@ -1049,6 +1059,8 @@ struct InstalledModVersion {
     dev: String,
     name: String,
     version: String,
+    icon_path: Option<String>,
+    description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1525,6 +1537,37 @@ async fn open_version_folder(app: tauri::AppHandle) -> Result<bool, String> {
         .join("versions");
     std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create versions dir: {e}"))?;
     let _ = opener::open(dir).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+async fn open_downloader_folder(app: tauri::AppHandle) -> Result<bool, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
+        .join("downloader");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("failed to create downloader dir: {e}"))?;
+    opener::open(dir).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+async fn open_mod_folder(
+    app: tauri::AppHandle,
+    version: u32,
+    dev: String,
+    name: String,
+) -> Result<bool, String> {
+    let plugins = plugins_dir(&app, version)?;
+    let patchers = patchers_dir(&app, version)?;
+
+    let Some(dir) = mod_dir_for(&plugins, &dev, &name).or_else(|| mod_dir_for(&patchers, &dev, &name)) else {
+        return Err(format!("mod folder not found for {dev}-{name} on v{version}"));
+    };
+
+    opener::open(dir).map_err(|e| e.to_string())?;
     Ok(true)
 }
 
@@ -2388,6 +2431,12 @@ fn list_installed_mod_versions(
                     dev: dev.to_string(),
                     name: name.to_string(),
                     version: m.version_number,
+                    icon_path: find_mod_icon_path(&path),
+                    description: if m.description.trim().is_empty() {
+                        None
+                    } else {
+                        Some(m.description)
+                    },
                 });
             }
             Err(err) => {
@@ -3084,6 +3133,8 @@ pub fn run() {
             installer::install_proton_ge,
             installer::get_current_proton_dir,
             open_version_folder,
+            open_downloader_folder,
+            open_mod_folder,
             get_global_shortcut,
             discord_presence::set_discord_presence,
             discord_presence::clear_discord_presence
