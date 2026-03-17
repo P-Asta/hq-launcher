@@ -52,6 +52,15 @@ export function SelectContent({ className, children, ...props }) {
   );
 }
 
+export function SelectSeparator({ className, ...props }) {
+  return (
+    <SelectPrimitive.Separator
+      className={cn("mx-2 my-1 h-px bg-white/20", className)}
+      {...props}
+    />
+  );
+}
+
 export function SelectItem({ className, value, children, marker }) {
   return (
     <SelectPrimitive.Item

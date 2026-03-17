@@ -20,6 +20,7 @@ import {
   Select,
   SelectContent,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "../components/ui/select";
@@ -1608,6 +1609,10 @@ export default function LauncherPage({
         title: "Practice run: installs/enables practice mods for this run",
       },
       {
+        type: "separator",
+        key: "run-group-brutal",
+      },
+      {
         value: "brutal",
         label: "Brutal Run",
         preset: "brutal",
@@ -1621,6 +1626,10 @@ export default function LauncherPage({
         practice: true,
         title:
           "Brutal preset: installs Brutal-tagged mods + practice mods (v49+)",
+      },
+      {
+        type: "separator",
+        key: "run-group-wesley",
       },
       {
         value: "wesley",
@@ -1924,11 +1933,15 @@ export default function LauncherPage({
                 </div>
               </SelectTrigger>
               <SelectContent className="min-w-48" align="start">
-                {RUN_OPTIONS.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </SelectItem>
-                ))}
+                {RUN_OPTIONS.map((opt) =>
+                  opt.type === "separator" ? (
+                    <SelectSeparator key={opt.key} />
+                  ) : (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ),
+                )}
               </SelectContent>
             </Select>
           )}

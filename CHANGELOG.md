@@ -4,12 +4,11 @@
 ## 1.5.2 (2026-03-17)
 - Show installed mod icons from each mod folder's `icon.png` in the mod list.
 - Show installed mod descriptions in the mod list and config header.
-- Improve mod card layout and thumbnail sizing.
 - Add a right-click context menu on mods with an option to open the selected mod folder.
 - Add a File menu option to open the DepotDownloader folder.
-- Re-check mod updates when changing game versions without auto-opening the update dialog.
 - Reduce false-positive mod update results by skipping installed mods that are incompatible with the selected game version.
 - Fix main content height so the launcher body padding matches the title bar layout more cleanly.
+- Group related run modes in the launch dropdown with brighter separators for better readability.
 
 ## 1.5.1 (2026-03-17)
 - Open the Steam login dialog immediately when a download needs authentication, instead of leaving the download retry modal behind it.
