@@ -1,7 +1,7 @@
 ## Version (YYYY-MM-DD)
 - Content
 
-## 1.5.5 (2026-03-18)
+## 1.5.6 (2026-03-18)
 - You can change game data folder (Beta)
 
 ## 1.5.2 (2026-03-17)
