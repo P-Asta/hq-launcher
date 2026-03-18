@@ -1,8 +1,8 @@
 ## Version (YYYY-MM-DD)
 - Content
 
-## 1.5.4 (2026-03-18)
-- You can change game data folder
+## 1.5.5 (2026-03-18)
+- You can change game data folder (Beta)
 
 ## 1.5.2 (2026-03-17)
 - Show installed mod icons from each mod folder's `icon.png` in the mod list.
