@@ -1363,6 +1363,11 @@ pub async fn install_downloader(app: &tauri::AppHandle) -> Result<bool, String> 
 }
 
 // Tauri 커맨드들
+async fn ensure_downloader_ready(app: &tauri::AppHandle) -> Result<(), String> {
+    install_downloader(app).await?;
+    DepotDownloader::new(app).map(|_| ())
+}
+
 #[tauri::command]
 pub async fn depot_login(
     app: tauri::AppHandle,
@@ -1371,6 +1376,7 @@ pub async fn depot_login(
     password: String,
     two_factor_code: Option<String>,
 ) -> Result<(), String> {
+    ensure_downloader_ready(&app).await?;
     let downloader = DepotDownloader::new(&app)?;
 
     // NOTE: Never log passwords or 2FA codes.
@@ -1425,6 +1431,7 @@ pub async fn depot_login_start(
     username: String,
     password: String,
 ) -> Result<u64, String> {
+    ensure_downloader_ready(&app).await?;
     let downloader = DepotDownloader::new(&app)?;
 
     // NOTE: Never log passwords or 2FA codes.
@@ -1516,6 +1523,7 @@ pub async fn depot_download(
     manifest_id: Option<String>,
     output_dir: String,
 ) -> Result<(), String> {
+    ensure_downloader_ready(&app).await?;
     let downloader = DepotDownloader::new(&app)?;
     downloader
         .download_depot(manifest_id, PathBuf::from(output_dir), None, None)
@@ -1569,6 +1577,7 @@ pub async fn depot_download_files(
     files: Vec<String>,
     output_dir: String,
 ) -> Result<(), String> {
+    ensure_downloader_ready(&app).await?;
     let downloader = DepotDownloader::new(&app)?;
     downloader
         .download_files(files, PathBuf::from(output_dir))
