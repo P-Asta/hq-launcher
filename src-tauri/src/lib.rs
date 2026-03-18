@@ -5,13 +5,15 @@ mod installer;
 mod logger;
 mod mod_config;
 mod mods;
+mod paths;
 mod progress;
 mod thunderstore;
-mod zip_utils;
 mod variable;
+mod zip_utils;
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -46,7 +48,13 @@ async fn prepare_tagged_mods_for_version(
     let mut min_required: Option<u32> = None;
     for t in tags {
         let tl = t.to_lowercase();
-        let req = if tl == "brutal" { Some(49) } else if tl == "wesley" || tl == "wesley's" { Some(69) } else { None };
+        let req = if tl == "brutal" {
+            Some(49)
+        } else if tl == "wesley" || tl == "wesley's" {
+            Some(69)
+        } else {
+            None
+        };
         if let Some(r) = req {
             min_required = Some(min_required.map(|m| m.max(r)).unwrap_or(r));
         }
@@ -70,10 +78,7 @@ async fn prepare_tagged_mods_for_version(
     let mut tagged: Vec<mod_config::ModEntry> = vec![];
     for m in mods_cfg.mods {
         // Match tags case-insensitively.
-        let has = m
-            .tags
-            .iter()
-            .any(|x| want.contains(&x.to_lowercase()));
+        let has = m.tags.iter().any(|x| want.contains(&x.to_lowercase()));
         if !has {
             continue;
         }
@@ -253,12 +258,7 @@ struct ManifestDto {
 }
 
 fn shared_config_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("config")
-        .join("shared"))
+    paths::shared_config_dir(app)
 }
 
 fn is_safe_rel_path(rel: &std::path::Path) -> bool {
@@ -270,12 +270,7 @@ fn is_safe_rel_path(rel: &std::path::Path) -> bool {
 }
 
 fn version_dir(app: &tauri::AppHandle, version: u32) -> Result<std::path::PathBuf, String> {
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("versions")
-        .join(format!("v{version}")))
+    Ok(paths::versions_dir(app)?.join(format!("v{version}")))
 }
 
 fn version_config_dir(app: &tauri::AppHandle, version: u32) -> Result<std::path::PathBuf, String> {
@@ -895,7 +890,11 @@ Weather Selection Algorithm = Hybrid
 
         let mut handled = false;
         for (key, desired, flag) in [
-            ("First Day Clear Weather", desired_first_day, &mut saw_first_day),
+            (
+                "First Day Clear Weather",
+                desired_first_day,
+                &mut saw_first_day,
+            ),
             ("Weather Selection Algorithm", desired_algo, &mut saw_algo),
         ] {
             if trimmed.starts_with(key) {
@@ -1000,11 +999,7 @@ fn mod_folder_name(dev: &str, name: &str) -> String {
     format!("{dev}-{name}")
 }
 
-fn mod_dir_for(
-    plugins_dir: &std::path::Path,
-    dev: &str,
-    name: &str,
-) -> Option<std::path::PathBuf> {
+fn mod_dir_for(plugins_dir: &std::path::Path, dev: &str, name: &str) -> Option<std::path::PathBuf> {
     // Fast paths (common on Windows; case-insensitive FS).
     let direct = plugins_dir.join(mod_folder_name(dev, name));
     if direct.exists() {
@@ -1070,21 +1065,13 @@ struct DisableModFile {
 }
 
 fn disablemod_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("config")
-        .join("disablemod.json"))
+    paths::disablemod_path(app)
 }
 
-pub(crate) fn thunderstore_cache_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("cache")
-        .join("thunderstore.json"))
+pub(crate) fn thunderstore_cache_path(
+    app: &tauri::AppHandle,
+) -> Result<std::path::PathBuf, String> {
+    paths::thunderstore_cache_path(app)
 }
 
 fn read_disablemod(app: &tauri::AppHandle) -> Result<DisableModFile, String> {
@@ -1223,7 +1210,10 @@ fn hqol_mod_dir(plugins_dir: &std::path::Path) -> Option<std::path::PathBuf> {
         .or_else(|| mod_dir_for(plugins_dir, "HQHQTeam", "HQOL"))
 }
 
-fn sync_hqol_with_disablemod_for_version(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
+fn sync_hqol_with_disablemod_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<(), String> {
     let list = read_disablemod(app)?;
     let id1 = normalize_mod_id("HQHQTeam", "HQoL");
     let id2 = normalize_mod_id("HQHQTeam", "HQOL");
@@ -1236,7 +1226,10 @@ fn sync_hqol_with_disablemod_for_version(app: &tauri::AppHandle, version: u32) -
     Ok(())
 }
 
-fn ensure_practice_mods_disabled_for_version(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
+fn ensure_practice_mods_disabled_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<(), String> {
     let practice = variable::get_practice_mod_list();
     let mut list = read_disablemod(app)?;
 
@@ -1530,11 +1523,7 @@ async fn sync_latest_install_from_manifest(app: tauri::AppHandle) -> Result<bool
 
 #[tauri::command]
 async fn open_version_folder(app: tauri::AppHandle) -> Result<bool, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("versions");
+    let dir = paths::versions_dir(&app)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create versions dir: {e}"))?;
     let _ = opener::open(dir).map_err(|e| e.to_string())?;
     Ok(true)
@@ -1542,13 +1531,8 @@ async fn open_version_folder(app: tauri::AppHandle) -> Result<bool, String> {
 
 #[tauri::command]
 async fn open_downloader_folder(app: tauri::AppHandle) -> Result<bool, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("downloader");
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("failed to create downloader dir: {e}"))?;
+    let dir = paths::downloader_dir(&app)?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create downloader dir: {e}"))?;
     opener::open(dir).map_err(|e| e.to_string())?;
     Ok(true)
 }
@@ -1563,8 +1547,12 @@ async fn open_mod_folder(
     let plugins = plugins_dir(&app, version)?;
     let patchers = patchers_dir(&app, version)?;
 
-    let Some(dir) = mod_dir_for(&plugins, &dev, &name).or_else(|| mod_dir_for(&patchers, &dev, &name)) else {
-        return Err(format!("mod folder not found for {dev}-{name} on v{version}"));
+    let Some(dir) =
+        mod_dir_for(&plugins, &dev, &name).or_else(|| mod_dir_for(&patchers, &dev, &name))
+    else {
+        return Err(format!(
+            "mod folder not found for {dev}-{name} on v{version}"
+        ));
     };
 
     opener::open(dir).map_err(|e| e.to_string())?;
@@ -1575,11 +1563,7 @@ async fn open_mod_folder(
 async fn check_mod_updates(app: tauri::AppHandle, version: u32) -> Result<bool, String> {
     let client = reqwest::Client::new();
 
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("versions");
+    let dir = paths::versions_dir(&app)?;
     let extract_dir = dir.join(format!("v{version}"));
     let (_, mods_cfg, _, _) = ModsConfig::fetch_manifest(&client).await?;
 
@@ -1637,11 +1621,7 @@ async fn apply_mod_updates(app: tauri::AppHandle, version: u32) -> Result<bool, 
     let res: Result<(), String> = async {
         let client = reqwest::Client::new();
 
-        let dir = app
-            .path()
-            .app_data_dir()
-            .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-            .join("versions");
+        let dir = paths::versions_dir(&app)?;
         let game_root = dir.join(format!("v{version}"));
         if !game_root.exists() {
             return Err(format!(
@@ -1838,7 +1818,6 @@ fn launch_game(
         ));
     }
 
-    let _app_path = app.path().app_data_dir().map_err(|e| format!("app path not found: {e}"))?;
     let exe_name = "Lethal Company.exe";
     let exe_path = dir.join(exe_name);
     let exe_path = if exe_path.exists() {
@@ -1873,7 +1852,7 @@ fn launch_game(
 
     #[cfg(target_os = "windows")]
     let mut command = std::process::Command::new(&exe_path);
-    
+
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut cmd = std::process::Command::new("open");
@@ -1884,18 +1863,17 @@ fn launch_game(
 
     #[cfg(target_os = "linux")]
     let (proton_binary, compat_data_path) = {
-        let proton_env_path = installer::proton_env_dir(&app).map_err(|e| format!("proton_env path not found: {e}"))?;
+        let proton_env_path = installer::proton_env_dir(&app)
+            .map_err(|e| format!("proton_env path not found: {e}"))?;
         let proton_bin_path = installer::get_current_proton_dir_impl(&app)
             .map_err(|e| format!("proton path not found: {e}"))?
             .ok_or("found proton path but is None")?;
         let compat_pre_path = proton_env_path.join("wine_prefix");
         if !compat_pre_path.exists() {
-            std::fs::create_dir(&compat_pre_path).map_err(|e| format!("could not make prefix: {e}"))?;
+            std::fs::create_dir(&compat_pre_path)
+                .map_err(|e| format!("could not make prefix: {e}"))?;
         }
-        (
-            proton_bin_path.join("proton"),
-            compat_pre_path
-        )
+        (proton_bin_path.join("proton"), compat_pre_path)
     };
 
     #[cfg(target_os = "linux")]
@@ -1907,7 +1885,7 @@ fn launch_game(
         cmd.env("STEAM_COMPAT_DATA_PATH", &compat_data_path);
         cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_path);
         cmd.env("WINEDLLOVERRIDES", "winhttp=n,b");
-        cmd.env_remove("PYTHONPATH"); 
+        cmd.env_remove("PYTHONPATH");
         cmd.env_remove("PYTHONHOME");
         cmd
     };
@@ -1940,10 +1918,6 @@ async fn launch_game_practice(
         ));
     }
 
-    let _app_path = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("app path not found: {e}"))?;
     let exe_name = "Lethal Company.exe";
     let exe_path = dir.join(exe_name);
     let exe_path = if exe_path.exists() {
@@ -1997,12 +1971,10 @@ async fn launch_game_practice(
             .ok_or("found proton path but is None")?;
         let compat_pre_path = proton_env_path.join("wine_prefix");
         if !compat_pre_path.exists() {
-            std::fs::create_dir(&compat_pre_path).map_err(|e| format!("could not make prefix: {e}"))?;
+            std::fs::create_dir(&compat_pre_path)
+                .map_err(|e| format!("could not make prefix: {e}"))?;
         }
-        (
-            proton_bin_path.join("proton"),
-            compat_pre_path
-        )
+        (proton_bin_path.join("proton"), compat_pre_path)
     };
 
     #[cfg(target_os = "linux")]
@@ -2014,7 +1986,7 @@ async fn launch_game_practice(
         cmd.env("STEAM_COMPAT_DATA_PATH", &compat_data_path);
         cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_path);
         cmd.env("WINEDLLOVERRIDES", "winhttp=n,b");
-        cmd.env_remove("PYTHONPATH"); 
+        cmd.env_remove("PYTHONPATH");
         cmd.env_remove("PYTHONHOME");
         println!("{:?}", cmd);
         cmd
@@ -2138,22 +2110,22 @@ async fn launch_game_preset(
 
     #[cfg(target_os = "linux")]
     let (proton_binary, compat_data_path) = {
-        let proton_env_path =
-            installer::proton_env_dir(&app).map_err(|e| format!("proton_env path not found: {e}"))?;
+        let proton_env_path = installer::proton_env_dir(&app)
+            .map_err(|e| format!("proton_env path not found: {e}"))?;
         let proton_bin_path = installer::get_current_proton_dir_impl(&app)
             .map_err(|e| format!("proton path not found: {e}"))?
             .ok_or("found proton path but is None")?;
         let compat_pre_path = proton_env_path.join("wine_prefix");
         if !compat_pre_path.exists() {
-            std::fs::create_dir(&compat_pre_path).map_err(|e| format!("could not make prefix: {e}"))?;
+            std::fs::create_dir(&compat_pre_path)
+                .map_err(|e| format!("could not make prefix: {e}"))?;
         }
         (proton_bin_path.join("proton"), compat_pre_path)
     };
 
     #[cfg(target_os = "linux")]
     let mut command = {
-        let app_path =
-            app.path().app_data_dir().map_err(|e| format!("app path not found: {e}"))?;
+        let app_path = paths::app_data_dir(&app)?;
         let steam_path = get_steam_client_path(&app_path);
         let mut cmd = std::process::Command::new(&proton_binary);
         cmd.arg("run");
@@ -2467,13 +2439,199 @@ async fn get_manifest() -> Result<ManifestDto, String> {
     })
 }
 
+fn normalized_path_string(path: &Path) -> String {
+    let raw = path.to_string_lossy().to_string();
+    if cfg!(windows) {
+        raw.replace('/', "\\").to_lowercase()
+    } else {
+        raw
+    }
+}
+
+fn paths_equal(lhs: &Path, rhs: &Path) -> bool {
+    normalized_path_string(lhs) == normalized_path_string(rhs)
+}
+
+fn path_is_same_or_nested(path: &Path, parent: &Path) -> bool {
+    let path_key = normalized_path_string(path);
+    let parent_key = normalized_path_string(parent);
+    if path_key == parent_key {
+        return true;
+    }
+    let prefix = if parent_key.ends_with('\\') || parent_key.ends_with('/') {
+        parent_key
+    } else if cfg!(windows) {
+        format!("{parent_key}\\")
+    } else {
+        format!("{parent_key}/")
+    };
+    path_key.starts_with(&prefix)
+}
+
+fn parse_requested_data_dir(path: Option<String>) -> Result<Option<PathBuf>, String> {
+    let Some(raw) = path else {
+        return Ok(None);
+    };
+
+    let trimmed = raw.trim().trim_matches('"').trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    let candidate = PathBuf::from(trimmed);
+    if !candidate.is_absolute() {
+        return Err("Data folder must be an absolute path.".to_string());
+    }
+    Ok(Some(candidate))
+}
+
+fn copy_path_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    if src.is_dir() {
+        std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+        for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            copy_path_recursive(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+        return Ok(());
+    }
+
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::copy(src, dst).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn move_path(src: &Path, dst: &Path) -> Result<(), String> {
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    match std::fs::rename(src, dst) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            copy_path_recursive(src, dst)?;
+            if src.is_dir() {
+                std::fs::remove_dir_all(src).map_err(|e| e.to_string())?;
+            } else {
+                std::fs::remove_file(src).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn linked_versions(app: &tauri::AppHandle) -> Result<Vec<u32>, String> {
+    let versions = list_installed_versions(app.clone())?;
+    let mut out = vec![];
+    for version in versions {
+        let state = installer::get_config_link_state_for_version(app, version)?;
+        if state.is_linked {
+            out.push(version);
+        }
+    }
+    Ok(out)
+}
+
+fn move_launcher_data(app: &tauri::AppHandle, target_root: &Path) -> Result<(), String> {
+    let current_root = paths::app_data_dir(app)?;
+    if paths_equal(&current_root, target_root) {
+        return Ok(());
+    }
+
+    let entries = paths::movable_entries_for_migration(&current_root);
+    if entries.is_empty() {
+        std::fs::create_dir_all(target_root).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    if path_is_same_or_nested(target_root, &current_root)
+        || path_is_same_or_nested(&current_root, target_root)
+    {
+        return Err("Pick a data folder outside the current data folder.".to_string());
+    }
+
+    std::fs::create_dir_all(target_root).map_err(|e| e.to_string())?;
+
+    for src in &entries {
+        let Some(name) = src.file_name() else {
+            continue;
+        };
+        let dst = target_root.join(name);
+        if dst.exists() {
+            return Err(format!(
+                "Target data folder already contains '{}'. Pick an empty folder or move data manually.",
+                name.to_string_lossy()
+            ));
+        }
+    }
+
+    for src in entries {
+        let Some(name) = src.file_name() else {
+            continue;
+        };
+        move_path(&src, &target_root.join(name))?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn get_data_directory_info(app: tauri::AppHandle) -> Result<paths::DataDirectoryInfo, String> {
+    paths::data_directory_info(&app)
+}
+
+#[tauri::command]
+fn set_data_directory(
+    app: tauri::AppHandle,
+    path: Option<String>,
+    move_existing: bool,
+) -> Result<paths::DataDirectoryInfo, String> {
+    let default_root = paths::default_data_dir(&app)?;
+    let requested = parse_requested_data_dir(path)?;
+    let target_root = requested.unwrap_or_else(|| default_root.clone());
+    let current_root = paths::app_data_dir(&app)?;
+
+    let linked_versions = if move_existing {
+        linked_versions(&app)?
+    } else {
+        vec![]
+    };
+
+    if move_existing {
+        move_launcher_data(&app, &target_root)?;
+    } else {
+        std::fs::create_dir_all(&target_root).map_err(|e| e.to_string())?;
+    }
+
+    let mut settings = paths::load_settings(&app)?;
+    settings.data_dir = if paths_equal(&target_root, &default_root) {
+        None
+    } else {
+        Some(target_root.to_string_lossy().to_string())
+    };
+    paths::save_settings(&app, &settings)?;
+
+    if move_existing && !paths_equal(&current_root, &target_root) {
+        for version in linked_versions {
+            let _ = installer::link_config_for_version(&app, version)?;
+        }
+    }
+
+    paths::data_directory_info(&app)
+}
+
+#[tauri::command]
+fn open_data_directory(app: tauri::AppHandle) -> Result<bool, String> {
+    let dir = paths::app_data_dir(&app)?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create data dir: {e}"))?;
+    opener::open(dir).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 #[tauri::command]
 fn list_installed_versions(app: tauri::AppHandle) -> Result<Vec<u32>, String> {
-    let base = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("versions");
+    let base = paths::versions_dir(&app)?;
 
     let mut out: Vec<u32> = vec![];
     let Ok(rd) = std::fs::read_dir(&base) else {
@@ -2975,7 +3133,6 @@ async fn download_app_update(app: tauri::AppHandle) -> Result<bool, String> {
     Ok(true)
 }
 
-
 #[tauri::command]
 #[cfg(not(target_os = "macos"))]
 async fn get_global_shortcut(_app: tauri::AppHandle, shortcut: String) -> Result<String, String> {
@@ -3059,7 +3216,7 @@ pub fn run() {
         .manage(discord_presence::DiscordPresenceState::default())
         .manage(downloader::DepotLoginState::default())
         .setup(|app| {
-            // File logging (AppDataDir/logs/hq-launcher.log)
+            // File logging (launcher data dir / logs / hq-launcher.log)
             logger::init(&app.handle()).map_err(|e| tauri::Error::Setup(e.into()))?;
 
             // Startup housekeeping (best-effort, won't block UI):
@@ -3067,7 +3224,8 @@ pub fn run() {
             // - Ensure default config is downloaded if shared config dir is empty
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = installer::purge_remote_disabled_mods_on_startup(app_handle.clone()).await
+                if let Err(e) =
+                    installer::purge_remote_disabled_mods_on_startup(app_handle.clone()).await
                 {
                     log::warn!("Failed to purge remote-disabled mods on startup: {e}");
                 }
@@ -3084,6 +3242,7 @@ pub fn run() {
 
             Ok(())
         })
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             download,
@@ -3103,6 +3262,9 @@ pub fn run() {
             set_mod_enabled,
             list_installed_mod_versions,
             get_manifest,
+            get_data_directory_info,
+            set_data_directory,
+            open_data_directory,
             list_installed_versions,
             list_config_files,
             get_config_link_state,

@@ -15,6 +15,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
+use crate::paths;
 use crate::progress::{self, TaskProgressPayload};
 
 #[cfg(windows)]
@@ -211,12 +212,7 @@ impl DepotDownloader {
     const PATCH_MARKER: &'static str = ".hq_launcher_ipc";
 
     pub fn new(app: &tauri::AppHandle) -> Result<Self, String> {
-        let app_data = app
-            .path()
-            .app_data_dir()
-            .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
-
-        let downloader_dir = app_data.join("downloader");
+        let downloader_dir = paths::downloader_dir(app)?;
         let ipc_mode = downloader_dir.join(Self::PATCH_MARKER).exists();
 
         #[cfg(target_os = "windows")]
@@ -229,7 +225,7 @@ impl DepotDownloader {
             return Err("DepotDownloader not installed. Please install it first.".to_string());
         }
 
-        let config_dir = app_data.join("depot_config");
+        let config_dir = paths::depot_config_dir(app)?;
         std::fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
 
         Ok(Self {
@@ -1173,11 +1169,7 @@ impl DepotDownloader {
 }
 
 fn depot_config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
-    let config_dir = app_data.join("depot_config");
+    let config_dir = paths::depot_config_dir(app)?;
     std::fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
     Ok(config_dir)
 }
@@ -1209,11 +1201,7 @@ fn write_saved_login_state(app: &tauri::AppHandle, state: &LoginState) -> Result
 pub async fn install_downloader(app: &tauri::AppHandle) -> Result<bool, String> {
     let download_url = format!("https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_3.4.0/{DEPOT_DOWNLOADER_NAME}.zip");
 
-    let install_path = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("downloader");
+    let install_path = paths::downloader_dir(app)?;
     let marker_path = install_path.join(DepotDownloader::PATCH_MARKER);
 
     // If patched build already installed, skip.
@@ -1389,10 +1377,13 @@ pub async fn depot_login(
     // This avoids relying on prompt/log detection which can be unreliable across DD versions.
     downloader.emit_event(DepotDownloaderEvent::NeedsTwoFactor {
         session_id,
-        message: Some("Check your Steam Guard email/app and enter the code when it arrives.".to_string()),
+        message: Some(
+            "Check your Steam Guard email/app and enter the code when it arrives.".to_string(),
+        ),
     });
     downloader.emit_event(DepotDownloaderEvent::Output(
-        "Login attempt started. If Steam Guard asks for a code, enter it and click Submit Code.".to_string(),
+        "Login attempt started. If Steam Guard asks for a code, enter it and click Submit Code."
+            .to_string(),
     ));
 
     let res = downloader
@@ -1441,10 +1432,13 @@ pub async fn depot_login_start(
     // Prompt UI immediately (no reliance on log detection).
     downloader.emit_event(DepotDownloaderEvent::NeedsTwoFactor {
         session_id,
-        message: Some("Check your Steam Guard email/app and enter the code when it arrives.".to_string()),
+        message: Some(
+            "Check your Steam Guard email/app and enter the code when it arrives.".to_string(),
+        ),
     });
     downloader.emit_event(DepotDownloaderEvent::Output(
-        "Login attempt started. If Steam Guard asks for a code, enter it and click Submit Code.".to_string(),
+        "Login attempt started. If Steam Guard asks for a code, enter it and click Submit Code."
+            .to_string(),
     ));
 
     let app2 = app.clone();

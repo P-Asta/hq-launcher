@@ -147,11 +147,13 @@ export default function Titlebar({ installedVersions, ...props }) {
     }
 
     const fileMenuItems = useMemo(() => ([
+        { label: "Open Data Folder", shortcut: "", action: () => { invoke('open_data_directory'); } },
         { label: "Open Version Folder", shortcut: "CommandOrControl+O", action: () => { invoke('open_version_folder'); } },
         { label: "Open DepotDownloader Folder", shortcut: "", action: () => { invoke('open_downloader_folder'); } }
     ]), []);
 
     const editMenuItems = useMemo(() => ([
+        { label: "Launcher Data Folder (Beta)", shortcut: "", action: () => { emit('ui://open-data-directory-dialog').catch(() => {}); } },
         { label: "Unlink Config", shortcut: "", disabled: unlinkDisabled, action: unlinkConfig },
         { label: "Link Config", shortcut: "", disabled: linkDisabled, action: linkConfig }
     ]), [linkDisabled, unlinkDisabled, configLinkState, configLinkBusy, selectedVersion]);

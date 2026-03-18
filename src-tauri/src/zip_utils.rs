@@ -278,10 +278,13 @@ where
     // `BepInEx/plugins/<mod_folder>/...`). Since `base_dir` is already the mod folder,
     // we should flatten that redundant top-level directory to avoid nesting like:
     // `BepInEx/plugins/Dev-Mod/Dev-Mod/manifest.json`.
-    let mut first_components: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut first_components: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
     let mut has_root_file = false;
     for i in 0..archive.len() {
-        let Ok(entry) = archive.by_index(i) else { continue };
+        let Ok(entry) = archive.by_index(i) else {
+            continue;
+        };
         let Some(safe_rel) = entry.enclosed_name().map(|p| p.to_owned()) else {
             continue;
         };
@@ -387,12 +390,9 @@ where
         // Also strip if the zip already includes the target folder_name as its top-level dir.
         let folder_lower = folder_name.to_lowercase();
         if rel_comps.len() > 1
-            && rel_comps.first().is_some_and(|c| {
-                c.as_os_str()
-                    .to_string_lossy()
-                    .to_lowercase()
-                    == folder_lower
-            })
+            && rel_comps
+                .first()
+                .is_some_and(|c| c.as_os_str().to_string_lossy().to_lowercase() == folder_lower)
         {
             rel_comps = rel_comps[1..].to_vec();
         }
@@ -478,7 +478,9 @@ where
     let mut has_root_file = false;
     let mut has_patchers_payload = false;
     for i in 0..archive.len() {
-        let Ok(entry) = archive.by_index(i) else { continue };
+        let Ok(entry) = archive.by_index(i) else {
+            continue;
+        };
         let Some(safe_rel) = entry.enclosed_name().map(|p| p.to_owned()) else {
             continue;
         };
@@ -492,7 +494,10 @@ where
         first_components.insert(comps[0].as_os_str().to_string_lossy().to_string());
         // Quick detect patchers payload to decide whether to reset patchers folder.
         let lower = safe_rel.to_string_lossy().to_lowercase();
-        if lower.contains("/patchers/") || lower.contains("\\patchers\\") || lower.contains("/patcher/") {
+        if lower.contains("/patchers/")
+            || lower.contains("\\patchers\\")
+            || lower.contains("/patcher/")
+        {
             has_patchers_payload = true;
         }
     }
@@ -532,7 +537,11 @@ where
 
         let Some(safe_rel0) = entry.enclosed_name().map(|p| p.to_owned()) else {
             processed = processed.saturating_add(1);
-            on_progress(processed, total_entries, Some("Skipped unsafe path".to_string()));
+            on_progress(
+                processed,
+                total_entries,
+                Some("Skipped unsafe path".to_string()),
+            );
             continue;
         };
 
@@ -566,7 +575,9 @@ where
         }
 
         // Determine section (plugins/config/patchers) by first component after optional strip.
-        let head = comps.get(start).map(|c| c.as_os_str().to_string_lossy().to_lowercase());
+        let head = comps
+            .get(start)
+            .map(|c| c.as_os_str().to_string_lossy().to_lowercase());
         let section = head.as_deref().unwrap_or("");
 
         let dest_base = match section {
@@ -575,7 +586,11 @@ where
             "config" => {
                 // Explicitly ignore config payloads.
                 processed = processed.saturating_add(1);
-                on_progress(processed, total_entries, Some("Skipped config entry".to_string()));
+                on_progress(
+                    processed,
+                    total_entries,
+                    Some("Skipped config entry".to_string()),
+                );
                 continue;
             }
             _ => plugin_dest_dir.clone(), // fallback
@@ -583,18 +598,18 @@ where
 
         // Build relative path after stripping section prefix when present.
         let mut rel_comps: Vec<_> = comps[start..].to_vec();
-        if matches!(section, "plugins" | "plugin" | "patchers" | "patcher" | "config") {
+        if matches!(
+            section,
+            "plugins" | "plugin" | "patchers" | "patcher" | "config"
+        ) {
             rel_comps = rel_comps[1..].to_vec();
         }
 
         // If the payload includes the mod folder name again, strip it.
         if rel_comps.len() > 1
-            && rel_comps.first().is_some_and(|c| {
-                c.as_os_str()
-                    .to_string_lossy()
-                    .to_lowercase()
-                    == folder_lower
-            })
+            && rel_comps
+                .first()
+                .is_some_and(|c| c.as_os_str().to_string_lossy().to_lowercase() == folder_lower)
         {
             rel_comps = rel_comps[1..].to_vec();
         }

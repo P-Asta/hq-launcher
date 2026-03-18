@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   CheckCircle2,
   ChevronDown,
@@ -9,11 +10,11 @@ import {
   LoaderCircle,
   Play,
   Search,
-  Settings2,
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Checkbox } from "../components/ui/checkbox";
+import { Dialog, DialogContent } from "../components/ui/dialog";
 import { Switch } from "../components/ui/switch";
 import { Slider } from "../components/ui/slider";
 import {
@@ -230,6 +231,13 @@ export default function LauncherPage({
   const [savingEntry, setSavingEntry] = useState(null); // `${section}/${entry}`
   const [configLinkEpoch, setConfigLinkEpoch] = useState(0);
   const [configLinkState, setConfigLinkState] = useState(null);
+  const [dataDirectoryDialogOpen, setDataDirectoryDialogOpen] = useState(false);
+  const [dataDirectoryInfo, setDataDirectoryInfo] = useState(null);
+  const [dataDirectoryInput, setDataDirectoryInput] = useState("");
+  const [moveDataDirectoryContents, setMoveDataDirectoryContents] = useState(true);
+  const [dataDirectoryBusy, setDataDirectoryBusy] = useState(false);
+  const [dataDirectoryError, setDataDirectoryError] = useState("");
+  const [dataDirectorySuccess, setDataDirectorySuccess] = useState("");
 
   // Download/sync progress toast
   const [task, setTask] = useState({
@@ -282,6 +290,88 @@ export default function LauncherPage({
     setInstalledVersions(normalized);
     onInstalledVersionsChange?.(normalized);
   }
+
+  async function refreshDataDirectoryInfo() {
+    const info = await invoke("get_data_directory_info");
+    setDataDirectoryInfo(info ?? null);
+    setDataDirectoryInput(info?.current_path ?? "");
+    return info ?? null;
+  }
+
+  async function openDataDirectoryDialog() {
+    setDataDirectoryError("");
+    setDataDirectorySuccess("");
+    setMoveDataDirectoryContents(true);
+    try {
+      await refreshDataDirectoryInfo();
+      setDataDirectoryDialogOpen(true);
+    } catch (e) {
+      setDataDirectoryError(e?.message ?? String(e));
+      setDataDirectoryDialogOpen(true);
+    }
+  }
+
+  async function applyDataDirectoryChange() {
+    const typedPath = dataDirectoryInput.trim();
+    const defaultPath = dataDirectoryInfo?.default_path ?? "";
+    const nextPath =
+      !typedPath || typedPath === defaultPath ? null : typedPath;
+
+    setDataDirectoryBusy(true);
+    setDataDirectoryError("");
+    setDataDirectorySuccess("");
+    try {
+      const info = await invoke("set_data_directory", {
+        path: nextPath,
+        moveExisting: !!moveDataDirectoryContents,
+      });
+      setDataDirectoryInfo(info ?? null);
+      setDataDirectoryInput(info?.current_path ?? typedPath);
+      setDataDirectorySuccess("Data folder updated. Reloading launcher...");
+      window.setTimeout(() => window.location.reload(), 250);
+    } catch (e) {
+      setDataDirectoryError(e?.message ?? String(e));
+    } finally {
+      setDataDirectoryBusy(false);
+    }
+  }
+
+  async function browseForDataDirectory() {
+    if (dataDirectoryBusy) return;
+    try {
+      const selected = await openDialog({
+        directory: true,
+        multiple: false,
+        defaultPath:
+          dataDirectoryInput.trim() ||
+          dataDirectoryInfo?.current_path ||
+          dataDirectoryInfo?.default_path ||
+          undefined,
+        title: "Select launcher data folder",
+      });
+      if (typeof selected === "string" && selected.trim()) {
+        setDataDirectoryInput(selected);
+      }
+    } catch (e) {
+      setDataDirectoryError(e?.message ?? String(e));
+    }
+  }
+
+  useEffect(() => {
+    let unlisten = null;
+    (async () => {
+      unlisten = await listen("ui://open-data-directory-dialog", () => {
+        openDataDirectoryDialog().catch((e) => {
+          setDataDirectoryError(e?.message ?? String(e));
+          setDataDirectoryDialogOpen(true);
+        });
+      });
+    })();
+
+    return () => {
+      if (typeof unlisten === "function") unlisten();
+    };
+  }, []);
 
   useEffect(() => {
     practicePromptOpenRef.current = !!practicePrompt.open;
@@ -1854,6 +1944,14 @@ export default function LauncherPage({
   }, [runMode]);
 
   const showBootstrapSkeleton = !didFinishBootstrap;
+  const currentDataDirectory = dataDirectoryInfo?.current_path ?? "";
+  const defaultDataDirectory = dataDirectoryInfo?.default_path ?? "";
+  const trimmedDataDirectoryInput = dataDirectoryInput.trim();
+  const normalizedDataDirectoryInput =
+    trimmedDataDirectoryInput || defaultDataDirectory;
+  const hasPendingDataDirectoryChange =
+    !!currentDataDirectory &&
+    normalizedDataDirectoryInput !== currentDataDirectory;
 
   return (
     <div className="h-full text-white">
@@ -1862,6 +1960,154 @@ export default function LauncherPage({
           <LauncherPageSkeleton statusText={bootstrapStatus} />
         ) : (
           <>
+        <Dialog
+          open={dataDirectoryDialogOpen}
+          onOpenChange={(nextOpen) => {
+            if (dataDirectoryBusy) return;
+            setDataDirectoryDialogOpen(nextOpen);
+            if (!nextOpen) {
+              setDataDirectoryError("");
+              setDataDirectorySuccess("");
+            }
+          }}
+        >
+          <DialogContent
+            onEscapeKeyDown={(e) => {
+              if (dataDirectoryBusy) e.preventDefault();
+            }}
+            onPointerDownOutside={(e) => {
+              if (dataDirectoryBusy) e.preventDefault();
+            }}
+          >
+            <div className="flex flex-col gap-4">
+              <div>
+                <div className="text-lg font-semibold">Launcher Data Folder</div>
+                <div className="mt-1 text-sm text-white/55">
+                  Move large launcher data like versions, configs, cache, and
+                  downloads to another drive.
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="text-sm font-medium text-white/85">
+                    Data folder
+                  </div>
+                  <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-1 text-[11px] font-medium text-white/55">
+                    {dataDirectoryInfo == null
+                      ? "Loading..."
+                      : hasPendingDataDirectoryChange
+                        ? "Pending change"
+                        : dataDirectoryInfo.using_default
+                          ? "Using default"
+                          : "Current location"}
+                  </span>
+                </div>
+                <div className="mt-3 space-y-2">
+                  <Input
+                    value={dataDirectoryInput}
+                    placeholder="D:\\hq-launcher-data"
+                    disabled={dataDirectoryBusy}
+                    readOnly
+                    className="font-mono text-sm"
+                  />
+                  <div className="text-xs text-white/45">
+                    Choose a folder with Explorer. Reset to default if you want
+                    to move storage back to the launcher's normal location.
+                  </div>
+                  <div className="break-all text-xs text-white/55">
+                    Current: {currentDataDirectory || "Loading..."}
+                  </div>
+                  {hasPendingDataDirectoryChange ? (
+                    <div className="break-all text-xs text-amber-200/90">
+                      After apply: {normalizedDataDirectoryInput}
+                    </div>
+                  ) : null}
+                  <div className="break-all text-xs text-white/45">
+                    Default: {defaultDataDirectory || "Loading..."}
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    variant="secondary"
+                    className="h-9"
+                    onClick={browseForDataDirectory}
+                    disabled={dataDirectoryBusy}
+                  >
+                    Browse...
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    className="h-9"
+                    onClick={() => invoke("open_data_directory")}
+                    disabled={dataDirectoryBusy}
+                  >
+                    Open Current Folder
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="h-9"
+                    onClick={() => setDataDirectoryInput(defaultDataDirectory)}
+                    disabled={dataDirectoryBusy}
+                  >
+                    Reset To Default
+                  </Button>
+                </div>
+              </div>
+
+              <label className="flex items-start gap-3 rounded-2xl border border-white/10 bg-black/10 p-3">
+                <Checkbox
+                  checked={moveDataDirectoryContents}
+                  onCheckedChange={(checked) =>
+                    setMoveDataDirectoryContents(checked !== false)
+                  }
+                  disabled={dataDirectoryBusy}
+                />
+                <div>
+                  <div className="text-sm font-medium text-white/85">
+                    Move existing launcher data
+                  </div>
+                  <div className="mt-1 text-xs text-white/50">
+                    Turn this off if you already moved the files manually, or
+                    if you want to start fresh in the new folder.
+                  </div>
+                </div>
+              </label>
+
+              {dataDirectoryError ? (
+                <div className="rounded-2xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-sm text-red-100">
+                  {dataDirectoryError}
+                </div>
+              ) : null}
+
+              {dataDirectorySuccess ? (
+                <div className="rounded-2xl border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-sm text-emerald-100">
+                  {dataDirectorySuccess}
+                </div>
+              ) : null}
+
+              <div className="flex items-center justify-end gap-2">
+                {!dataDirectoryBusy ? (
+                  <Button
+                    variant="outline"
+                    className="h-10"
+                    onClick={() => setDataDirectoryDialogOpen(false)}
+                  >
+                    Cancel
+                  </Button>
+                ) : null}
+                <Button
+                  variant="default"
+                  className="h-10"
+                  onClick={applyDataDirectoryChange}
+                  disabled={dataDirectoryBusy}
+                >
+                  {dataDirectoryBusy ? "Applying..." : "Apply"}
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
         {/* Top bar */}
         <div className="flex items-center gap-3">
           {gameStatus.running ? (

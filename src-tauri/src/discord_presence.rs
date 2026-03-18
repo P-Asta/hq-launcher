@@ -1,7 +1,6 @@
 use discord_rich_presence::{
     activity::{self, Button},
-    DiscordIpc,
-    DiscordIpcClient,
+    DiscordIpc, DiscordIpcClient,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;

@@ -4,16 +4,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use futures_util::StreamExt;
-use serde::{Deserialize, Serialize};
-use tauri::Manager;
-
 use crate::downloader;
 use crate::mod_config::ModsConfig;
 use crate::mods;
+use crate::paths;
 use crate::progress::{self, TaskErrorPayload, TaskFinishedPayload, TaskProgressPayload};
 use crate::zip_utils;
+use futures_util::StreamExt;
 use progress::{emit_error, emit_finished, emit_progress};
+use serde::{Deserialize, Serialize};
 
 // BepInEx installation via Thunderstore BepInExPack (Mono, preconfigured).
 // We download the Thunderstore package zip and extract the contents of the `BepInExPack/` folder
@@ -59,7 +58,10 @@ fn sanitize_tar_rel_path(p: &Path) -> Option<PathBuf> {
 
 #[cfg(target_os = "linux")]
 fn dir_has_any_entries(path: &Path) -> bool {
-    std::fs::read_dir(path).ok().and_then(|mut rd| rd.next()).is_some()
+    std::fs::read_dir(path)
+        .ok()
+        .and_then(|mut rd| rd.next())
+        .is_some()
 }
 
 #[cfg(target_os = "linux")]
@@ -85,12 +87,7 @@ fn list_other_proton_ge_dirs(proton_root: &Path) -> Vec<PathBuf> {
 }
 
 pub fn proton_root_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("proton_env")
-        .join("proton"))
+    Ok(paths::proton_env_dir(app)?.join("proton"))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -100,11 +97,7 @@ fn get_current_proton_dir_impl(_app: &tauri::AppHandle) -> Result<Option<PathBuf
 
 #[cfg(target_os = "linux")]
 pub fn proton_env_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("proton_env"))
+    paths::proton_env_dir(app)
 }
 
 #[cfg(target_os = "linux")]
@@ -177,12 +170,7 @@ pub async fn install_proton_ge_impl(app: &tauri::AppHandle) -> Result<bool, Stri
 
         log::info!("Installing Proton-GE");
 
-        let app_data = app
-            .path()
-            .app_data_dir()
-            .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
-
-        let proton_root = app_data.join("proton_env").join("proton");
+        let proton_root = paths::proton_env_dir(app)?.join("proton");
         std::fs::create_dir_all(&proton_root).map_err(|e| e.to_string())?;
 
         let final_dir = proton_root.join(PROTON_GE_VERSION);
@@ -354,8 +342,7 @@ pub async fn install_proton_ge(app: tauri::AppHandle) -> Result<bool, String> {
 /// `.../AppData/.../proton_env/proton/GE-Proton10-28`
 #[tauri::command]
 pub fn get_current_proton_dir(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    Ok(get_current_proton_dir_impl(&app)?
-        .map(|p| p.to_string_lossy().to_string()))
+    Ok(get_current_proton_dir_impl(&app)?.map(|p| p.to_string_lossy().to_string()))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -364,12 +351,7 @@ struct ManifestState {
 }
 
 fn manifest_state_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("config")
-        .join("manifest_state.json"))
+    Ok(paths::config_dir(app)?.join("manifest_state.json"))
 }
 
 fn read_manifest_state(app: &tauri::AppHandle) -> Result<ManifestState, String> {
@@ -395,11 +377,7 @@ fn write_manifest_state(app: &tauri::AppHandle, state: &ManifestState) -> Result
 fn latest_installed_version_dir(
     app: &tauri::AppHandle,
 ) -> Result<Option<(u32, std::path::PathBuf)>, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("versions");
+    let dir = paths::versions_dir(app)?;
 
     let Ok(rd) = std::fs::read_dir(&dir) else {
         return Ok(None);
@@ -429,12 +407,10 @@ fn latest_installed_version_dir(
     Ok(best)
 }
 
-fn installed_version_dirs(app: &tauri::AppHandle) -> Result<Vec<(u32, std::path::PathBuf)>, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("versions");
+fn installed_version_dirs(
+    app: &tauri::AppHandle,
+) -> Result<Vec<(u32, std::path::PathBuf)>, String> {
+    let dir = paths::versions_dir(app)?;
 
     let Ok(rd) = std::fs::read_dir(&dir) else {
         return Ok(vec![]);
@@ -465,12 +441,7 @@ fn installed_version_dirs(app: &tauri::AppHandle) -> Result<Vec<(u32, std::path:
 }
 
 fn shared_config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("config")
-        .join("shared"))
+    paths::shared_config_dir(app)
 }
 
 fn plugins_dir_for_version_root(version_root: &Path) -> PathBuf {
@@ -516,7 +487,10 @@ fn delete_config_files_for_mod(shared_config: &Path, dev: &str, name: &str) -> R
                     deleted = deleted.saturating_add(1);
                 }
                 Err(e) => {
-                    log::warn!("Failed to delete config file {}: {e}", path.to_string_lossy());
+                    log::warn!(
+                        "Failed to delete config file {}: {e}",
+                        path.to_string_lossy()
+                    );
                 }
             }
         }
@@ -798,12 +772,7 @@ pub struct VersionConfigLinkState {
 }
 
 fn version_root_dir(app: &tauri::AppHandle, version: u32) -> Result<PathBuf, String> {
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("versions")
-        .join(format!("v{version}")))
+    Ok(paths::versions_dir(app)?.join(format!("v{version}")))
 }
 
 pub fn get_config_link_state_for_version(
@@ -831,19 +800,31 @@ pub fn get_config_link_state_for_version(
     })
 }
 
-pub fn link_config_for_version(app: &tauri::AppHandle, version: u32) -> Result<VersionConfigLinkState, String> {
+pub fn link_config_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<VersionConfigLinkState, String> {
     let root = version_root_dir(app, version)?;
     if !root.exists() {
-        return Err(format!("version folder not found: {}", root.to_string_lossy()));
+        return Err(format!(
+            "version folder not found: {}",
+            root.to_string_lossy()
+        ));
     }
     let _ = ensure_config_junction(app, &root)?;
     get_config_link_state_for_version(app, version)
 }
 
-pub fn unlink_config_for_version(app: &tauri::AppHandle, version: u32) -> Result<VersionConfigLinkState, String> {
+pub fn unlink_config_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<VersionConfigLinkState, String> {
     let root = version_root_dir(app, version)?;
     if !root.exists() {
-        return Err(format!("version folder not found: {}", root.to_string_lossy()));
+        return Err(format!(
+            "version folder not found: {}",
+            root.to_string_lossy()
+        ));
     }
 
     let shared = shared_config_dir(app)?;
@@ -982,11 +963,7 @@ pub async fn ensure_default_config(app: tauri::AppHandle) -> Result<(), String> 
     log::info!("Downloaded {} bytes of config", cfg_bytes.len());
 
     // Create temporary directory for extraction
-    let temp_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("temp");
+    let temp_dir = paths::temp_dir(&app)?;
     std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
 
     let cfg_zip_path = temp_dir.join("default_config.zip");
@@ -1151,11 +1128,7 @@ pub async fn download_and_setup(
     version: u32,
     cancel: Arc<AtomicBool>,
 ) -> Result<bool, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("versions");
+    let dir = paths::versions_dir(&app)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let extract_dir = dir.join(format!("v{version}"));
 
@@ -1321,11 +1294,7 @@ pub async fn download_and_setup(
             .map_err(|e| e.to_string())?;
 
         let total = response.content_length();
-        let temp_dir = app
-            .path()
-            .app_data_dir()
-            .map_err(|e| format!("Failed to resolve app data dir: {e}"))?
-            .join("temp");
+        let temp_dir = paths::temp_dir(&app)?;
         std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
 
         let zip_path = temp_dir.join(format!("bepinexpack_{BEPINEXPACK_VERSION}.zip"));

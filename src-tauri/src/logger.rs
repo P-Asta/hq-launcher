@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::paths;
 use log::LevelFilter;
 use log4rs::{
     append::rolling_file::{
@@ -11,7 +12,6 @@ use log4rs::{
     config::{Appender, Config, Root},
     encode::pattern::PatternEncoder,
 };
-use tauri::Manager;
 
 type AnyError = Box<dyn std::error::Error>;
 
@@ -20,11 +20,7 @@ fn err(msg: impl Into<String>) -> AnyError {
 }
 
 fn log_paths(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), AnyError> {
-    let logs_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| err(format!("failed to resolve app data dir: {e}")))?
-        .join("logs");
+    let logs_dir = paths::logs_dir(app).map_err(err)?;
     let log_file = logs_dir.join("hq-launcher.log");
     Ok((logs_dir, log_file))
 }
