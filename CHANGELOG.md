@@ -2,6 +2,9 @@
 - Content
 
 
+## 1.6.2 (2026-03-20)
+- Set `LockMoons = true` for `Wesley's Run`, and `LockMoons = false` for `Wesley's Practice` and `Wesley's SMHQ`.
+
 ## 1.6.1 (2026-03-20)
 - Automatically set `JacobG5.ReverbTriggerFix.cfg` to use `triggerOnEnter = true` when `ReverbTriggerFix` is installed.
 - Automatically add `DungeonKeyItem` to HQoL's `Dont store list` when it is missing.

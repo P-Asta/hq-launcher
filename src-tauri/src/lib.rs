@@ -285,8 +285,12 @@ fn version_config_dir(app: &tauri::AppHandle, version: u32) -> Result<std::path:
     Ok(version_dir(app, version)?.join("BepInEx").join("config"))
 }
 
-fn ensure_wesley_moonscripts_cfg(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
-    // Only meaningful for the Wesley preset (v69+). Never overwrite existing configs.
+fn ensure_wesley_moonscripts_cfg(
+    app: &tauri::AppHandle,
+    version: u32,
+    lock_moons: bool,
+) -> Result<(), String> {
+    // Only meaningful for the Wesley preset (v69+).
     if version < 69 {
         return Ok(());
     }
@@ -296,13 +300,13 @@ fn ensure_wesley_moonscripts_cfg(app: &tauri::AppHandle, version: u32) -> Result
 
     let cfg_path = cfg_dir.join("JacobG5.WesleyMoonScripts.cfg");
     if cfg_path.exists() {
-        // If the cfg already exists, ensure LockMoons isn't left enabled.
-        // Preserve everything else in the file.
+        // Preserve everything else in the file and only update LockMoons.
         let bytes = std::fs::read(&cfg_path).map_err(|e| e.to_string())?;
         let text = String::from_utf8_lossy(&bytes);
 
         let mut changed = false;
         let mut out = String::with_capacity(text.len());
+        let desired_value = if lock_moons { "true" } else { "false" };
 
         for seg in text.split_inclusive(['\n', '\r']) {
             // Preserve original newline sequence; only edit the assignment line.
@@ -320,7 +324,6 @@ fn ensure_wesley_moonscripts_cfg(app: &tauri::AppHandle, version: u32) -> Result
             let indent_len = line.len().saturating_sub(trimmed.len());
             let indent = &line[..indent_len];
 
-            // Only touch `LockMoons = true` (case-insensitive for value).
             if trimmed.starts_with("LockMoons") {
                 if let Some(eq_idx) = trimmed.find('=') {
                     let (left, right_all) = trimmed.split_at(eq_idx);
@@ -332,13 +335,16 @@ fn ensure_wesley_moonscripts_cfg(app: &tauri::AppHandle, version: u32) -> Result
                         None => (right_all, ""),
                     };
 
-                    if left.trim() == "LockMoons" && right.trim().eq_ignore_ascii_case("true") {
-                        out.push_str(indent);
-                        out.push_str("LockMoons = false");
-                        out.push_str(comment);
-                        out.push_str(nl);
-                        changed = true;
-                        continue;
+                    if left.trim() == "LockMoons" {
+                        if !right.trim().eq_ignore_ascii_case(desired_value) {
+                            out.push_str(indent);
+                            out.push_str("LockMoons = ");
+                            out.push_str(desired_value);
+                            out.push_str(comment);
+                            out.push_str(nl);
+                            changed = true;
+                            continue;
+                        }
                     }
                 }
             }
@@ -353,7 +359,10 @@ fn ensure_wesley_moonscripts_cfg(app: &tauri::AppHandle, version: u32) -> Result
         return Ok(());
     }
 
-    let content = "## Settings file was created by plugin WesleyMoonScripts v1.1.6\n## Plugin GUID: JacobG5.WesleyMoonScripts\n\n[Core]\n\n## Locks moons that have progression integration set up to enable playing the campaign.\n# Setting type: Boolean\n# Default value: true\nLockMoons = false\n\n";
+    let content = format!(
+        "## Settings file was created by plugin WesleyMoonScripts v1.1.6\n## Plugin GUID: JacobG5.WesleyMoonScripts\n\n[Core]\n\n## Locks moons that have progression integration set up to enable playing the campaign.\n# Setting type: Boolean\n# Default value: true\nLockMoons = {}\n\n",
+        if lock_moons { "true" } else { "false" }
+    );
 
     std::fs::write(&cfg_path, content).map_err(|e| e.to_string())?;
     Ok(())
@@ -2330,6 +2339,10 @@ async fn launch_game_preset(
     let _ = sync_hqol_with_disablemod_for_version(&app, version);
     let _ = ensure_reverb_trigger_fix_cfg(&app, version);
     let _ = ensure_hqol_dont_store_item_cfg(&app, version, "DungeonKeyItem");
+    if tags.iter().any(|t| t.eq_ignore_ascii_case("wesley")) {
+        let lock_moons = !practice && !tags.iter().any(|t| t.eq_ignore_ascii_case("smhq"));
+        let _ = ensure_wesley_moonscripts_cfg(&app, version, lock_moons);
+    }
 
     // Runtime-only tag gating: disable tagged mods not relevant to this run.
     // (No disablemod.json writes; next run will re-evaluate.)
@@ -2415,10 +2428,11 @@ async fn prepare_preset_for_version(
         return Err("Cancelled".to_string());
     }
 
-    // Wesley preset: ensure default cfg exists (do not overwrite user edits).
+    // Wesley preset: ensure companion configs exist during prepare.
     if tags.iter().any(|t| t.eq_ignore_ascii_case("wesley")) {
         let _ = ensure_weather_registry_cfg(app, version);
-        let _ = ensure_wesley_moonscripts_cfg(app, version);
+        let lock_moons = !practice && !tags.iter().any(|t| t.eq_ignore_ascii_case("smhq"));
+        let _ = ensure_wesley_moonscripts_cfg(app, version, lock_moons);
     }
 
     let practice_ids = if practice {
