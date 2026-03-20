@@ -1,6 +1,16 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+
+## 1.6.1 (2026-03-20)
+- Automatically set `JacobG5.ReverbTriggerFix.cfg` to use `triggerOnEnter = true` when `ReverbTriggerFix` is installed.
+- Automatically add `DungeonKeyItem` to HQoL's `Dont store list` when it is missing.
+- Add optional `tag_constraints` support in the mod manifest so tagged mods can use per-pack version caps.
+
+
+## 1.6.0 (2026-03-18)
+- MayB fix DepotDownloader download bug 
+
 ## 1.5.2 (2026-03-17)
 - Show installed mod icons from each mod folder's `icon.png` in the mod list.
 - Show installed mod descriptions in the mod list and config header.

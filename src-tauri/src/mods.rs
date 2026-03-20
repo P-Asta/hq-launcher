@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 use futures_util::StreamExt;
 
@@ -419,7 +419,9 @@ where
                 on_progress(
                     idx,
                     total_mods,
-                    Some(format!("Skipping incompatible installed mod {mod_label}{why}")),
+                    Some(format!(
+                        "Skipping incompatible installed mod {mod_label}{why}"
+                    )),
                     None,
                 );
                 continue;
@@ -544,7 +546,6 @@ where
 
     Ok(())
 }
-
 
 pub async fn update_mods_with_progress<F>(
     app: &tauri::AppHandle,

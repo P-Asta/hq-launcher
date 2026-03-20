@@ -59,7 +59,10 @@ fn sanitize_tar_rel_path(p: &Path) -> Option<PathBuf> {
 
 #[cfg(target_os = "linux")]
 fn dir_has_any_entries(path: &Path) -> bool {
-    std::fs::read_dir(path).ok().and_then(|mut rd| rd.next()).is_some()
+    std::fs::read_dir(path)
+        .ok()
+        .and_then(|mut rd| rd.next())
+        .is_some()
 }
 
 #[cfg(target_os = "linux")]
@@ -354,8 +357,7 @@ pub async fn install_proton_ge(app: tauri::AppHandle) -> Result<bool, String> {
 /// `.../AppData/.../proton_env/proton/GE-Proton10-28`
 #[tauri::command]
 pub fn get_current_proton_dir(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    Ok(get_current_proton_dir_impl(&app)?
-        .map(|p| p.to_string_lossy().to_string()))
+    Ok(get_current_proton_dir_impl(&app)?.map(|p| p.to_string_lossy().to_string()))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -429,7 +431,9 @@ fn latest_installed_version_dir(
     Ok(best)
 }
 
-fn installed_version_dirs(app: &tauri::AppHandle) -> Result<Vec<(u32, std::path::PathBuf)>, String> {
+fn installed_version_dirs(
+    app: &tauri::AppHandle,
+) -> Result<Vec<(u32, std::path::PathBuf)>, String> {
     let dir = app
         .path()
         .app_data_dir()
@@ -516,7 +520,10 @@ fn delete_config_files_for_mod(shared_config: &Path, dev: &str, name: &str) -> R
                     deleted = deleted.saturating_add(1);
                 }
                 Err(e) => {
-                    log::warn!("Failed to delete config file {}: {e}", path.to_string_lossy());
+                    log::warn!(
+                        "Failed to delete config file {}: {e}",
+                        path.to_string_lossy()
+                    );
                 }
             }
         }
@@ -831,19 +838,31 @@ pub fn get_config_link_state_for_version(
     })
 }
 
-pub fn link_config_for_version(app: &tauri::AppHandle, version: u32) -> Result<VersionConfigLinkState, String> {
+pub fn link_config_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<VersionConfigLinkState, String> {
     let root = version_root_dir(app, version)?;
     if !root.exists() {
-        return Err(format!("version folder not found: {}", root.to_string_lossy()));
+        return Err(format!(
+            "version folder not found: {}",
+            root.to_string_lossy()
+        ));
     }
     let _ = ensure_config_junction(app, &root)?;
     get_config_link_state_for_version(app, version)
 }
 
-pub fn unlink_config_for_version(app: &tauri::AppHandle, version: u32) -> Result<VersionConfigLinkState, String> {
+pub fn unlink_config_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<VersionConfigLinkState, String> {
     let root = version_root_dir(app, version)?;
     if !root.exists() {
-        return Err(format!("version folder not found: {}", root.to_string_lossy()));
+        return Err(format!(
+            "version folder not found: {}",
+            root.to_string_lossy()
+        ));
     }
 
     let shared = shared_config_dir(app)?;
@@ -1015,6 +1034,14 @@ pub async fn ensure_default_config(app: tauri::AppHandle) -> Result<(), String> 
     Ok(())
 }
 
+pub fn ensure_pack_specific_configs_on_startup(app: &tauri::AppHandle) -> Result<(), String> {
+    for (version, _) in installed_version_dirs(app)? {
+        crate::ensure_reverb_trigger_fix_cfg(app, version)?;
+        crate::ensure_hqol_dont_store_item_cfg(app, version, "DungeonKeyItem")?;
+    }
+    Ok(())
+}
+
 /// On app startup: compare local applied manifest version with remote manifest version.
 /// If different, apply updates **additively** to the latest installed version (no overwrites).
 /// Note: Config is no longer synced here - use ensure_default_config() on app startup instead.
@@ -1092,6 +1119,9 @@ pub async fn sync_latest_install_from_manifest(app: tauri::AppHandle) -> Result<
             },
         )
         .await?;
+
+        crate::ensure_reverb_trigger_fix_cfg(&app, game_version)?;
+        crate::ensure_hqol_dont_store_item_cfg(&app, game_version, "DungeonKeyItem")?;
 
         // Mark sync as complete for the UI.
         progress::emit_progress(
@@ -1219,7 +1249,7 @@ pub async fn download_and_setup(
         );
 
         // Fetch remote manifest data (mods + per-game-version depots manifest ids).
-        let (_remote_manifest_version, mods_cfg, _chain_config, manifests) =
+        let (remote_manifest_version, mods_cfg, _chain_config, manifests) =
             ModsConfig::fetch_manifest(&client).await?;
 
         // Step 2: Lethal Company 다운로드
@@ -1552,6 +1582,15 @@ pub async fn download_and_setup(
             },
         )
         .await?;
+
+        crate::ensure_reverb_trigger_fix_cfg(&app, version)?;
+        crate::ensure_hqol_dont_store_item_cfg(&app, version, "DungeonKeyItem")?;
+        write_manifest_state(
+            &app,
+            &ManifestState {
+                manifest_version: remote_manifest_version,
+            },
+        )?;
 
         emit_progress(
             &app,

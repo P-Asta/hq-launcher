@@ -7,8 +7,8 @@ mod mod_config;
 mod mods;
 mod progress;
 mod thunderstore;
-mod zip_utils;
 mod variable;
+mod zip_utils;
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -46,7 +46,13 @@ async fn prepare_tagged_mods_for_version(
     let mut min_required: Option<u32> = None;
     for t in tags {
         let tl = t.to_lowercase();
-        let req = if tl == "brutal" { Some(49) } else if tl == "wesley" || tl == "wesley's" { Some(69) } else { None };
+        let req = if tl == "brutal" {
+            Some(49)
+        } else if tl == "wesley" || tl == "wesley's" {
+            Some(69)
+        } else {
+            None
+        };
         if let Some(r) = req {
             min_required = Some(min_required.map(|m| m.max(r)).unwrap_or(r));
         }
@@ -70,10 +76,7 @@ async fn prepare_tagged_mods_for_version(
     let mut tagged: Vec<mod_config::ModEntry> = vec![];
     for m in mods_cfg.mods {
         // Match tags case-insensitively.
-        let has = m
-            .tags
-            .iter()
-            .any(|x| want.contains(&x.to_lowercase()));
+        let has = m.tags.iter().any(|x| want.contains(&x.to_lowercase()));
         if !has {
             continue;
         }
@@ -86,7 +89,7 @@ async fn prepare_tagged_mods_for_version(
     // Only install compatible subset (same semantics as practice list).
     let tagged: Vec<mod_config::ModEntry> = tagged
         .into_iter()
-        .filter(|m| m.is_compatible(version))
+        .filter(|m| m.is_compatible_for_tags(version, tags))
         .collect();
     if tagged.is_empty() {
         return Ok(vec![]);
@@ -353,6 +356,195 @@ fn ensure_wesley_moonscripts_cfg(app: &tauri::AppHandle, version: u32) -> Result
     let content = "## Settings file was created by plugin WesleyMoonScripts v1.1.6\n## Plugin GUID: JacobG5.WesleyMoonScripts\n\n[Core]\n\n## Locks moons that have progression integration set up to enable playing the campaign.\n# Setting type: Boolean\n# Default value: true\nLockMoons = false\n\n";
 
     std::fs::write(&cfg_path, content).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(crate) fn ensure_reverb_trigger_fix_cfg(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<(), String> {
+    let plugins = plugins_dir(app, version)?;
+    if mod_dir_for(&plugins, "JacobG5", "ReverbTriggerFix").is_none() {
+        return Ok(());
+    }
+
+    let cfg_dir = version_config_dir(app, version)?;
+    std::fs::create_dir_all(&cfg_dir).map_err(|e| e.to_string())?;
+
+    let cfg_path = cfg_dir.join("JacobG5.ReverbTriggerFix.cfg");
+    let baseline = "## Settings file was created by plugin ReverbTriggerFix v0.3.0\n## Plugin GUID: JacobG5.ReverbTriggerFix\n\n[Core]\n\n## Disables all reverb trigger modifications.\n## Requires a lobby restart to apply.\n## Game restart *not* required.\n# Setting type: Boolean\n# Default value: false\ndisableMod = false\n\n[Debug]\n\n## Logs more info to the console when enabled.\n## \n## *THIS WILL SPAM YOUR CONSOLE DEPENDING ON YOUR OTHER SETTINGS*\n# Setting type: Boolean\n# Default value: false\nextendedLogging = false\n\n[Experimental]\n\n## I'm not sure why reverb triggers run their calculations every frame when as far as I can tell they only need to run their changes when something enters their collider.\n## I'm leaving this as an experimental toggle because it seems to be very buggy atm.\n## \n## Feel free to try it if you wish. If you're experiencing problems then turn it back off.\n# Setting type: Boolean\n# Default value: false\ntriggerOnEnter = true\n";
+
+    if !cfg_path.exists() {
+        std::fs::write(&cfg_path, baseline).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let bytes = std::fs::read(&cfg_path).map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&bytes);
+
+    let mut changed = false;
+    let mut saw_key = false;
+    let mut out = String::with_capacity(text.len() + 128);
+
+    for seg in text.split_inclusive(['\n', '\r']) {
+        let (line, nl) = if seg.ends_with("\r\n") {
+            (seg.trim_end_matches("\r\n"), "\r\n")
+        } else if seg.ends_with('\n') {
+            (seg.trim_end_matches('\n'), "\n")
+        } else if seg.ends_with('\r') {
+            (seg.trim_end_matches('\r'), "\r")
+        } else {
+            (seg, "")
+        };
+
+        let trimmed = line.trim_start();
+        let indent_len = line.len().saturating_sub(trimmed.len());
+        let indent = &line[..indent_len];
+
+        if let Some(eq_idx) = trimmed.find('=') {
+            let (left, right_all) = trimmed.split_at(eq_idx);
+            if left.trim().eq_ignore_ascii_case("triggerOnEnter") {
+                saw_key = true;
+                let right_all = right_all.trim_start_matches('=');
+                let (right, comment) = match right_all.find('#') {
+                    Some(i) => (&right_all[..i], &right_all[i..]),
+                    None => (right_all, ""),
+                };
+
+                if !right.trim().eq_ignore_ascii_case("true") {
+                    out.push_str(indent);
+                    out.push_str("triggerOnEnter = true");
+                    out.push_str(comment);
+                    out.push_str(nl);
+                    changed = true;
+                    continue;
+                }
+            }
+        }
+
+        out.push_str(line);
+        out.push_str(nl);
+    }
+
+    if !saw_key {
+        if !out.ends_with('\n') && !out.ends_with("\r\n") && !out.ends_with('\r') {
+            out.push('\n');
+        }
+        out.push_str("\n[Experimental]\n\n");
+        out.push_str("## I'm not sure why reverb triggers run their calculations every frame when as far as I can tell they only need to run their changes when something enters their collider.\n");
+        out.push_str("## I'm leaving this as an experimental toggle because it seems to be very buggy atm.\n");
+        out.push_str("## \n");
+        out.push_str("## Feel free to try it if you wish. If you're experiencing problems then turn it back off.\n");
+        out.push_str("# Setting type: Boolean\n");
+        out.push_str("# Default value: false\n");
+        out.push_str("triggerOnEnter = true\n");
+        changed = true;
+    }
+
+    if changed {
+        std::fs::write(&cfg_path, out).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+pub(crate) fn ensure_hqol_dont_store_item_cfg(
+    app: &tauri::AppHandle,
+    version: u32,
+    wanted: &str,
+) -> Result<(), String> {
+    let plugins = plugins_dir(app, version)?;
+    if hqol_mod_dir(&plugins).is_none() {
+        return Ok(());
+    }
+
+    let cfg_dir = version_config_dir(app, version)?;
+    std::fs::create_dir_all(&cfg_dir).map_err(|e| e.to_string())?;
+
+    for file_name in ["OreoM.HQoL.72.cfg", "OreoM.HQoL.73.cfg"] {
+        let cfg_path = cfg_dir.join(file_name);
+        if !cfg_path.exists() {
+            continue;
+        }
+
+        let bytes = std::fs::read(&cfg_path).map_err(|e| e.to_string())?;
+        let text = String::from_utf8_lossy(&bytes);
+
+        let mut changed = false;
+        let mut in_general = false;
+        let mut out = String::with_capacity(text.len() + wanted.len() + 4);
+
+        for seg in text.split_inclusive(['\n', '\r']) {
+            let (line, nl) = if seg.ends_with("\r\n") {
+                (seg.trim_end_matches("\r\n"), "\r\n")
+            } else if seg.ends_with('\n') {
+                (seg.trim_end_matches('\n'), "\n")
+            } else if seg.ends_with('\r') {
+                (seg.trim_end_matches('\r'), "\r")
+            } else {
+                (seg, "")
+            };
+
+            let trimmed = line.trim_start();
+            let trimmed_all = line.trim();
+
+            if trimmed_all.starts_with('[') && trimmed_all.ends_with(']') {
+                in_general = trimmed_all.eq_ignore_ascii_case("[General]");
+            }
+
+            if in_general {
+                if let Some(eq_idx) = trimmed.find('=') {
+                    let (left, right_all) = trimmed.split_at(eq_idx);
+                    if left.trim() == "Dont store list" {
+                        let indent_len = line.len().saturating_sub(trimmed.len());
+                        let indent = &line[..indent_len];
+                        let right_all = right_all.trim_start_matches('=');
+                        let (right, comment) = match right_all.find('#') {
+                            Some(i) => (&right_all[..i], &right_all[i..]),
+                            None => (right_all, ""),
+                        };
+
+                        let mut items: Vec<String> = vec![];
+                        let mut has_wanted = false;
+                        for item in right.split(',') {
+                            let item = item.trim();
+                            if item.is_empty() {
+                                continue;
+                            }
+                            if item.eq_ignore_ascii_case(wanted) {
+                                if has_wanted {
+                                    changed = true;
+                                    continue;
+                                }
+                                has_wanted = true;
+                            }
+                            items.push(item.to_string());
+                        }
+
+                        if !has_wanted {
+                            items.push(wanted.to_string());
+                            changed = true;
+                        }
+
+                        out.push_str(indent);
+                        out.push_str("Dont store list = ");
+                        out.push_str(&items.join(", "));
+                        out.push_str(comment);
+                        out.push_str(nl);
+                        continue;
+                    }
+                }
+            }
+
+            out.push_str(line);
+            out.push_str(nl);
+        }
+
+        if changed {
+            std::fs::write(&cfg_path, out).map_err(|e| e.to_string())?;
+        }
+    }
+
     Ok(())
 }
 
@@ -895,7 +1087,11 @@ Weather Selection Algorithm = Hybrid
 
         let mut handled = false;
         for (key, desired, flag) in [
-            ("First Day Clear Weather", desired_first_day, &mut saw_first_day),
+            (
+                "First Day Clear Weather",
+                desired_first_day,
+                &mut saw_first_day,
+            ),
             ("Weather Selection Algorithm", desired_algo, &mut saw_algo),
         ] {
             if trimmed.starts_with(key) {
@@ -1000,11 +1196,7 @@ fn mod_folder_name(dev: &str, name: &str) -> String {
     format!("{dev}-{name}")
 }
 
-fn mod_dir_for(
-    plugins_dir: &std::path::Path,
-    dev: &str,
-    name: &str,
-) -> Option<std::path::PathBuf> {
+fn mod_dir_for(plugins_dir: &std::path::Path, dev: &str, name: &str) -> Option<std::path::PathBuf> {
     // Fast paths (common on Windows; case-insensitive FS).
     let direct = plugins_dir.join(mod_folder_name(dev, name));
     if direct.exists() {
@@ -1078,7 +1270,9 @@ fn disablemod_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String>
         .join("disablemod.json"))
 }
 
-pub(crate) fn thunderstore_cache_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+pub(crate) fn thunderstore_cache_path(
+    app: &tauri::AppHandle,
+) -> Result<std::path::PathBuf, String> {
     Ok(app
         .path()
         .app_data_dir()
@@ -1223,7 +1417,10 @@ fn hqol_mod_dir(plugins_dir: &std::path::Path) -> Option<std::path::PathBuf> {
         .or_else(|| mod_dir_for(plugins_dir, "HQHQTeam", "HQOL"))
 }
 
-fn sync_hqol_with_disablemod_for_version(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
+fn sync_hqol_with_disablemod_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<(), String> {
     let list = read_disablemod(app)?;
     let id1 = normalize_mod_id("HQHQTeam", "HQoL");
     let id2 = normalize_mod_id("HQHQTeam", "HQOL");
@@ -1236,7 +1433,10 @@ fn sync_hqol_with_disablemod_for_version(app: &tauri::AppHandle, version: u32) -
     Ok(())
 }
 
-fn ensure_practice_mods_disabled_for_version(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
+fn ensure_practice_mods_disabled_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<(), String> {
     let practice = variable::get_practice_mod_list();
     let mut list = read_disablemod(app)?;
 
@@ -1547,8 +1747,7 @@ async fn open_downloader_folder(app: tauri::AppHandle) -> Result<bool, String> {
         .app_data_dir()
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?
         .join("downloader");
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("failed to create downloader dir: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create downloader dir: {e}"))?;
     opener::open(dir).map_err(|e| e.to_string())?;
     Ok(true)
 }
@@ -1563,8 +1762,12 @@ async fn open_mod_folder(
     let plugins = plugins_dir(&app, version)?;
     let patchers = patchers_dir(&app, version)?;
 
-    let Some(dir) = mod_dir_for(&plugins, &dev, &name).or_else(|| mod_dir_for(&patchers, &dev, &name)) else {
-        return Err(format!("mod folder not found for {dev}-{name} on v{version}"));
+    let Some(dir) =
+        mod_dir_for(&plugins, &dev, &name).or_else(|| mod_dir_for(&patchers, &dev, &name))
+    else {
+        return Err(format!(
+            "mod folder not found for {dev}-{name} on v{version}"
+        ));
     };
 
     opener::open(dir).map_err(|e| e.to_string())?;
@@ -1776,6 +1979,9 @@ async fn apply_mod_updates(app: tauri::AppHandle, version: u32) -> Result<bool, 
         )
         .await?;
 
+        let _ = ensure_reverb_trigger_fix_cfg(&app, version);
+        let _ = ensure_hqol_dont_store_item_cfg(&app, version, "DungeonKeyItem");
+
         Ok(())
     }
     .await;
@@ -1838,7 +2044,10 @@ fn launch_game(
         ));
     }
 
-    let _app_path = app.path().app_data_dir().map_err(|e| format!("app path not found: {e}"))?;
+    let _app_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app path not found: {e}"))?;
     let exe_name = "Lethal Company.exe";
     let exe_path = dir.join(exe_name);
     let exe_path = if exe_path.exists() {
@@ -1870,10 +2079,12 @@ fn launch_game(
     let _ = apply_disabled_mods_for_version(&app, version);
     // For HQoL specifically, also ensure `.old` matches disablemod.json on normal runs.
     let _ = sync_hqol_with_disablemod_for_version(&app, version);
+    let _ = ensure_reverb_trigger_fix_cfg(&app, version);
+    let _ = ensure_hqol_dont_store_item_cfg(&app, version, "DungeonKeyItem");
 
     #[cfg(target_os = "windows")]
     let mut command = std::process::Command::new(&exe_path);
-    
+
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut cmd = std::process::Command::new("open");
@@ -1884,18 +2095,17 @@ fn launch_game(
 
     #[cfg(target_os = "linux")]
     let (proton_binary, compat_data_path) = {
-        let proton_env_path = installer::proton_env_dir(&app).map_err(|e| format!("proton_env path not found: {e}"))?;
+        let proton_env_path = installer::proton_env_dir(&app)
+            .map_err(|e| format!("proton_env path not found: {e}"))?;
         let proton_bin_path = installer::get_current_proton_dir_impl(&app)
             .map_err(|e| format!("proton path not found: {e}"))?
             .ok_or("found proton path but is None")?;
         let compat_pre_path = proton_env_path.join("wine_prefix");
         if !compat_pre_path.exists() {
-            std::fs::create_dir(&compat_pre_path).map_err(|e| format!("could not make prefix: {e}"))?;
+            std::fs::create_dir(&compat_pre_path)
+                .map_err(|e| format!("could not make prefix: {e}"))?;
         }
-        (
-            proton_bin_path.join("proton"),
-            compat_pre_path
-        )
+        (proton_bin_path.join("proton"), compat_pre_path)
     };
 
     #[cfg(target_os = "linux")]
@@ -1907,7 +2117,7 @@ fn launch_game(
         cmd.env("STEAM_COMPAT_DATA_PATH", &compat_data_path);
         cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_path);
         cmd.env("WINEDLLOVERRIDES", "winhttp=n,b");
-        cmd.env_remove("PYTHONPATH"); 
+        cmd.env_remove("PYTHONPATH");
         cmd.env_remove("PYTHONHOME");
         cmd
     };
@@ -1997,12 +2207,10 @@ async fn launch_game_practice(
             .ok_or("found proton path but is None")?;
         let compat_pre_path = proton_env_path.join("wine_prefix");
         if !compat_pre_path.exists() {
-            std::fs::create_dir(&compat_pre_path).map_err(|e| format!("could not make prefix: {e}"))?;
+            std::fs::create_dir(&compat_pre_path)
+                .map_err(|e| format!("could not make prefix: {e}"))?;
         }
-        (
-            proton_bin_path.join("proton"),
-            compat_pre_path
-        )
+        (proton_bin_path.join("proton"), compat_pre_path)
     };
 
     #[cfg(target_os = "linux")]
@@ -2014,7 +2222,7 @@ async fn launch_game_practice(
         cmd.env("STEAM_COMPAT_DATA_PATH", &compat_data_path);
         cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_path);
         cmd.env("WINEDLLOVERRIDES", "winhttp=n,b");
-        cmd.env_remove("PYTHONPATH"); 
+        cmd.env_remove("PYTHONPATH");
         cmd.env_remove("PYTHONHOME");
         println!("{:?}", cmd);
         cmd
@@ -2120,6 +2328,8 @@ async fn launch_game_preset(
     let _ = apply_disabled_mods_for_version(&app, version);
     // For HQoL specifically, also ensure `.old` matches disablemod.json on normal runs.
     let _ = sync_hqol_with_disablemod_for_version(&app, version);
+    let _ = ensure_reverb_trigger_fix_cfg(&app, version);
+    let _ = ensure_hqol_dont_store_item_cfg(&app, version, "DungeonKeyItem");
 
     // Runtime-only tag gating: disable tagged mods not relevant to this run.
     // (No disablemod.json writes; next run will re-evaluate.)
@@ -2138,22 +2348,25 @@ async fn launch_game_preset(
 
     #[cfg(target_os = "linux")]
     let (proton_binary, compat_data_path) = {
-        let proton_env_path =
-            installer::proton_env_dir(&app).map_err(|e| format!("proton_env path not found: {e}"))?;
+        let proton_env_path = installer::proton_env_dir(&app)
+            .map_err(|e| format!("proton_env path not found: {e}"))?;
         let proton_bin_path = installer::get_current_proton_dir_impl(&app)
             .map_err(|e| format!("proton path not found: {e}"))?
             .ok_or("found proton path but is None")?;
         let compat_pre_path = proton_env_path.join("wine_prefix");
         if !compat_pre_path.exists() {
-            std::fs::create_dir(&compat_pre_path).map_err(|e| format!("could not make prefix: {e}"))?;
+            std::fs::create_dir(&compat_pre_path)
+                .map_err(|e| format!("could not make prefix: {e}"))?;
         }
         (proton_bin_path.join("proton"), compat_pre_path)
     };
 
     #[cfg(target_os = "linux")]
     let mut command = {
-        let app_path =
-            app.path().app_data_dir().map_err(|e| format!("app path not found: {e}"))?;
+        let app_path = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("app path not found: {e}"))?;
         let steam_path = get_steam_client_path(&app_path);
         let mut cmd = std::process::Command::new(&proton_binary);
         cmd.arg("run");
@@ -2234,6 +2447,8 @@ async fn prepare_preset_for_version(
     // Apply persisted disable list (user + practice) now.
     let _ = apply_disabled_mods_for_version(app, version);
     let _ = sync_hqol_with_disablemod_for_version(app, version);
+    let _ = ensure_reverb_trigger_fix_cfg(app, version);
+    let _ = ensure_hqol_dont_store_item_cfg(app, version, "DungeonKeyItem");
 
     // Runtime-only tag gating: disable tagged mods not relevant to this selected run.
     let _ = disable_irrelevant_tagged_mods_for_run(app, version, &tags, &practice_ids).await;
@@ -2975,7 +3190,6 @@ async fn download_app_update(app: tauri::AppHandle) -> Result<bool, String> {
     Ok(true)
 }
 
-
 #[tauri::command]
 #[cfg(not(target_os = "macos"))]
 async fn get_global_shortcut(_app: tauri::AppHandle, shortcut: String) -> Result<String, String> {
@@ -3067,12 +3281,16 @@ pub fn run() {
             // - Ensure default config is downloaded if shared config dir is empty
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = installer::purge_remote_disabled_mods_on_startup(app_handle.clone()).await
+                if let Err(e) =
+                    installer::purge_remote_disabled_mods_on_startup(app_handle.clone()).await
                 {
                     log::warn!("Failed to purge remote-disabled mods on startup: {e}");
                 }
                 if let Err(e) = installer::ensure_default_config(app_handle.clone()).await {
                     log::warn!("Failed to ensure default config on startup: {e}");
+                }
+                if let Err(e) = installer::ensure_pack_specific_configs_on_startup(&app_handle) {
+                    log::warn!("Failed to ensure pack-specific configs on startup: {e}");
                 }
                 #[cfg(target_os = "linux")]
                 {

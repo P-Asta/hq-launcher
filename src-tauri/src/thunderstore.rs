@@ -1,8 +1,8 @@
+use serde::{Deserialize, Serialize};
 use std::{
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
-use serde::{Deserialize, Serialize};
 
 /// Minimal Thunderstore package model used for install resolution.
 ///

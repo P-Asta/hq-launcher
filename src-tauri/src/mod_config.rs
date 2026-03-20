@@ -9,6 +9,15 @@ use serde::{Deserialize, Serialize};
 /// - name: thunderstore package name
 /// - version_config: map of gameVersionLowerBound -> thunderstore version_number
 /// - low_cap/high_cap: inclusive game version bounds for installation
+/// - tag_constraints: optional per-tag low/high cap overrides
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TagConstraint {
+    #[serde(default)]
+    pub low_cap: Option<u32>,
+    #[serde(default)]
+    pub high_cap: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModEntry {
     pub name: String,
@@ -27,6 +36,11 @@ pub struct ModEntry {
     pub low_cap: Option<u32>,
     #[serde(default)]
     pub high_cap: Option<u32>,
+
+    /// Optional per-tag compatibility overrides.
+    /// If a tag rule omits a cap, the global low/high cap is used as fallback.
+    #[serde(default)]
+    pub tag_constraints: BTreeMap<String, TagConstraint>,
 
     /// Version pinning by game version thresholds.
     ///
@@ -168,21 +182,58 @@ fn normalize_aliases(cfg: &mut ModsConfig) -> bool {
 }
 
 impl ModEntry {
-    pub fn is_compatible(&self, game_version: u32) -> bool {
-        if !self.enabled {
-            return false;
-        }
-        if let Some(min) = self.low_cap {
+    fn matches_caps(game_version: u32, low_cap: Option<u32>, high_cap: Option<u32>) -> bool {
+        if let Some(min) = low_cap {
             if game_version < min {
                 return false;
             }
         }
-        if let Some(max) = self.high_cap {
+        if let Some(max) = high_cap {
             if game_version > max {
                 return false;
             }
         }
         true
+    }
+
+    fn constraint_for_tag(&self, tag: &str) -> Option<&TagConstraint> {
+        self.tag_constraints
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(tag))
+            .map(|(_, value)| value)
+    }
+
+    pub fn is_compatible(&self, game_version: u32) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        Self::matches_caps(game_version, self.low_cap, self.high_cap)
+    }
+
+    pub fn is_compatible_for_tags(&self, game_version: u32, active_tags: &[String]) -> bool {
+        if !self.enabled {
+            return false;
+        }
+
+        for active_tag in active_tags {
+            if !self
+                .tags
+                .iter()
+                .any(|tag| tag.eq_ignore_ascii_case(active_tag))
+            {
+                continue;
+            }
+
+            let constraint = self.constraint_for_tag(active_tag);
+            let low_cap = constraint.and_then(|rule| rule.low_cap).or(self.low_cap);
+            let high_cap = constraint.and_then(|rule| rule.high_cap).or(self.high_cap);
+
+            if Self::matches_caps(game_version, low_cap, high_cap) {
+                return true;
+            }
+        }
+
+        false
     }
 
     pub fn pinned_version_for(&self, game_version: u32) -> Option<&str> {

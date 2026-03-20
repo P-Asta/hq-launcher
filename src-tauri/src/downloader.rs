@@ -1395,10 +1395,13 @@ pub async fn depot_login(
     // This avoids relying on prompt/log detection which can be unreliable across DD versions.
     downloader.emit_event(DepotDownloaderEvent::NeedsTwoFactor {
         session_id,
-        message: Some("Check your Steam Guard email/app and enter the code when it arrives.".to_string()),
+        message: Some(
+            "Check your Steam Guard email/app and enter the code when it arrives.".to_string(),
+        ),
     });
     downloader.emit_event(DepotDownloaderEvent::Output(
-        "Login attempt started. If Steam Guard asks for a code, enter it and click Submit Code.".to_string(),
+        "Login attempt started. If Steam Guard asks for a code, enter it and click Submit Code."
+            .to_string(),
     ));
 
     let res = downloader
@@ -1448,10 +1451,13 @@ pub async fn depot_login_start(
     // Prompt UI immediately (no reliance on log detection).
     downloader.emit_event(DepotDownloaderEvent::NeedsTwoFactor {
         session_id,
-        message: Some("Check your Steam Guard email/app and enter the code when it arrives.".to_string()),
+        message: Some(
+            "Check your Steam Guard email/app and enter the code when it arrives.".to_string(),
+        ),
     });
     downloader.emit_event(DepotDownloaderEvent::Output(
-        "Login attempt started. If Steam Guard asks for a code, enter it and click Submit Code.".to_string(),
+        "Login attempt started. If Steam Guard asks for a code, enter it and click Submit Code."
+            .to_string(),
     ));
 
     let app2 = app.clone();

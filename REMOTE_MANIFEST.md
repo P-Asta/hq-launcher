@@ -92,6 +92,11 @@ The launcher resolves the package + version via Thunderstore’s package list en
   "enabled": true,
   "low_cap": 56,
   "high_cap": 73,
+  "tag_constraints": {
+    "Brutal": {
+      "low_cap": 72
+    }
+  },
   "version_config": {
     "56": "1.2.3",
     "73": "0.0.0"
@@ -116,6 +121,28 @@ Inclusive compatibility bounds for a mod:
 
 - If `low_cap` exists, the mod is skipped when `gameVersion < low_cap`
 - If `high_cap` exists, the mod is skipped when `gameVersion > high_cap`
+
+### `tag_constraints` (optional object)
+
+Optional per-tag compatibility overrides for tagged mods.
+
+Example:
+
+```json
+{
+  "tags": ["Wesley", "Brutal"],
+  "low_cap": 69,
+  "tag_constraints": {
+    "Brutal": { "low_cap": 72 }
+  }
+}
+```
+
+Meaning:
+
+- For `Wesley`, the global `low_cap/high_cap` still apply
+- For `Brutal`, any provided cap overrides that side only
+- If a rule omits `low_cap` or `high_cap`, the global value is used as fallback
 
 ### `version_config` (map: `"gameVersionLowerBound"` → `"version_number"`)
 
