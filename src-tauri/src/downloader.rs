@@ -205,6 +205,23 @@ fn hide_console_window_std(command: &mut StdCommand) -> &mut StdCommand {
     command
 }
 
+fn downloader_install_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join("downloader"))
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))
+}
+
+#[cfg(target_os = "windows")]
+fn downloader_executable_path(downloader_dir: &std::path::Path) -> PathBuf {
+    downloader_dir.join("DepotDownloader.exe")
+}
+
+#[cfg(not(target_os = "windows"))]
+fn downloader_executable_path(downloader_dir: &std::path::Path) -> PathBuf {
+    downloader_dir.join("DepotDownloader")
+}
+
 impl DepotDownloader {
     const APP_ID: &'static str = "1966720";
     const DEPOT_ID: &'static str = "1966721";
@@ -216,14 +233,9 @@ impl DepotDownloader {
             .app_data_dir()
             .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
 
-        let downloader_dir = app_data.join("downloader");
+        let downloader_dir = downloader_install_dir(app)?;
         let ipc_mode = downloader_dir.join(Self::PATCH_MARKER).exists();
-
-        #[cfg(target_os = "windows")]
-        let executable_path = downloader_dir.join("DepotDownloader.exe");
-
-        #[cfg(not(target_os = "windows"))]
-        let executable_path = downloader_dir.join("DepotDownloader");
+        let executable_path = downloader_executable_path(&downloader_dir);
 
         if !executable_path.exists() {
             return Err("DepotDownloader not installed. Please install it first.".to_string());
@@ -1209,18 +1221,17 @@ fn write_saved_login_state(app: &tauri::AppHandle, state: &LoginState) -> Result
 pub async fn install_downloader(app: &tauri::AppHandle) -> Result<bool, String> {
     let download_url = format!("https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_3.4.0/{DEPOT_DOWNLOADER_NAME}.zip");
 
-    let install_path = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("downloader");
+    let install_path = downloader_install_dir(app)?;
+    let executable_path = downloader_executable_path(&install_path);
     let marker_path = install_path.join(DepotDownloader::PATCH_MARKER);
 
-    // If patched build already installed, skip.
-    if install_path.exists() && marker_path.exists() {
+    // If a runnable DepotDownloader already exists, skip reinstallation.
+    // The patch marker only indicates IPC support, not whether the binary is usable.
+    if executable_path.exists() {
         info!(
-            "Patched DepotDownloader already installed at {}",
-            install_path.display()
+            "DepotDownloader already installed at {} (ipc_mode={})",
+            executable_path.display(),
+            marker_path.exists()
         );
         return Ok(true);
     }

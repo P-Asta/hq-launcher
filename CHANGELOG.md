@@ -1,6 +1,8 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.6.3 (2026-03-22)
+- Avoid prompting to install DepotDownloader again when it is already installed.
 
 ## 1.6.2 (2026-03-20)
 - Set `LockMoons = true` for `Wesley's Run`, and `LockMoons = false` for `Wesley's Practice` and `Wesley's SMHQ`.
