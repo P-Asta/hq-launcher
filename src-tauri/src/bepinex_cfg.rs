@@ -239,7 +239,8 @@ struct InstallerEntry {
 
 pub fn read_manifest(path: &Path) -> Result<BepInExManifest, String> {
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    serde_json::from_str::<BepInExManifest>(&text).map_err(|e| e.to_string())
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    serde_json::from_str::<BepInExManifest>(text).map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Clone)]

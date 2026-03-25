@@ -8,7 +8,7 @@ import Titlebar from "./Titlebar";
 function Splash({ message }) {
   return (
     <div className="flex h-full w-full items-center justify-center p-6 text-white">
-      <div className="w-[min(520px,92vw)] rounded-3xl border border-white/10 bg-white/5 p-6">
+      <div className="w-[min(520px,92vw)] rounded-3xl border border-panel-outline bg-white/5 p-6">
         <div className="text-lg font-semibold">HQ Launcher</div>
         <div className="mt-2 text-sm text-white/55">{message}</div>
       </div>

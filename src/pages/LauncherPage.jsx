@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
+  Check,
   CheckCircle2,
   ChevronDown,
   Download,
@@ -10,6 +12,8 @@ import {
   Play,
   Search,
   Settings2,
+  Trash2,
+  X,
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -39,8 +43,67 @@ function fmtBytes(n) {
   return `${v.toFixed(digits)} ${units[i]}`;
 }
 
+function makeDeleteVersionPromptState(overrides = {}) {
+  return {
+    open: false,
+    version: null,
+    error: "",
+    status: "idle",
+    overall_percent: 0,
+    detail: "",
+    deleted_files: 0,
+    total_files: 0,
+    ...overrides,
+  };
+}
+
+const MOD_PANEL_WIDTH_STORAGE_KEY = "launcherModPanelWidthPercent";
+const DEFAULT_MOD_PANEL_WIDTH = 40;
+const MIN_MOD_PANEL_WIDTH = 260;
+const MIN_CONFIG_PANEL_WIDTH = 320;
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
 function modKey(mod) {
   return `${mod.dev}::${mod.name}`;
+}
+
+function modKeyLower(mod) {
+  return `${String(mod?.dev ?? "").toLowerCase()}::${String(
+    mod?.name ?? ""
+  ).toLowerCase()}`;
+}
+
+function isPracticeRunMode(mode) {
+  return String(mode ?? "").toLowerCase().includes("practice");
+}
+
+function isUiHiddenMod(mod) {
+  return Array.isArray(mod?.tags)
+    ? mod.tags.some((tag) => String(tag).toLowerCase() === "ui_hidden")
+    : false;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function toOptionalNumber(value) {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function isModCompatibleWithVersion(mod, version) {
+  const v = Number(version);
+  if (!Number.isFinite(v)) return true;
+  const lowCap = toOptionalNumber(mod?.low_cap);
+  const highCap = toOptionalNumber(mod?.high_cap);
+  if (lowCap != null && v < lowCap) return false;
+  if (highCap != null && v > highCap) return false;
+  return true;
 }
 
 function valueLabel(v) {
@@ -91,7 +154,7 @@ function SkeletonBlock({ className }) {
   return (
     <div
       className={cn(
-        "animate-pulse rounded-xl border border-white/5 bg-white/[0.06]",
+        "animate-pulse rounded-xl border border-panel-outline bg-white/[0.06]",
         className
       )}
     />
@@ -107,7 +170,7 @@ function ModCover({ src, initials }) {
 
   if (src && !failed) {
     return (
-      <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-black/25">
+      <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-panel-outline bg-black/25">
         <img
           src={src}
           alt=""
@@ -120,7 +183,7 @@ function ModCover({ src, initials }) {
   }
 
   return (
-    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/10 text-base font-bold text-white/80">
+    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-panel-outline bg-white/10 text-base font-bold text-white/80">
       {initials}
     </div>
   );
@@ -136,7 +199,7 @@ function LauncherPageSkeleton({ statusText }) {
         <SkeletonBlock className="h-11 w-11 rounded-xl" />
       </div>
 
-      <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+      <div className="rounded-2xl border border-panel-outline bg-white/5 px-4 py-3">
         <div className="flex items-center gap-2 text-sm font-medium text-white/85">
           <LoaderCircle className="h-4 w-4 animate-spin text-white/65" />
           <span>Preparing launcher</span>
@@ -147,7 +210,7 @@ function LauncherPageSkeleton({ statusText }) {
       </div>
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-4">
-        <div className="min-h-0 rounded-2xl border border-white/10 bg-white/5 p-3">
+        <div className="min-h-0 rounded-2xl border border-panel-outline bg-white/5 p-3">
           <div className="mb-3 flex items-center justify-between px-1">
             <SkeletonBlock className="h-4 w-20 rounded-md" />
             <SkeletonBlock className="h-4 w-14 rounded-md" />
@@ -157,7 +220,7 @@ function LauncherPageSkeleton({ statusText }) {
             {Array.from({ length: 6 }).map((_, index) => (
               <div
                 key={index}
-                className="flex items-start gap-3 rounded-2xl border border-white/10 bg-black/10 px-3 py-3"
+                className="flex items-start gap-3 rounded-2xl border border-panel-outline bg-black/10 px-3 py-3"
               >
                 <SkeletonBlock className="h-11 w-11 shrink-0 rounded-xl" />
                 <div className="min-w-0 flex-1 space-y-2">
@@ -189,6 +252,7 @@ export default function LauncherPage({
     mods: [],
     manifests: {},
   });
+  const [practiceMods, setPracticeMods] = useState([]);
 
   const [query, setQuery] = useState("");
   const [selectedMod, setSelectedMod] = useState(null);
@@ -220,6 +284,10 @@ export default function LauncherPage({
     open: false,
     mods: [],
   });
+  const [deleteVersionPrompt, setDeleteVersionPrompt] = useState(
+    makeDeleteVersionPromptState()
+  );
+  const [deleteVersionBusy, setDeleteVersionBusy] = useState(false);
 
   // Config editor state (shared config via junction) - BepInEx cfg UI
   const [configFiles, setConfigFiles] = useState([]);
@@ -260,6 +328,14 @@ export default function LauncherPage({
 
   const [gameStatus, setGameStatus] = useState({ running: false, pid: null });
   const [runMode, setRunMode] = useState(getInitialRunMode); // hq | practice | brutal | brutal_practice | wesley | wesley_practice | smhq
+  const [modPanelWidthPercent, setModPanelWidthPercent] = useState(() => {
+    if (typeof window === "undefined") return DEFAULT_MOD_PANEL_WIDTH;
+    const saved = Number(localStorage.getItem(MOD_PANEL_WIDTH_STORAGE_KEY));
+    return Number.isFinite(saved)
+      ? clamp(saved, 30, 70)
+      : DEFAULT_MOD_PANEL_WIDTH;
+  });
+  const [isResizingPanels, setIsResizingPanels] = useState(false);
   const lastAutoCheckedVersionRef = useRef(null);
   const [didFinishBootstrap, setDidFinishBootstrap] = useState(false);
   const [bootstrapStatus, setBootstrapStatus] = useState(
@@ -271,11 +347,19 @@ export default function LauncherPage({
     y: 0,
     mod: null,
   });
+  const [versionContextMenu, setVersionContextMenu] = useState({
+    open: false,
+    x: 0,
+    y: 0,
+    version: null,
+  });
   const practicePromptOpenRef = useRef(false);
   const presetPromptOpenRef = useRef(false);
   const practiceTaskRef = useRef(null);
   const presetTaskRef = useRef(null);
   const modContextMenuRef = useRef(null);
+  const versionContextMenuRef = useRef(null);
+  const splitContainerRef = useRef(null);
 
   function updateInstalledVersionsState(nextVersions) {
     const normalized = Array.isArray(nextVersions) ? nextVersions : [];
@@ -295,6 +379,28 @@ export default function LauncherPage({
   useEffect(() => {
     presetTaskRef.current = presetTask;
   }, [presetTask]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(
+      MOD_PANEL_WIDTH_STORAGE_KEY,
+      String(modPanelWidthPercent)
+    );
+  }, [modPanelWidthPercent]);
+
+  useEffect(() => {
+    if (!isResizingPanels) return;
+
+    const prevCursor = document.body.style.cursor;
+    const prevUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    return () => {
+      document.body.style.cursor = prevCursor;
+      document.body.style.userSelect = prevUserSelect;
+    };
+  }, [isResizingPanels]);
 
   useEffect(() => {
     if (!modContextMenu.open) return;
@@ -345,6 +451,55 @@ export default function LauncherPage({
     };
   }, [modContextMenu.open, modContextMenu.x, modContextMenu.y]);
 
+  useEffect(() => {
+    if (!versionContextMenu.open) return;
+
+    const close = () =>
+      setVersionContextMenu((prev) => ({ ...prev, open: false, version: null }));
+
+    const handlePointerDown = (event) => {
+      if (versionContextMenuRef.current?.contains(event.target)) return;
+      close();
+    };
+
+    const handleEscape = (event) => {
+      if (event.key === "Escape") close();
+    };
+
+    const handleWindowChange = () => close();
+
+    const adjustPosition = () => {
+      const menu = versionContextMenuRef.current;
+      if (!menu) return;
+      const rect = menu.getBoundingClientRect();
+      const nextX = Math.min(
+        versionContextMenu.x,
+        Math.max(8, window.innerWidth - rect.width - 8)
+      );
+      const nextY = Math.min(
+        versionContextMenu.y,
+        Math.max(8, window.innerHeight - rect.height - 8)
+      );
+      if (nextX !== versionContextMenu.x || nextY !== versionContextMenu.y) {
+        setVersionContextMenu((prev) => ({ ...prev, x: nextX, y: nextY }));
+      }
+    };
+
+    const raf = window.requestAnimationFrame(adjustPosition);
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleEscape);
+    window.addEventListener("resize", handleWindowChange);
+    window.addEventListener("scroll", handleWindowChange, true);
+
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleEscape);
+      window.removeEventListener("resize", handleWindowChange);
+      window.removeEventListener("scroll", handleWindowChange, true);
+    };
+  }, [versionContextMenu.open, versionContextMenu.x, versionContextMenu.y]);
+
   const isInstalled = useMemo(() => {
     const s = new Set(installedVersions);
     return (v) => s.has(v);
@@ -381,18 +536,72 @@ export default function LauncherPage({
     return byV && typeof byV === "object" ? byV : {};
   }, [installedModDescriptionsByVersion, selectedVersion]);
 
+  const practiceReferenceMods = useMemo(() => {
+    const mods = Array.isArray(practiceMods)
+      ? practiceMods
+      : [];
+    return mods.filter(
+      (m) => !isUiHiddenMod(m) && isModCompatibleWithVersion(m, selectedVersion)
+    );
+  }, [practiceMods, selectedVersion]);
+
+  const modsForList = useMemo(() => {
+    const regularMods = (Array.isArray(manifest.mods) ? manifest.mods : []).filter(
+      (m) =>
+        !(Array.isArray(m?.tags) && m.tags.length > 0) &&
+        m?.enabled !== false &&
+        isModCompatibleWithVersion(m, selectedVersion)
+    );
+    if (!isPracticeRunMode(runMode)) return regularMods;
+
+    const merged = [...practiceReferenceMods, ...regularMods];
+    const seen = new Set();
+    return merged.filter((m) => {
+      const key = modKeyLower(m);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [manifest.mods, practiceReferenceMods, runMode, selectedVersion]);
+
+  const availableModKeys = useMemo(
+    () => new Set(modsForList.map((m) => modKeyLower(m))),
+    [modsForList]
+  );
+
+  const practiceModKeys = useMemo(
+    () => new Set(practiceReferenceMods.map((m) => modKeyLower(m))),
+    [practiceReferenceMods]
+  );
+
+  useEffect(() => {
+    if (!isPracticeRunMode(runMode)) return;
+    console.log("[practice-debug]", {
+      runMode,
+      selectedVersion,
+      practiceModsFromCommand: practiceMods.map((m) => modKeyLower(m)),
+      practiceModsForVersion: practiceReferenceMods.map((m) => modKeyLower(m)),
+      installedModKeys: Object.keys(installedModVersions),
+      matchedPracticeMods: practiceReferenceMods
+        .filter((m) => !!installedModVersions[modKeyLower(m)])
+        .map((m) => modKeyLower(m)),
+      modsForListHead: modsForList.slice(0, 10).map((m) => modKeyLower(m)),
+    });
+  }, [
+    runMode,
+    selectedVersion,
+    practiceMods,
+    practiceReferenceMods,
+    installedModVersions,
+    modsForList,
+  ]);
+
   const filteredMods = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const modsAll = Array.isArray(manifest.mods) ? manifest.mods : [];
-    // Hide tagged/preset-only mods from the regular mod list UI.
-    const mods = modsAll.filter(
-      (m) => !(Array.isArray(m?.tags) && m.tags.length > 0)
-    );
+    const mods = modsForList;
 
     const selectedKeyLower = selectedMod
-      ? `${String(selectedMod.dev).toLowerCase()}::${String(
-          selectedMod.name
-        ).toLowerCase()}`
+      ? modKeyLower(selectedMod)
       : null;
 
     const chainConfigs = Array.isArray(manifest.chain_config)
@@ -520,7 +729,7 @@ export default function LauncherPage({
 
     return out;
   }, [
-    manifest.mods,
+    modsForList,
     manifest.chain_config,
     query,
     selectedMod,
@@ -534,14 +743,16 @@ export default function LauncherPage({
     if (!selectedMod) return;
     if (Array.isArray(selectedMod?.tags) && selectedMod.tags.length > 0) {
       setSelectedMod(null);
+      return;
     }
-  }, [selectedMod]);
+    if (!availableModKeys.has(modKeyLower(selectedMod))) {
+      setSelectedMod(null);
+    }
+  }, [selectedMod, availableModKeys]);
 
   // Best-effort prefetch of config-file matches per mod so chain-dedup is accurate.
   useEffect(() => {
-    const mods = (Array.isArray(manifest.mods) ? manifest.mods : []).filter(
-      (m) => !(Array.isArray(m?.tags) && m.tags.length > 0)
-    );
+    const mods = modsForList;
     if (mods.length === 0) return;
 
     let cancelled = false;
@@ -592,7 +803,7 @@ export default function LauncherPage({
     };
     // Intentionally not including modCfgFilesByKey in deps to avoid infinite re-fetch loops.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [manifest.mods, selectedVersion, configLinkEpoch]);
+  }, [modsForList, selectedVersion, configLinkEpoch]);
 
   const progressText = useMemo(() => {
     const p = task.overall_percent;
@@ -633,6 +844,7 @@ export default function LauncherPage({
       const savedNum = saved == null ? null : Number(saved);
 
       const manifestPromise = invoke("get_manifest");
+      const practiceModsPromise = invoke("get_practice_mod_list");
       setBootstrapStatus("Checking installed versions...");
 
       let vList = [];
@@ -710,6 +922,15 @@ export default function LauncherPage({
           setDidFinishBootstrap(true);
         }
       }
+
+      try {
+        const pm = await practiceModsPromise;
+        if (!cancelled) {
+          setPracticeMods(Array.isArray(pm) ? pm : []);
+        }
+      } catch (e) {
+        console.error(e);
+      }
     })();
 
     return () => {
@@ -724,16 +945,23 @@ export default function LauncherPage({
     emit("ui://selected-version-changed", { version: v }).catch(() => {});
   }, [selectedVersion]);
 
-  async function refreshInstalledModVersions(v = selectedVersion) {
+  async function refreshInstalledModVersions(v = selectedVersion, opts = {}) {
     const vv = Number(v);
     if (!Number.isFinite(vv)) return;
     if (!isInstalled(v)) {
       setInstalledModVersionsByVersion((prev) => ({ ...prev, [vv]: {} }));
       setInstalledModIconsByVersion((prev) => ({ ...prev, [vv]: {} }));
       setInstalledModDescriptionsByVersion((prev) => ({ ...prev, [vv]: {} }));
-      return;
+      return {};
     }
-    try {
+    const retries = Math.max(0, Number(opts?.retries ?? 0));
+    const delayMs = Math.max(0, Number(opts?.delayMs ?? 250));
+    const expectedKeys = Array.isArray(opts?.expectedKeys)
+      ? opts.expectedKeys.filter(Boolean)
+      : [];
+
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
       const list = await invoke("list_installed_mod_versions", { version: v });
       const map = {};
       const iconMap = {};
@@ -756,11 +984,21 @@ export default function LauncherPage({
         ...prev,
         [vv]: descriptionMap,
       }));
-    } catch {
-      // best-effort (missing folder, etc)
-      setInstalledModVersionsByVersion((prev) => ({ ...prev, [vv]: {} }));
-      setInstalledModIconsByVersion((prev) => ({ ...prev, [vv]: {} }));
-      setInstalledModDescriptionsByVersion((prev) => ({ ...prev, [vv]: {} }));
+        const missingExpected =
+          expectedKeys.length > 0 && expectedKeys.every((key) => !map[key]);
+        if (!missingExpected || attempt === retries) {
+          return map;
+        }
+      } catch {
+        if (attempt === retries) {
+          // best-effort (missing folder, etc)
+          setInstalledModVersionsByVersion((prev) => ({ ...prev, [vv]: {} }));
+          setInstalledModIconsByVersion((prev) => ({ ...prev, [vv]: {} }));
+          setInstalledModDescriptionsByVersion((prev) => ({ ...prev, [vv]: {} }));
+          return {};
+        }
+      }
+      await sleep(delayMs);
     }
   }
 
@@ -814,8 +1052,11 @@ export default function LauncherPage({
         const stepProgress = Number(p?.step_progress ?? 0);
         const overall = Number(p?.overall_percent ?? 0);
         const stepName = String(p?.step_name ?? "");
+        const isDeleteStep = stepName === "Delete Version";
         const isSetupStep =
-          stepName === "Practice Mods" || stepName === "Preset Mods";
+          stepName === "Practice Mods" ||
+          stepName === "Preset Mods" ||
+          isDeleteStep;
         const didFinish =
           (Number.isFinite(totalFiles) &&
             totalFiles > 0 &&
@@ -846,6 +1087,23 @@ export default function LauncherPage({
             setPresetPrompt({ open: true });
           }
         }
+        if (isDeleteStep) {
+          setDeleteVersionPrompt((prev) =>
+            makeDeleteVersionPromptState({
+              ...prev,
+              open: true,
+              version: Number.isFinite(Number(p?.version))
+                ? Number(p.version)
+                : prev.version,
+              status: didFinish ? "done" : "working",
+              overall_percent: Number.isFinite(overall) ? overall : 0,
+              detail: String(p?.detail ?? ""),
+              deleted_files: Number.isFinite(extractedFiles) ? extractedFiles : 0,
+              total_files: Number.isFinite(totalFiles) ? totalFiles : 0,
+              error: "",
+            })
+          );
+        }
         // IMPORTANT: Keep preset/practice setup progress OUT of the download prompt state.
         // Otherwise the "Download version" modal can get stuck showing setup progress.
         if (!isSetupStep) {
@@ -869,7 +1127,10 @@ export default function LauncherPage({
           .catch(() => {});
         // refresh installed plugin versions for this game version
         const v = Number(event.payload?.version);
-        if (Number.isFinite(v)) refreshInstalledModVersions(v);
+        if (Number.isFinite(v)) {
+          refreshInstalledModVersions(v);
+          refreshConfigLinkState(v);
+        }
       });
       unlistenError = await listen("download://error", (event) => {
         // If practice setup fails, keep the modal open and show the error.
@@ -1008,18 +1269,31 @@ export default function LauncherPage({
     };
   }, [selectedVersion]);
 
-  // Track current link state so we can show a banner in config editor.
-  useEffect(() => {
-    (async () => {
-      try {
-        const s = await invoke("get_config_link_state_for_version", {
-          version: selectedVersion,
-        });
+  async function refreshConfigLinkState(v = selectedVersion) {
+    const vv = Number(v);
+    if (!Number.isFinite(vv)) {
+      setConfigLinkState(null);
+      return null;
+    }
+    try {
+      const s = await invoke("get_config_link_state_for_version", {
+        version: vv,
+      });
+      if (vv === Number(selectedVersion)) {
         setConfigLinkState(s ?? null);
-      } catch {
+      }
+      return s ?? null;
+    } catch {
+      if (vv === Number(selectedVersion)) {
         setConfigLinkState(null);
       }
-    })();
+      return null;
+    }
+  }
+
+  // Track current link state so we can show a banner in config editor.
+  useEffect(() => {
+    refreshConfigLinkState(selectedVersion);
   }, [configLinkEpoch, selectedVersion]);
 
   // when selecting a mod, load candidate config files
@@ -1180,7 +1454,7 @@ export default function LauncherPage({
       error: null,
     }));
     try {
-      await invoke("check_mod_updates", { version: v });
+      await invoke("check_mod_updates", { version: v, runMode: runMode });
     } catch (e) {
       setCheckUpdateTask((t) => ({
         ...t,
@@ -1201,7 +1475,7 @@ export default function LauncherPage({
       error: null,
     }));
     try {
-      await invoke("apply_mod_updates", { version: v });
+      await invoke("apply_mod_updates", { version: v, runMode: runMode });
       // Avoid re-checking (network heavy). Assume up-to-date after successful apply.
       setCheckUpdateTask((t) => ({
         ...t,
@@ -1227,6 +1501,94 @@ export default function LauncherPage({
 
   function openDownloadPrompt(v) {
     setDownloadPrompt({ open: true, version: v });
+  }
+
+  async function deleteVersion(version) {
+    const vv = Number(version);
+    if (!Number.isFinite(vv)) return;
+
+    setDeleteVersionBusy(true);
+    setDeleteVersionPrompt((prev) =>
+      makeDeleteVersionPromptState({
+        ...prev,
+        open: true,
+        version: vv,
+        status: "working",
+        overall_percent: 0,
+        detail: "Preparing delete...",
+        deleted_files: 0,
+        total_files: 0,
+        error: "",
+      })
+    );
+    try {
+      await invoke("delete_installed_version", { version: vv });
+      const versions = await invoke("list_installed_versions");
+      const nextInstalled = Array.isArray(versions) ? versions : [];
+      updateInstalledVersionsState(nextInstalled);
+
+      setInstalledModVersionsByVersion((prev) => {
+        const next = { ...prev };
+        delete next[vv];
+        return next;
+      });
+      setInstalledModIconsByVersion((prev) => {
+        const next = { ...prev };
+        delete next[vv];
+        return next;
+      });
+      setInstalledModDescriptionsByVersion((prev) => {
+        const next = { ...prev };
+        delete next[vv];
+        return next;
+      });
+      setConfigLinkState((prev) =>
+        Number(selectedVersion) === vv ? null : prev
+      );
+
+      setSelectedVersion((prev) => {
+        if (Number(prev) !== vv) return prev;
+        if (nextInstalled.length > 0) return nextInstalled[nextInstalled.length - 1];
+
+        const remoteV =
+          manifest?.manifests && typeof manifest.manifests === "object"
+            ? Object.keys(manifest.manifests)
+                .map((k) => Number(k))
+                .filter((n) => Number.isFinite(n))
+                .sort((a, b) => b - a)
+            : [];
+        return remoteV[0] ?? prev;
+      });
+
+      setDeleteVersionPrompt((prev) =>
+        makeDeleteVersionPromptState({
+          ...prev,
+          open: true,
+          version: vv,
+          status: "done",
+          overall_percent: 100,
+          detail: prev.detail || `Deleted v${vv}.`,
+          deleted_files: prev.total_files || prev.deleted_files,
+          total_files: prev.total_files || prev.deleted_files,
+          error: "",
+        })
+      );
+      await sleep(180);
+      setDeleteVersionPrompt(makeDeleteVersionPromptState());
+      closeVersionContextMenu();
+    } catch (e) {
+      setDeleteVersionPrompt((prev) =>
+        makeDeleteVersionPromptState({
+          ...prev,
+          open: true,
+          version: vv,
+          status: "error",
+          error: e?.message ?? String(e),
+        })
+      );
+    } finally {
+      setDeleteVersionBusy(false);
+    }
   }
 
   async function setCfgEntry(sectionName, entryName, nextValue) {
@@ -1326,7 +1688,7 @@ export default function LauncherPage({
 
   async function resolveModsForConfigPath(p) {
     const pathLower = String(p ?? "").toLowerCase();
-    const mods = Array.isArray(manifest.mods) ? manifest.mods : [];
+    const mods = modsForList;
 
     // Best-effort: narrow down candidates by substring match, then confirm by asking backend.
     const candidates = mods
@@ -1501,12 +1863,10 @@ export default function LauncherPage({
   }, [didFinishBootstrap, minRequiredVersion, selectedVersion, installedVersions, runMode]);
 
   const selectedInstalled = isInstalled(selectedVersion);
-  const selectedVersionValue = Number.isFinite(Number(selectedVersion))
-    ? String(selectedVersion)
-    : "";
   const selectedVersionLabel = Number.isFinite(Number(selectedVersion))
     ? `v${selectedVersion}`
     : "Select version";
+  const showResizablePanels = !!selectedMod;
   const promptVersion = downloadPrompt.version;
   const promptIsWorking =
     downloadPrompt.open &&
@@ -1553,6 +1913,10 @@ export default function LauncherPage({
     setModContextMenu((prev) => ({ ...prev, open: false, mod: null }));
   }
 
+  function closeVersionContextMenu() {
+    setVersionContextMenu((prev) => ({ ...prev, open: false, version: null }));
+  }
+
   function openModContextMenu(event, mod) {
     event.preventDefault();
     setModContextMenu({
@@ -1561,6 +1925,47 @@ export default function LauncherPage({
       y: event.clientY,
       mod,
     });
+  }
+
+  function openVersionContextMenu(event, version) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!isInstalled(version)) return;
+    setVersionContextMenu({
+      open: true,
+      x: event.clientX,
+      y: event.clientY,
+      version,
+    });
+  }
+
+  function startPanelResize(event) {
+    if (event.button !== 0) return;
+    const container = splitContainerRef.current;
+    if (!container) return;
+
+    event.preventDefault();
+    setIsResizingPanels(true);
+
+    const handleMove = (moveEvent) => {
+      const rect = container.getBoundingClientRect();
+      const minLeft = MIN_MOD_PANEL_WIDTH;
+      const maxLeft = rect.width - MIN_CONFIG_PANEL_WIDTH;
+      if (maxLeft <= minLeft) return;
+
+      const nextLeft = clamp(moveEvent.clientX - rect.left, minLeft, maxLeft);
+      const nextPercent = (nextLeft / rect.width) * 100;
+      setModPanelWidthPercent(clamp(nextPercent, 30, 70));
+    };
+
+    const handleUp = () => {
+      setIsResizingPanels(false);
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+    };
+
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
   }
 
   async function openSelectedModFolder(mod) {
@@ -1711,6 +2116,8 @@ export default function LauncherPage({
   const latestPrepareKeyRef = useRef("");
   const preparePrevRef = useRef(null); // { key, prevRunMode, prevVersion }
   const explicitCancelKeyRef = useRef(""); // only set when user clicks Cancel
+  const didAutoPrepareInitialRef = useRef(false);
+  const lastPracticeInstallProbeRef = useRef("");
 
   async function prepareRunMode(nextRunMode, nextVersion, opts = {}) {
     if (gameStatus.running) return;
@@ -1750,6 +2157,24 @@ export default function LauncherPage({
 
       // Ignore stale completions.
       if (latestPrepareKeyRef.current !== key) return;
+
+      const expectedPracticeKeys = !!opt?.practice
+        ? (Array.isArray(practiceMods) ? practiceMods : [])
+            .filter(
+              (m) =>
+                !isUiHiddenMod(m) &&
+                isModCompatibleWithVersion(m, nextVersion) &&
+                !disabledSet.has(modKeyLower(m))
+            )
+            .map((m) => modKeyLower(m))
+        : [];
+
+      await refreshInstalledModVersions(nextVersion, {
+        retries: opt?.practice ? 8 : 0,
+        delayMs: 300,
+        expectedKeys: expectedPracticeKeys,
+      });
+      await refreshConfigLinkState(nextVersion);
 
       invoke("get_disabled_mods")
         .then((dm) => setDisabledMods(Array.isArray(dm) ? dm : []))
@@ -1840,6 +2265,75 @@ export default function LauncherPage({
     }
   }
 
+  useEffect(() => {
+    if (!didFinishBootstrap) return;
+    if (didAutoPrepareInitialRef.current) return;
+    if (gameStatus.running) return;
+
+    const version = Number(selectedVersion);
+    if (!Number.isFinite(version)) return;
+    if (typeof minRequiredVersion === "number" && version < minRequiredVersion) {
+      return;
+    }
+    if (!isInstalled(version)) return;
+
+    didAutoPrepareInitialRef.current = true;
+    prepareRunMode(runMode, version).catch((e) => {
+      console.error(e);
+      didAutoPrepareInitialRef.current = false;
+    });
+  }, [
+    didFinishBootstrap,
+    gameStatus.running,
+    isInstalled,
+    minRequiredVersion,
+    runMode,
+    selectedVersion,
+  ]);
+
+  useEffect(() => {
+    if (!didFinishBootstrap) return;
+    if (!isPracticeRunMode(runMode)) {
+      lastPracticeInstallProbeRef.current = "";
+      return;
+    }
+    const version = Number(selectedVersion);
+    if (!Number.isFinite(version)) return;
+    if (!isInstalled(version)) return;
+
+    const missingKeys = practiceReferenceMods
+      .filter((m) => !disabledSet.has(modKeyLower(m)))
+      .map((m) => modKeyLower(m))
+      .filter((key) => !installedModVersions[key]);
+
+    if (missingKeys.length === 0) {
+      lastPracticeInstallProbeRef.current = "";
+      return;
+    }
+
+    const probeKey = `${version}:${missingKeys.slice().sort().join("|")}`;
+    if (lastPracticeInstallProbeRef.current === probeKey) return;
+    lastPracticeInstallProbeRef.current = probeKey;
+
+    refreshInstalledModVersions(version, {
+      retries: 8,
+      delayMs: 400,
+      expectedKeys: missingKeys,
+    }).finally(() => {
+      if (lastPracticeInstallProbeRef.current === probeKey) {
+        lastPracticeInstallProbeRef.current = "";
+      }
+    });
+  }, [
+    didFinishBootstrap,
+    disabledSet,
+    installedModVersions,
+    isInstalled,
+    practiceReferenceMods,
+    runMode,
+    selectedVersion,
+  ]);
+
   // Save selectedVersion to localStorage
   useEffect(() => {
     if (selectedVersion != null) {
@@ -1904,12 +2398,12 @@ export default function LauncherPage({
             >
               <SelectTrigger
                 showIcon={false}
-                className="h-11 w-fit font-semibold overflow-hidden rounded-xl border-white/10 bg-white px-0 text-black hover:bg-white/90 focus:ring-white/15"
+                className="h-11 w-fit overflow-hidden rounded-xl border-black/10 bg-white px-0 text-[14px] font-[620] tracking-[-0.014em] text-black hover:bg-white/90 focus:ring-black/10"
                 title={selectedRunOption?.title ?? ""}
               >
                 <div className="flex h-full w-full items-stretch">
                   <div
-                    className="flex h-full select-none items-center gap-2 px-5"
+                    className="flex h-full select-none items-center gap-2 px-5 text-[14px] font-[620] tracking-[-0.014em]"
                     onPointerDown={(e) => {
                       if (e.button !== 0) return;
                       e.preventDefault();
@@ -1932,10 +2426,10 @@ export default function LauncherPage({
                   </div>
                 </div>
               </SelectTrigger>
-              <SelectContent className="min-w-48" align="start">
+              <SelectContent className="min-w-48 border-white/10" align="start">
                 {RUN_OPTIONS.map((opt) =>
                   opt.type === "separator" ? (
-                    <SelectSeparator key={opt.key} />
+                    <SelectSeparator key={opt.key} className="bg-white/20" />
                   ) : (
                     <SelectItem key={opt.value} value={opt.value}>
                       {opt.label}
@@ -1947,61 +2441,97 @@ export default function LauncherPage({
           )}
 
           <div className="w-fit">
-            <Select
-              value={selectedVersionValue}
-              onValueChange={async (v) => {
-                const nextV = Number(v);
-                if (isInstalled(nextV)) {
-                  const prevRun = runMode;
-                  const prevVer = selectedVersion;
-                  setSelectedVersion(nextV);
-                  try {
-                    await invoke("apply_disabled_mods", { version: nextV });
-                  } catch {}
-                  await prepareRunMode(runMode, nextV, {
-                    prevRunMode: prevRun,
-                    prevVersion: prevVer,
-                  });
-                } else {
-                  openDownloadPrompt(nextV);
-                }
-              }}
-            >
-              <SelectTrigger className="h-11 px-3">
-                <div className="mr-2 flex items-center gap-2">
-                  <div className="text-sm font-semibold">
-                    {selectedVersionLabel}
+            <DropdownMenu.Root modal={false}>
+              <DropdownMenu.Trigger asChild>
+                <button
+                  type="button"
+                  className="flex h-11 items-center gap-1 rounded-xl border border-panel-outline bg-white/5 pl-3 pr-2.5 text-[14px] font-medium tracking-[-0.012em] text-white outline-none transition-colors duration-150 hover:bg-white/10 focus:ring-2 focus:ring-panel-outline data-[state=open]:bg-white/10"
+                  onPointerDown={(e) => {
+                    if (e.button !== 2) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                  onContextMenu={(e) => {
+                    if (!selectedInstalled) return;
+                    openVersionContextMenu(e, Number(selectedVersion));
+                  }}
+                >
+                  <div className="flex items-center gap-2">
+                    <div className="text-[14px] font-[620] tracking-[-0.014em]">
+                      {selectedVersionLabel}
+                    </div>
+                    {selectedInstalled ? (
+                      <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                    ) : (
+                      <Download className="h-4 w-4 text-amber-300" />
+                    )}
                   </div>
-                  {selectedInstalled ? (
-                    <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-                  ) : (
-                    <Download className="h-4 w-4 text-amber-300" />
-                  )}
-                </div>
-              </SelectTrigger>
-              <SelectContent>
-                {versionOptions.map((v) => (
-                  <SelectItem
-                    key={v}
-                    value={String(v)}
-                    marker={
-                      isInstalled(v) ? null : (
-                        <Download className="h-4 w-4 text-amber-300" />
-                      )
-                    }
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      <span>v{v}</span>
-                      {isInstalled(v) ? (
-                        <span className="text-white/45">(installed)</span>
-                      ) : (
-                        <span className="text-white/45">(download)</span>
-                      )}
-                    </span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+                  <ChevronDown className="h-4 w-4 text-white/45" />
+                </button>
+              </DropdownMenu.Trigger>
+
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content
+                  sideOffset={8}
+                  align="start"
+                  className="z-50 min-w-[170px] overflow-hidden rounded-[18px] border border-panel-outline bg-[#12141a] p-1 shadow-2xl shadow-black/45"
+                >
+                  {versionOptions.map((v) => {
+                    const installed = isInstalled(v);
+                    const active = Number(selectedVersion) === Number(v);
+                    return (
+                      <DropdownMenu.Item
+                        key={v}
+                        onSelect={async () => {
+                          const nextV = Number(v);
+                          if (installed) {
+                            const prevRun = runMode;
+                            const prevVer = selectedVersion;
+                            setSelectedVersion(nextV);
+                            try {
+                              await invoke("apply_disabled_mods", { version: nextV });
+                            } catch {}
+                            await prepareRunMode(runMode, nextV, {
+                              prevRunMode: prevRun,
+                              prevVersion: prevVer,
+                            });
+                          } else {
+                            openDownloadPrompt(nextV);
+                          }
+                        }}
+                        onContextMenu={(e) => {
+                          openVersionContextMenu(e, v);
+                        }}
+                        className={cn(
+                          "flex cursor-pointer select-none items-center justify-between gap-3 rounded-xl px-3 py-2 text-[14px] font-medium tracking-[-0.012em] text-white/85 outline-none transition focus:bg-white/10",
+                          active ? "bg-white/10" : "",
+                        )}
+                      >
+                        <span className="inline-flex min-w-0 items-center gap-2.5">
+                          {active ? (
+                            <Check className="h-4 w-4 shrink-0 text-emerald-300" />
+                          ) : !installed ? (
+                            <Download className="h-4 w-4 shrink-0 text-amber-300" />
+                          ) : (
+                            <span className="h-4 w-4 shrink-0" />
+                          )}
+                          <span
+                            className={cn(
+                              active ? "font-[620] text-white" : "font-medium text-white/90"
+                            )}
+                          >
+                            v{v}
+                          </span>
+                        </span>
+                        <span className="shrink-0 text-[13px] font-medium tracking-[-0.01em] text-white/38">
+                          ({installed ? "installed" : "download"})
+                        </span>
+                      </DropdownMenu.Item>
+                    );
+                  })}
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
           </div>
 
           {!selectedInstalled && (
@@ -2071,9 +2601,33 @@ export default function LauncherPage({
         </div>
 
         {/* Main grid */}
-        <div className="grid min-h-0 flex-1 grid-cols-[repeat(auto-fit,minmax(0,1fr))] gap-4">
+        <div
+          ref={showResizablePanels ? splitContainerRef : null}
+          className={cn(
+            "min-h-0 flex-1",
+            showResizablePanels
+              ? "flex gap-0 overflow-hidden"
+              : selectedMod
+              ? "grid grid-cols-1 gap-4"
+              : "grid grid-cols-1"
+          )}
+        >
           {/* Mod list */}
-          <div className="min-h-0 rounded-2xl border border-white/10 bg-white/5 p-3">
+          <div
+            className={cn(
+              "min-h-0 rounded-2xl border border-panel-outline bg-white/5 p-3",
+              showResizablePanels ? "shrink-0 rounded-r-none border-r-0" : ""
+            )}
+            style={
+              showResizablePanels
+                ? {
+                    width: `${modPanelWidthPercent}%`,
+                    minWidth: `${MIN_MOD_PANEL_WIDTH}px`,
+                    maxWidth: `calc(100% - ${MIN_CONFIG_PANEL_WIDTH}px)`,
+                  }
+                : undefined
+            }
+          >
             <div className="mb-3 flex items-center justify-between px-1">
               <div className="text-sm font-semibold text-white/80">
                 Mods{" "}
@@ -2091,23 +2645,23 @@ export default function LauncherPage({
                   const initials = `${m.dev?.[0] ?? "M"}${
                     m.name?.[0] ?? "M"
                   }`.toUpperCase();
-                  const keyLower = `${String(m.dev).toLowerCase()}::${String(
-                    m.name
-                  ).toLowerCase()}`;
+                  const keyLower = modKeyLower(m);
                   const coverSrc = installedModIconUrls[keyLower];
                   const description =
                     installedModDescriptions[keyLower] || "Click to edit config";
                   const enabled = !disabledSet.has(keyLower);
                   const installedVer = installedModVersions[keyLower];
                   const busy = modToggleBusyKeys.has(keyLower);
+                  const isPracticeMod =
+                    isPracticeRunMode(runMode) && practiceModKeys.has(keyLower);
                   return (
-                    ((!isInstalled(selectedVersion)) || installedVer) && <div
+                    <div
                       key={modKey(m)}
                       className={cn(
                         "group flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition",
                         selected
-                          ? "border-white/20 bg-white/10"
-                          : "border-white/10 bg-black/10 hover:bg-white/10",
+                          ? "border-panel-outline bg-white/10"
+                          : "border-panel-outline bg-black/10 hover:bg-white/10",
                           installedVer || "opacity-40"
                       )}
                       onClick={() => setSelectedMod(m)}
@@ -2130,6 +2684,11 @@ export default function LauncherPage({
                           <div className="truncate text-sm text-white/40">
                             {m.dev}
                           </div>
+                          {isPracticeMod ? (
+                            <div className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[11px] font-medium text-emerald-200">
+                              Practice
+                            </div>
+                          ) : null}
                         </div>
                         <div
                           className="mt-1 overflow-hidden whitespace-nowrap text-sm text-white/50"
@@ -2186,10 +2745,41 @@ export default function LauncherPage({
           </div>
 
           {/* Right panel: config editor */}
-          {!selectedMod ? (
-            <></>
-          ) : (
-            <div className="min-h-0 rounded-2xl border border-white/10 bg-white/5 p-4">
+          {!selectedMod ? null : (
+            <>
+            {showResizablePanels ? (
+              <div className="relative z-10 flex w-0 shrink-0 items-stretch justify-center">
+                <button
+                  type="button"
+                  aria-label="Resize panels"
+                  className="group absolute inset-y-0 left-1/2 w-6 -translate-x-1/2 cursor-col-resize"
+                  onPointerDown={startPanelResize}
+                >
+                  <span
+                    className={cn(
+                      "pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-[#2C313A] transition-colors",
+                      isResizingPanels
+                        ? "bg-[#00C896]"
+                        : "group-hover:bg-[#434B58]"
+                    )}
+                  />
+                  <span
+                    className={cn(
+                      "pointer-events-none absolute left-1/2 top-1/2 h-14 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#3A404A] transition-colors",
+                      isResizingPanels
+                        ? "bg-[#00C896]"
+                        : "group-hover:bg-[#596273]"
+                    )}
+                  />
+                </button>
+              </div>
+            ) : null}
+            <div
+              className={cn(
+                "min-h-0 rounded-2xl border border-panel-outline bg-white/5 p-4",
+                showResizablePanels ? "min-w-0 flex-1 rounded-l-none border-l-0" : ""
+              )}
+            >
               <div className="flex h-full flex-col gap-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
@@ -2223,15 +2813,16 @@ export default function LauncherPage({
                       })()}
                     </div>
                   </div>
-                  <Button
-                    variant="secondary"
-                    size="sm"
+                  <button
+                    type="button"
+                    aria-label="Close config editor"
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-transparent text-[#8E97A5] transition-colors hover:bg-[#242830] hover:text-white focus:outline-none focus:ring-2 focus:ring-panel-outline"
                     onClick={() => {
                       setSelectedMod(null);
                     }}
                   >
-                    Close
-                  </Button>
+                    <X className="h-4 w-4" />
+                  </button>
                 </div>
 
                 {configLinkState?.is_installed && configLinkState?.is_linked === false && (
@@ -2324,7 +2915,8 @@ export default function LauncherPage({
                   </div>
                 ) : (
                   <div className="min-h-0 flex flex-1 overflow-hidden">
-                    <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-white/10 bg-black/10 p-3">
+                    <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-panel-outline bg-black/10 p-3">
+                    
                       {(() => {
                         const s =
                           (cfgFile.sections ?? []).find(
@@ -2339,7 +2931,7 @@ export default function LauncherPage({
                               return (
                                 <div
                                   key={id}
-                                  className="rounded-2xl border border-white/10 bg-white/5 p-3"
+                                  className="rounded-2xl border border-panel-outline bg-white/5 p-3"
                                 >
                                   <div className="flex items-start justify-between gap-3">
                                     <div className="min-w-0">
@@ -2575,6 +3167,7 @@ export default function LauncherPage({
                 )}
               </div>
             </div>
+            </>
           )}
         </div>
           </>
@@ -2584,7 +3177,7 @@ export default function LauncherPage({
       {modContextMenu.open && modContextMenu.mod && (
         <div
           ref={modContextMenuRef}
-          className="fixed z-[70] min-w-[220px] overflow-hidden rounded-2xl border border-white/10 bg-[#14161c] p-1.5 shadow-2xl shadow-black/40"
+          className="fixed z-[70] min-w-[220px] overflow-hidden rounded-2xl border border-panel-outline bg-[#14161c] p-1.5 shadow-2xl shadow-black/40"
           style={{
             left: modContextMenu.x,
             top: modContextMenu.y,
@@ -2595,6 +3188,32 @@ export default function LauncherPage({
             onClick={() => openSelectedModFolder(modContextMenu.mod)}
           >
             Open Mod Folder
+          </button>
+        </div>
+      )}
+
+      {versionContextMenu.open && Number.isFinite(versionContextMenu.version) && (
+        <div
+          ref={versionContextMenuRef}
+          className="fixed z-[70] min-w-[220px] overflow-hidden rounded-2xl border border-panel-outline bg-[#14161c] p-1.5 shadow-2xl shadow-black/40"
+          style={{
+            left: versionContextMenu.x,
+            top: versionContextMenu.y,
+          }}
+        >
+          <button
+            className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/10 disabled:pointer-events-none disabled:opacity-40"
+            disabled={gameStatus.running || deleteVersionBusy}
+            onClick={() => {
+              setDeleteVersionPrompt({
+                ...makeDeleteVersionPromptState(),
+                open: true,
+                version: versionContextMenu.version,
+              });
+              closeVersionContextMenu();
+            }}
+          >
+            Delete v{versionContextMenu.version}
           </button>
         </div>
       )}
@@ -2610,7 +3229,7 @@ export default function LauncherPage({
             aria-label="Close"
           />
 
-          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-white/10 bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
+          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-lg font-semibold">
@@ -2625,7 +3244,7 @@ export default function LauncherPage({
 
             {/* Progress (from Rust emit) */}
             {(promptIsWorking || promptIsDone || promptIsError) && (
-              <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
+              <div className="mt-4 rounded-2xl border border-panel-outline bg-white/5 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-semibold">
@@ -2748,6 +3367,109 @@ export default function LauncherPage({
         </div>
       )}
 
+      {/* Delete version confirm modal */}
+      {deleteVersionPrompt.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <button
+            className="absolute inset-0 bg-black/60"
+            onClick={() => {
+              if (!deleteVersionBusy) {
+                setDeleteVersionPrompt(makeDeleteVersionPromptState());
+              }
+            }}
+            aria-label="Close"
+          />
+
+          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-lg font-semibold">
+                  {deleteVersionBusy
+                    ? `Deleting v${deleteVersionPrompt.version}...`
+                    : `Delete v${deleteVersionPrompt.version}?`}
+                </div>
+                <div className="mt-1 text-sm text-white/55">
+                  {deleteVersionBusy
+                    ? "Removing installed files for this version."
+                    : "This removes the installed files for this version from the launcher."}
+                </div>
+              </div>
+            </div>
+
+            {(deleteVersionBusy ||
+              deleteVersionPrompt.status === "working" ||
+              deleteVersionPrompt.status === "done") && (
+              <div className="mt-4 rounded-2xl border border-panel-outline bg-white/5 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold">
+                      {deleteVersionPrompt.detail || "Deleting files..."}
+                    </div>
+                    <div className="truncate text-xs text-white/50">
+                      {Number.isFinite(Number(deleteVersionPrompt.total_files)) &&
+                      Number(deleteVersionPrompt.total_files) > 0
+                        ? `${Number(deleteVersionPrompt.deleted_files ?? 0)} / ${Number(
+                            deleteVersionPrompt.total_files ?? 0
+                          )} items removed`
+                        : "Scanning files..."}
+                    </div>
+                  </div>
+                  <div className="shrink-0 text-sm text-white/70">
+                    {Math.round(Number(deleteVersionPrompt.overall_percent ?? 0))}%
+                  </div>
+                </div>
+                <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-white/10">
+                  <div
+                    className="h-full rounded-full bg-emerald-400 transition-[width]"
+                    style={{
+                      width: `${Math.max(
+                        0,
+                        Math.min(100, Number(deleteVersionPrompt.overall_percent ?? 0))
+                      )}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {deleteVersionPrompt.error ? (
+              <div className="mt-4 rounded-2xl border border-red-400/30 bg-red-400/10 p-3 text-sm text-red-200">
+                {deleteVersionPrompt.error}
+              </div>
+            ) : null}
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <Button
+                variant="secondary"
+                className="h-10 min-w-[120px]"
+                disabled={deleteVersionBusy}
+                onClick={() => setDeleteVersionPrompt(makeDeleteVersionPromptState())}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="default"
+                className="h-10 min-w-[120px]"
+                disabled={deleteVersionBusy}
+                onClick={() => deleteVersion(deleteVersionPrompt.version)}
+              >
+                {deleteVersionBusy ? (
+                  <>
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                    Deleting...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-4 w-4" />
+                    Delete
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Check update confirm modal */}
       {checkUpdatePrompt.open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -2760,7 +3482,7 @@ export default function LauncherPage({
             aria-label="Close"
           />
 
-          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-white/10 bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
+          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-lg font-semibold">
@@ -2856,7 +3578,7 @@ export default function LauncherPage({
             aria-label="Close"
           />
 
-          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-white/10 bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
+          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-lg font-semibold">
@@ -2873,7 +3595,7 @@ export default function LauncherPage({
             </div>
 
             {(updateIsWorking || updateIsDone || updateIsError) && (
-              <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
+              <div className="mt-4 rounded-2xl border border-panel-outline bg-white/5 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-semibold">
@@ -2944,7 +3666,7 @@ export default function LauncherPage({
             aria-label="Close"
           />
 
-          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-white/10 bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
+          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-lg font-semibold">
@@ -2958,7 +3680,7 @@ export default function LauncherPage({
               </div>
             </div>
 
-            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
+            <div className="mt-4 rounded-2xl border border-panel-outline bg-white/5 p-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <div className="truncate text-sm font-semibold">
@@ -3034,7 +3756,7 @@ export default function LauncherPage({
             aria-label="Close"
           />
 
-          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-white/10 bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
+          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-lg font-semibold">
@@ -3048,7 +3770,7 @@ export default function LauncherPage({
               </div>
             </div>
 
-            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
+            <div className="mt-4 rounded-2xl border border-panel-outline bg-white/5 p-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <div className="truncate text-sm font-semibold">

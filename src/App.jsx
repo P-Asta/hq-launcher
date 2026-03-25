@@ -9,7 +9,7 @@ import { LoginDialog } from "./components/auth/LoginDialog";
 function Splash({ message }) {
   return (
     <div className="flex h-full w-full items-center justify-center p-6 text-white">
-      <div className="w-[min(520px,92vw)] rounded-3xl border border-white/10 bg-white/5 p-6">
+      <div className="w-[min(520px,92vw)] rounded-3xl border border-panel-outline bg-white/5 p-6">
         <div className="text-lg font-semibold">HQ Launcher</div>
         <div className="mt-2 text-sm text-white/55">{message}</div>
       </div>
@@ -101,7 +101,7 @@ import { LoginDialog } from "./components/auth/LoginDialog";
 function Splash({ message }) {
   return (
     <div className="flex h-full w-full items-center justify-center p-6 text-white">
-      <div className="w-[min(520px,92vw)] rounded-3xl border border-white/10 bg-white/5 p-6">
+      <div className="w-[min(520px,92vw)] rounded-3xl border border-panel-outline bg-white/5 p-6">
         <div className="text-lg font-semibold">HQ Launcher</div>
         <div className="mt-2 text-sm text-white/55">{message}</div>
       </div>
@@ -834,7 +834,7 @@ export default function App() {
         {/* Main grid */}
         <div className="grid min-h-0 flex-1 grid-cols-[repeat(auto-fit,minmax(0,1fr))] gap-4">
           {/* Mod list */}
-          <div className="min-h-0 rounded-2xl border border-white/10 bg-white/5 p-3">
+          <div className="min-h-0 rounded-2xl border border-panel-outline bg-white/5 p-3">
             <div className="mb-3 flex items-center justify-between px-1">
               <div className="text-sm font-semibold text-white/80">
                 Mods{" "}
@@ -861,8 +861,8 @@ export default function App() {
                       className={cn(
                         "group flex w-full items-start gap-3 rounded-2xl border px-3 py-3 text-left transition",
                         selected
-                          ? "border-white/20 bg-white/10"
-                          : "border-white/10 bg-black/10 hover:bg-white/10"
+                          ? "border-panel-outline bg-white/10"
+                          : "border-panel-outline bg-black/10 hover:bg-white/10"
                       )}
                       onClick={() => setSelectedMod(m)}
                     >
@@ -899,7 +899,7 @@ export default function App() {
           {!selectedMod ? (
             <></>
           ) : (
-            <div className="min-h-0 rounded-2xl border border-white/10 bg-white/5 p-4">
+            <div className="min-h-0 rounded-2xl border border-panel-outline bg-white/5 p-4">
               <div className="flex h-full flex-col gap-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
@@ -921,7 +921,7 @@ export default function App() {
                   </Button>
                 </div>
 
-                <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-black/10 px-3 py-2">
+                <div className="flex items-center justify-between rounded-2xl border border-panel-outline bg-black/10 px-3 py-2">
                   <div className="text-sm font-semibold text-white/80">
                     Enabled
                   </div>
@@ -1004,7 +1004,7 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="min-h-0 flex flex-1 overflow-hidden">
-                    <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-white/10 bg-black/10 p-3">
+                    <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-panel-outline bg-black/10 p-3">
                       {(() => {
                         const s =
                           (cfgFile.sections ?? []).find(
@@ -1019,7 +1019,7 @@ export default function App() {
                               return (
                                 <div
                                   key={id}
-                                  className="rounded-2xl border border-white/10 bg-white/5 p-3"
+                                  className="rounded-2xl border border-panel-outline bg-white/5 p-3"
                                 >
                                   <div className="flex items-start justify-between gap-3">
                                     <div className="min-w-0">
@@ -1275,7 +1275,7 @@ export default function App() {
             aria-label="Close"
           />
 
-          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-white/10 bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
+          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-lg font-semibold">
@@ -1290,7 +1290,7 @@ export default function App() {
 
             {/* Progress (from Rust emit) */}
             {(promptIsWorking || promptIsDone || promptIsError) && (
-              <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
+              <div className="mt-4 rounded-2xl border border-panel-outline bg-white/5 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-semibold">
@@ -1400,7 +1400,7 @@ export default function App() {
             aria-label="Close"
           />
 
-          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-white/10 bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
+          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-lg font-semibold">

@@ -5,6 +5,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use zip::ZipArchive;
 
+fn is_bepinex_section_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "bepinex" | "plugins" | "plugin" | "patchers" | "patcher" | "config"
+    )
+}
+
 fn strip_prefix_components<'a>(
     comps: &'a [std::path::Component<'a>],
     prefix: &[&str],
@@ -324,7 +331,8 @@ where
         }
     }
     let flatten_prefix: Option<String> = if !has_root_file && first_components.len() == 1 {
-        first_components.iter().next().cloned()
+        let only = first_components.iter().next().cloned();
+        only.filter(|name| !is_bepinex_section_name(name))
     } else {
         None
     };
@@ -494,15 +502,21 @@ where
         first_components.insert(comps[0].as_os_str().to_string_lossy().to_string());
         // Quick detect patchers payload to decide whether to reset patchers folder.
         let lower = safe_rel.to_string_lossy().to_lowercase();
-        if lower.contains("/patchers/")
+        if lower.starts_with("patchers/")
+            || lower.starts_with("patcher/")
+            || lower.starts_with("bepinex/patchers/")
+            || lower.starts_with("bepinex/patcher/")
+            || lower.contains("/patchers/")
             || lower.contains("\\patchers\\")
             || lower.contains("/patcher/")
+            || lower.contains("\\patcher\\")
         {
             has_patchers_payload = true;
         }
     }
     let flatten_prefix: Option<String> = if !has_root_file && first_components.len() == 1 {
-        first_components.iter().next().cloned()
+        let only = first_components.iter().next().cloned();
+        only.filter(|name| !is_bepinex_section_name(name))
     } else {
         None
     };
@@ -633,7 +647,16 @@ where
         if let Some(parent) = out_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let mut out_file = File::create(&out_path).map_err(|e| e.to_string())?;
+
+        // Write via a temporary sibling file so concurrent manifest scans never
+        // observe an empty or partially-written JSON file mid-extraction.
+        let file_name = out_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("invalid output path: {}", out_path.to_string_lossy()))?;
+        let tmp_path = out_path.with_file_name(format!("{file_name}.hqtmp"));
+
+        let mut out_file = File::create(&tmp_path).map_err(|e| e.to_string())?;
         let mut buf = [0u8; 64 * 1024];
         loop {
             if cancel.is_some_and(|c| c.load(AtomicOrdering::Relaxed)) {
@@ -645,6 +668,8 @@ where
             }
             out_file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
         }
+        drop(out_file);
+        std::fs::rename(&tmp_path, &out_path).map_err(|e| e.to_string())?;
 
         processed = processed.saturating_add(1);
         on_progress(processed, total_entries, entry_name);

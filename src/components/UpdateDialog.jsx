@@ -47,7 +47,7 @@ export function UpdateDialog({ open, onOpenChange, updateInfo, onUpdateComplete 
           </div>
 
           {updateInfo && (
-            <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
+            <div className="rounded-2xl border border-panel-outline bg-black/20 px-4 py-3">
               <div className="grid gap-2 text-sm">
                 <div className="flex items-center justify-between">
                   <span className="text-white/60">Current Version:</span>
@@ -72,7 +72,7 @@ export function UpdateDialog({ open, onOpenChange, updateInfo, onUpdateComplete 
           )}
 
           {updateInfo?.body && (
-            <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
+            <div className="rounded-2xl border border-panel-outline bg-black/20 px-4 py-3">
               <div className="mb-2 text-xs font-semibold text-white/70">
                 Release Notes
               </div>

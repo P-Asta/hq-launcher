@@ -1,6 +1,16 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.7.0 (2026-03-25)
+- Add version deletion from the version picker with a right-click context menu, confirmation, and live delete progress.
+- Dock the config editor beside the mod list and make the split view resizable.
+- Rework Practice Modes to use the current preset-specific, version-aware practice mod set.
+- Add more Practice mods, including `CoordinateForEasterEggs`, `IntroTweaks`, and `Yukieji_UnityExplorer`, plus the required hidden helper dependencies on supported versions.
+- Hide internal practice helper mods from the main UI and preserve user-disabled practice mods instead of forcing them back on.
+- Make mod update checks respect the selected run mode so preset/practice-only mods do not create false update results.
+- Fix BepInEx manifest parsing for BOM-encoded files and avoid partial manifest reads during extraction, reducing HookGenPatcher manifest warnings and scan stalls.
+- Improve launcher styling for SUIT Variable with a shared panel outline color token, and increase the default window size for the denser layout.
+
 ## 1.6.3 (2026-03-22)
 - Avoid prompting to install DepotDownloader again when it is already installed.
 

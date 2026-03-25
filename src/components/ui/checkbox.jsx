@@ -7,7 +7,7 @@ export function Checkbox({ className, checked, onCheckedChange, disabled }) {
   return (
     <CheckboxPrimitive.Root
       className={cn(
-        "flex h-5 w-5 items-center justify-center rounded-md border border-white/20 bg-white/5 text-white shadow-sm outline-none transition focus:ring-2 focus:ring-white/10 data-[state=checked]:bg-emerald-400 data-[state=checked]:text-black data-[disabled]:opacity-50",
+        "flex h-5 w-5 items-center justify-center rounded-md border border-panel-outline bg-white/5 text-white shadow-sm outline-none transition focus:ring-2 focus:ring-panel-outline data-[state=checked]:bg-emerald-400 data-[state=checked]:text-black data-[disabled]:opacity-50",
         className,
       )}
       checked={checked}

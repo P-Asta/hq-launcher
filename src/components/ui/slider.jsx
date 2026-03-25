@@ -16,7 +16,7 @@ export function Slider({ className, value, onValueChange, min, max, step, disabl
       <SliderPrimitive.Track className="relative h-2 w-full grow overflow-hidden rounded-full bg-white/10">
         <SliderPrimitive.Range className="absolute h-full bg-emerald-400" />
       </SliderPrimitive.Track>
-      <SliderPrimitive.Thumb className="block h-4 w-4 rounded-full border border-white/20 bg-white shadow outline-none focus:ring-2 focus:ring-white/20 disabled:opacity-50" />
+      <SliderPrimitive.Thumb className="block h-4 w-4 rounded-full border border-panel-outline bg-white shadow outline-none focus:ring-2 focus:ring-panel-outline disabled:opacity-50" />
     </SliderPrimitive.Root>
   );
 }

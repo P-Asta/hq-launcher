@@ -1,4 +1,9 @@
 @import "tailwindcss";
+@import url("https://cdn.jsdelivr.net/gh/sun-typeface/SUIT@2/fonts/variable/woff2/SUIT-Variable.css");
+
+@theme {
+  --color-panel-outline: #2F3034;
+}
 
 /* App defaults */
 html,
@@ -22,6 +27,8 @@ body {
   -ms-user-select: none;
   user-select: none;
   font-style: normal;
+
+  font-family: 'SUIT Variable', sans-serif;;
 }
 
 *[data-tauri-drag-region="true"] {

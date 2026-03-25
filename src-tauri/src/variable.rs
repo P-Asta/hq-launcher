@@ -38,7 +38,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
         ModEntry {
             dev: "Lordfirespeed".to_string(),
             name: "OdinSerializer".to_string(),
-            tags: vec![],
+            tags: vec!["ui_hidden".to_string()],
             enabled: true,
             low_cap: Some(56),
             high_cap: None,
@@ -48,7 +48,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
         ModEntry {
             dev: "xilophor".to_string(),
             name: "LethalNetworkAPI".to_string(),
-            tags: vec![],
+            tags: vec!["ui_hidden".to_string()],
             enabled: true,
             low_cap: Some(56),
             high_cap: None,
@@ -60,6 +60,83 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
                 (66, "3.3.1".to_string()),
             ]),
         },
+
+        
+        ModEntry {
+            dev: "kakeEdition".to_string(),
+            name: "CoordinateForEasterEggs".to_string(),
+            tags: vec![],
+            enabled: true,
+            low_cap: Some(50),
+            high_cap: None,
+            tag_constraints: BTreeMap::new(),
+            version_config: BTreeMap::from([
+                (50, "0.1.1".to_string()),
+            ]),
+        },
+        ModEntry {
+            dev: "asta".to_string(),
+            name: "CoordinateForEasterEggsFix".to_string(),
+            tags: vec!["ui_hidden".to_string()],
+            enabled: true,
+            low_cap: Some(50),
+            high_cap: Some(72),
+            tag_constraints: BTreeMap::new(),
+            version_config: BTreeMap::from([
+                (50, "1.0.0".to_string()),
+            ]),
+        },
+        ModEntry {
+            dev: "Evaisa".to_string(),
+            name: "LethalLib".to_string(),
+            tags: vec!["ui_hidden".to_string()],
+            enabled: true,
+            low_cap: Some(50),
+            high_cap: None,
+            tag_constraints: BTreeMap::new(),
+            version_config: BTreeMap::from([
+                (50, "0.16.0".to_string()),
+                (70, "1.1.0".to_string()),
+                (73, "1.1.1".to_string()),
+            ]),
+        },
+        ModEntry {
+            dev: "MonoDetour".to_string(),
+            name: "MonoDetour_BepInEx_5".to_string(),
+            tags: vec!["ui_hidden".to_string()],
+            enabled: true,
+            low_cap: Some(50),
+            high_cap: None,
+            tag_constraints: BTreeMap::new(),
+            version_config: BTreeMap::from([
+                (50, "0.6.3".to_string()),
+            ]),
+        },
+        ModEntry {
+            dev: "MonoDetour".to_string(),
+            name: "MonoDetour".to_string(),
+            tags: vec!["ui_hidden".to_string()],
+            enabled: true,
+            low_cap: Some(50),
+            high_cap: None,
+            tag_constraints: BTreeMap::new(),
+            version_config: BTreeMap::from([
+                (50, "0.6.3".to_string()),
+            ]),
+        },
+        ModEntry {
+            dev: "Evaisa".to_string(),
+            name: "HookGenPatcher".to_string(),
+            tags: vec!["ui_hidden".to_string()],
+            enabled: true,
+            low_cap: Some(50),
+            high_cap: None,
+            tag_constraints: BTreeMap::new(),
+            version_config: BTreeMap::from([
+                (50, "0.0.5".to_string()),
+            ]),
+        },
+
         ModEntry {
             dev: "megumin".to_string(),
             name: "LethalDevMode".to_string(),
@@ -100,5 +177,29 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
             tag_constraints: BTreeMap::new(),
             version_config: BTreeMap::new(),
         },
+        ModEntry {
+            dev: "Owen3H".to_string(),
+            name: "IntroTweaks".to_string(),
+            tags: vec![],
+            enabled: true,
+            low_cap: Some(50),
+            high_cap: None,
+            tag_constraints: BTreeMap::new(),
+            version_config: BTreeMap::new(),
+        },
+        
+        ModEntry {
+            dev: "LethalCompanyModding".to_string(),
+            name: "Yukieji_UnityExplorer".to_string(),
+            tags: vec![],
+            enabled: true,
+            low_cap: None,
+            high_cap: None,
+            tag_constraints: BTreeMap::new(),
+            version_config: BTreeMap::from([
+                (40, "4.12.7".to_string()),
+                (73, "4.13.1".to_string()),
+            ]),
+        }
     ]
 }

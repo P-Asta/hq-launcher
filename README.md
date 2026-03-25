@@ -12,20 +12,34 @@ A game launcher built with [React](https://react.dev/) and [Tauri](https://tauri
 ## Features
 
 - **Steam Authentication**: Secure login with Steam account
-- **Version Management**: Install and select different game versions
+- **Version Management**: Install, select, and remove different game versions from the version menu
 - **Game Launch/Stop**: One-click game execution and termination
 - **Mod Management**: Search, enable/disable, and configure mods
-- **Config Editor**: Built-in BepInEx configuration file editor
+- **Config Editor**: Built-in BepInEx configuration file editor with a docked, resizable side-by-side layout
 - **Auto Updates**: Automatic updates for both launcher and game versions
-- **Practice Mode**: This is a mode that runs by adding a practice plugin.
+- **Practice Modes**: Launch HQ, Brutal, or Wesley presets in a practice-ready setup with version-compatible practice mods.
 
 
-## Practice Mode
-- [LethalDevMode](https://thunderstore.io/c/lethal-company/p/megumin/LethalDevMode/)(v45+)
-- [Imperium](https://thunderstore.io/c/lethal-company/p/giosuel/Imperium/)(v50+)
-- [CruiserJumpPractice](https://thunderstore.io/c/lethal-company/p/aoirint/CruiserJumpPractice/)(v56+)
-- [DanceTools](https://thunderstore.io/c/lethal-company/p/Shinobi/DanceTools/)(v44-)
-- [FreeCammer](https://thunderstore.io/c/lethal-company/p/the_croods/FreeCammer/)(v49-)
+## Practice Modes
+
+Practice is no longer a single extra plugin toggle. The launcher now provides preset-specific practice runs:
+
+- `Normal Practice`: HQ preset + practice mods
+- `Brutal Practice`: Brutal preset + practice mods (`v49+`)
+- `Wesley's Practice`: Wesley preset + practice mods (`v69+`)
+
+When a practice run is selected, HQ Launcher prepares the compatible practice setup for the selected game version and installs missing pieces automatically for that run.
+
+### Practice mod set
+
+- [LethalDevMode](https://thunderstore.io/c/lethal-company/p/megumin/LethalDevMode/) (`v45+`)
+- [Imperium](https://thunderstore.io/c/lethal-company/p/giosuel/Imperium/) (`v50+`, version pinned per game version)
+- [CoordinateForEasterEggs](https://thunderstore.io/c/lethal-company/p/kakeEdition/CoordinateForEasterEggs/) (`v50+`)
+- [CruiserJumpPractice](https://thunderstore.io/c/lethal-company/p/aoirint/CruiserJumpPractice/) (`v56+`)
+- [DanceTools](https://thunderstore.io/c/lethal-company/p/Shinobi/DanceTools/) (`v44 and below`)
+- [FreeCammer](https://thunderstore.io/c/lethal-company/p/the_croods/FreeCammer/) (`v49 and below`)
+- [IntroTweaks](https://thunderstore.io/c/lethal-company/p/Owen3H/IntroTweaks/) (`v50+`)
+- [Yukieji_UnityExplorer](https://thunderstore.io/c/lethal-company/p/LethalCompanyModding/Yukieji_UnityExplorer/) (all supported versions, pinned on newer versions)
 
 ## Installation
 

@@ -206,7 +206,7 @@ export default function Titlebar({ installedVersions, ...props }) {
 
             <div 
                 data-tauri-drag-region 
-                className={cn('w-full flex items-center justify-between px-2 border-b border-white/10 bg-[#0b0c10]/80 backdrop-blur-sm z-50', props.className)}
+                className={cn('w-full flex items-center justify-between px-2 border-b border-panel-outline bg-[#0b0c10]/80 backdrop-blur-sm z-50', props.className)}
             >
                 {/* Left side - Menu items */}
                 <div className="flex items-center gap-1">
@@ -306,7 +306,7 @@ function TitlebarMenu({ name, items }) {
             <DropdownMenu.Portal>
                 <DropdownMenu.Content
                     className={cn(
-                        "min-w-[200px] bg-[#1a1b23] border border-white/10 rounded-md shadow-lg py-1 z-50",
+                        "min-w-[200px] bg-[#1a1b23] border border-panel-outline rounded-md shadow-lg py-1 z-50",
                         "data-[state=open]:animate-in data-[state=closed]:animate-out",
                         "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
                         "data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",

@@ -24,6 +24,120 @@ use crate::{
     progress::{TaskFinishedPayload, TaskUpdatableProgressPayload},
 };
 
+fn preset_tags_for_name(preset: &str) -> Vec<String> {
+    let p = preset.trim().to_lowercase();
+    match p.as_str() {
+        "brutal" | "bc" => vec!["Brutal".to_string()],
+        "wesley" | "wesley's" | "wesleys" => vec!["Wesley".to_string()],
+        "smhq" => vec!["SMHQ".to_string()],
+        "wesley_smhq" | "wesleys_smhq" | "wesley-smhq" | "wesleys-smhq" => {
+            vec!["Wesley".to_string(), "SMHQ".to_string()]
+        }
+        _ => vec![],
+    }
+}
+
+fn preset_and_practice_for_run_mode(run_mode: &str) -> (String, bool) {
+    let mode = run_mode.trim().to_lowercase();
+    match mode.as_str() {
+        "practice" => ("hq".to_string(), true),
+        "brutal" => ("brutal".to_string(), false),
+        "brutal_practice" => ("brutal".to_string(), true),
+        "wesley" => ("wesley".to_string(), false),
+        "wesley_practice" => ("wesley".to_string(), true),
+        "wesley_smhq" => ("wesley_smhq".to_string(), false),
+        "smhq" => ("smhq".to_string(), false),
+        _ => ("hq".to_string(), false),
+    }
+}
+
+fn merge_mod_entries_prefer_later(
+    base: Vec<mod_config::ModEntry>,
+    overlay: Vec<mod_config::ModEntry>,
+) -> Vec<mod_config::ModEntry> {
+    let overlay_names: std::collections::HashSet<String> = overlay
+        .iter()
+        .map(|m| m.name.to_lowercase())
+        .collect();
+
+    let mut merged: Vec<mod_config::ModEntry> = base
+        .into_iter()
+        .filter(|m| !overlay_names.contains(&m.name.to_lowercase()))
+        .collect();
+    merged.extend(overlay);
+    merged
+}
+
+fn is_ui_hidden_mod(m: &mod_config::ModEntry) -> bool {
+    m.tags.iter().any(|t| t.eq_ignore_ascii_case("ui_hidden"))
+}
+
+async fn effective_mods_config_for_run_mode(
+    client: &reqwest::Client,
+    version: u32,
+    run_mode: &str,
+    include_ui_hidden: bool,
+    include_practice_mods: bool,
+) -> Result<ModsConfig, String> {
+    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests) =
+        ModsConfig::fetch_manifest(client).await?;
+    let (preset, practice) = preset_and_practice_for_run_mode(run_mode);
+    let tags = preset_tags_for_name(&preset);
+    let want: Vec<String> = tags.iter().map(|t| t.to_lowercase()).collect();
+
+    let mut base: Vec<mod_config::ModEntry> = vec![];
+    let mut selected_tagged: Vec<mod_config::ModEntry> = vec![];
+
+    for m in mods_cfg.mods {
+        if m.tags.is_empty() {
+            if m.is_compatible(version) {
+                base.push(m);
+            }
+            continue;
+        }
+
+        if want.is_empty() {
+            continue;
+        }
+
+        let has = m.tags.iter().any(|x| want.contains(&x.to_lowercase()));
+        if !has {
+            continue;
+        }
+
+        let mut mm = m;
+        mm.enabled = true;
+        if mm.is_compatible_for_tags(version, &tags) {
+            selected_tagged.push(mm);
+        }
+    }
+
+    let mut effective = base;
+    if practice {
+        let practice_mods: Vec<mod_config::ModEntry> = variable::get_practice_mod_list()
+            .into_iter()
+            .filter(|m| m.is_compatible(version))
+            .collect();
+        let practice_names: std::collections::HashSet<String> = practice_mods
+            .iter()
+            .map(|m| m.name.to_lowercase())
+            .collect();
+        effective.retain(|m| !practice_names.contains(&m.name.to_lowercase()));
+        if include_practice_mods {
+            effective.extend(practice_mods);
+        }
+    }
+    if !selected_tagged.is_empty() {
+        effective = merge_mod_entries_prefer_later(effective, selected_tagged);
+    }
+
+    if !include_ui_hidden {
+        effective.retain(|m| !is_ui_hidden_mod(m));
+    }
+
+    Ok(ModsConfig { mods: effective })
+}
+
 async fn prepare_tagged_mods_for_version(
     app: &tauri::AppHandle,
     version: u32,
@@ -1447,20 +1561,8 @@ fn ensure_practice_mods_disabled_for_version(
     version: u32,
 ) -> Result<(), String> {
     let practice = variable::get_practice_mod_list();
-    let mut list = read_disablemod(app)?;
-
-    // Force-disable all practice mods globally (source of truth for the UI).
-    for m in &practice {
-        let id = normalize_mod_id(&m.dev, &m.name);
-        list.mods.retain(|x| x != &id);
-        list.mods.push(id);
-    }
-    list.mods
-        .sort_by(|a, b| a.dev.cmp(&b.dev).then(a.name.cmp(&b.name)));
-    list.mods.dedup();
-    write_disablemod(app, &list)?;
-
-    // Apply for this version immediately.
+    // Apply non-practice runtime state for this version immediately, without
+    // overwriting the user's persisted practice toggle preferences.
     let plugins = plugins_dir(app, version)?;
     let patchers = patchers_dir(app, version)?;
     for m in practice {
@@ -1489,10 +1591,16 @@ async fn prepare_practice_mods_for_version(
     }
 
     let practice_all = variable::get_practice_mod_list();
+    let disabled_list = read_disablemod(app)?;
     let practice_enabled: Vec<mod_config::ModEntry> = practice_all
         .iter()
         .cloned()
-        .filter(|m| m.is_compatible(version))
+        .filter(|m| {
+            m.is_compatible(version)
+                && !disabled_list
+                    .mods
+                    .contains(&normalize_mod_id(&m.dev, &m.name))
+        })
         .collect();
     let practice_ids: Vec<(String, String)> = practice_enabled
         .iter()
@@ -1566,38 +1674,23 @@ async fn prepare_practice_mods_for_version(
         return Err(e.clone());
     }
 
-    // Update disable list: practice mods are disabled by default, except compatible ones for this version.
-    let mut list = read_disablemod(app)?;
-    let all_ids: Vec<DisabledMod> = practice_all
-        .iter()
-        .map(|m| normalize_mod_id(&m.dev, &m.name))
-        .collect();
-    let enabled_ids: Vec<DisabledMod> = practice_enabled
-        .iter()
-        .map(|m| normalize_mod_id(&m.dev, &m.name))
-        .collect();
-
-    // Remove any existing entries for practice mods.
-    list.mods.retain(|m| !all_ids.contains(m));
-    // Add all practice mods as disabled, then remove the enabled subset.
-    for id in &all_ids {
-        list.mods.push(id.clone());
-    }
-    list.mods.retain(|m| !enabled_ids.contains(m));
-    list.mods
-        .sort_by(|a, b| a.dev.cmp(&b.dev).then(a.name.cmp(&b.name)));
-    list.mods.dedup();
-    write_disablemod(app, &list)?;
-
-    // Apply filesystem state for this version: disable all practice mods, then enable compatible subset.
+    // Apply filesystem state for this version: disable all practice mods,
+    // then re-enable only the compatible subset that the user has not disabled.
     let plugins = plugins_dir(app, version)?;
+    let patchers = patchers_dir(app, version)?;
     for m in &practice_all {
         if let Some(dir) = mod_dir_for(&plugins, &m.dev, &m.name) {
+            let _ = set_mod_files_old_suffix(&dir, false);
+        }
+        if let Some(dir) = mod_dir_for(&patchers, &m.dev, &m.name) {
             let _ = set_mod_files_old_suffix(&dir, false);
         }
     }
     for m in &practice_enabled {
         if let Some(dir) = mod_dir_for(&plugins, &m.dev, &m.name) {
+            let _ = set_mod_files_old_suffix(&dir, true);
+        }
+        if let Some(dir) = mod_dir_for(&patchers, &m.dev, &m.name) {
             let _ = set_mod_files_old_suffix(&dir, true);
         }
     }
@@ -1749,6 +1842,147 @@ async fn open_version_folder(app: tauri::AppHandle) -> Result<bool, String> {
     Ok(true)
 }
 
+fn collect_delete_targets(
+    path: &std::path::Path,
+    out: &mut Vec<std::path::PathBuf>,
+) -> Result<(), String> {
+    let rd = std::fs::read_dir(path).map_err(|e| e.to_string())?;
+    for entry in rd {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let child = entry.path();
+        let ty = entry.file_type().map_err(|e| e.to_string())?;
+        if ty.is_dir() && !ty.is_symlink() {
+            collect_delete_targets(&child, out)?;
+            out.push(child);
+        } else {
+            out.push(child);
+        }
+    }
+    Ok(())
+}
+
+fn remove_delete_target(path: &std::path::Path) -> Result<(), String> {
+    let ty = std::fs::symlink_metadata(path)
+        .map_err(|e| e.to_string())?
+        .file_type();
+
+    if ty.is_dir() && !ty.is_symlink() {
+        std::fs::remove_dir(path).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    if let Err(file_err) = std::fs::remove_file(path) {
+        std::fs::remove_dir(path).map_err(|dir_err| format!("{file_err}; {dir_err}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_installed_version(
+    app: tauri::AppHandle,
+    version: u32,
+    game_state: State<'_, GameState>,
+    download_state: State<'_, DownloadState>,
+    prepare_state: State<'_, PrepareState>,
+) -> Result<bool, String> {
+    {
+        let mut guard = game_state
+            .child
+            .lock()
+            .map_err(|_| "game state lock poisoned".to_string())?;
+        if let Some(child) = guard.as_mut() {
+            if child.try_wait().map_err(|e| e.to_string())?.is_none() {
+                return Err("Cannot delete a version while the game is running.".to_string());
+            }
+            *guard = None;
+        }
+    }
+
+    {
+        let guard = download_state
+            .active
+            .lock()
+            .map_err(|_| "download state lock poisoned".to_string())?;
+        if let Some(active) = guard.as_ref() {
+            if active.version == version && !active.cancel.load(Ordering::Relaxed) {
+                return Err("Cannot delete a version while it is downloading.".to_string());
+            }
+        }
+    }
+
+    {
+        let guard = prepare_state
+            .active
+            .lock()
+            .map_err(|_| "prepare state lock poisoned".to_string())?;
+        if let Some(active) = guard.as_ref() {
+            if active.version == version && !active.cancel.load(Ordering::Relaxed) {
+                return Err("Cannot delete a version while it is being prepared.".to_string());
+            }
+        }
+    }
+
+    let dir = version_dir(&app, version)?;
+    if !dir.exists() {
+        return Ok(false);
+    }
+
+    let mut targets = Vec::new();
+    collect_delete_targets(&dir, &mut targets)?;
+    targets.push(dir.clone());
+
+    let total = targets.len() as u64;
+    progress::emit_progress(
+        &app,
+        TaskProgressPayload {
+            version,
+            steps_total: 1,
+            step: 1,
+            step_name: "Delete Version".to_string(),
+            step_progress: 0.0,
+            overall_percent: 0.0,
+            detail: Some(format!("Preparing to delete v{version}...")),
+            downloaded_bytes: None,
+            total_bytes: None,
+            extracted_files: Some(0),
+            total_files: Some(total),
+        },
+    );
+
+    for (idx, target) in targets.iter().enumerate() {
+        remove_delete_target(target)?;
+        let done = idx as u64 + 1;
+        let step_progress = if total == 0 {
+            1.0
+        } else {
+            done as f64 / total as f64
+        };
+        let detail = target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| format!("Deleting {name}"))
+            .unwrap_or_else(|| "Deleting files...".to_string());
+        progress::emit_progress(
+            &app,
+            TaskProgressPayload {
+                version,
+                steps_total: 1,
+                step: 1,
+                step_name: "Delete Version".to_string(),
+                step_progress,
+                overall_percent: step_progress * 100.0,
+                detail: Some(detail),
+                downloaded_bytes: None,
+                total_bytes: None,
+                extracted_files: Some(done),
+                total_files: Some(total),
+            },
+        );
+    }
+
+    Ok(true)
+}
+
 #[tauri::command]
 async fn open_downloader_folder(app: tauri::AppHandle) -> Result<bool, String> {
     let dir = app
@@ -1784,7 +2018,11 @@ async fn open_mod_folder(
 }
 
 #[tauri::command]
-async fn check_mod_updates(app: tauri::AppHandle, version: u32) -> Result<bool, String> {
+async fn check_mod_updates(
+    app: tauri::AppHandle,
+    version: u32,
+    run_mode: Option<String>,
+) -> Result<bool, String> {
     let client = reqwest::Client::new();
 
     let dir = app
@@ -1793,7 +2031,14 @@ async fn check_mod_updates(app: tauri::AppHandle, version: u32) -> Result<bool, 
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?
         .join("versions");
     let extract_dir = dir.join(format!("v{version}"));
-    let (_, mods_cfg, _, _) = ModsConfig::fetch_manifest(&client).await?;
+    let mods_cfg = effective_mods_config_for_run_mode(
+        &client,
+        version,
+        run_mode.as_deref().unwrap_or("hq"),
+        false,
+        false,
+    )
+    .await?;
 
     let mut updatable_mods: Vec<String> = vec![];
 
@@ -1845,7 +2090,11 @@ async fn check_mod_updates(app: tauri::AppHandle, version: u32) -> Result<bool, 
 }
 
 #[tauri::command]
-async fn apply_mod_updates(app: tauri::AppHandle, version: u32) -> Result<bool, String> {
+async fn apply_mod_updates(
+    app: tauri::AppHandle,
+    version: u32,
+    run_mode: Option<String>,
+) -> Result<bool, String> {
     let res: Result<(), String> = async {
         let client = reqwest::Client::new();
 
@@ -1862,7 +2111,14 @@ async fn apply_mod_updates(app: tauri::AppHandle, version: u32) -> Result<bool, 
             ));
         }
 
-        let (_, mods_cfg, _, _) = ModsConfig::fetch_manifest(&client).await?;
+        let mods_cfg = effective_mods_config_for_run_mode(
+            &client,
+            version,
+            run_mode.as_deref().unwrap_or("hq"),
+            false,
+            false,
+        )
+        .await?;
 
         const STEPS_TOTAL: u32 = 2;
         progress::emit_progress(
@@ -2260,18 +2516,7 @@ async fn launch_game_preset(
     state: State<'_, GameState>,
 ) -> Result<u32, String> {
     // Normalize preset and map to manifest tags.
-    let p = preset.trim().to_lowercase();
-    let tags: Vec<String> = match p.as_str() {
-        "brutal" | "bc" => vec!["Brutal".to_string()],
-        "wesley" | "wesley's" | "wesleys" => vec!["Wesley".to_string()],
-        "smhq" => vec!["SMHQ".to_string()],
-        "wesley_smhq" | "wesleys_smhq" | "wesley-smhq" | "wesleys-smhq" => {
-            vec!["Wesley".to_string(), "SMHQ".to_string()]
-        }
-        // Allow future expansion without breaking the UI:
-        // treat unknown preset as "no extra tags".
-        _ => vec![],
-    };
+    let tags = preset_tags_for_name(&preset);
 
     if practice {
         // Practice run: install + enable practice mods (compatible with this game version).
@@ -2413,16 +2658,7 @@ async fn prepare_preset_for_version(
     practice: bool,
     cancel: Arc<AtomicBool>,
 ) -> Result<bool, String> {
-    let p = preset.trim().to_lowercase();
-    let tags: Vec<String> = match p.as_str() {
-        "brutal" | "bc" => vec!["Brutal".to_string()],
-        "wesley" | "wesley's" | "wesleys" => vec!["Wesley".to_string()],
-        "smhq" => vec!["SMHQ".to_string()],
-        "wesley_smhq" | "wesleys_smhq" | "wesley-smhq" | "wesleys-smhq" => {
-            vec!["Wesley".to_string(), "SMHQ".to_string()]
-        }
-        _ => vec![],
-    };
+    let tags = preset_tags_for_name(preset);
 
     if cancel.load(Ordering::Relaxed) {
         return Err("Cancelled".to_string());
@@ -2694,6 +2930,11 @@ async fn get_manifest() -> Result<ManifestDto, String> {
         mods: cfg.mods,
         manifests,
     })
+}
+
+#[tauri::command]
+fn get_practice_mod_list() -> Vec<mod_config::ModEntry> {
+    variable::get_practice_mod_list()
 }
 
 #[tauri::command]
@@ -3335,6 +3576,7 @@ pub fn run() {
             set_mod_enabled,
             list_installed_mod_versions,
             get_manifest,
+            get_practice_mod_list,
             list_installed_versions,
             list_config_files,
             get_config_link_state,
@@ -3364,6 +3606,7 @@ pub fn run() {
             get_app_version,
             installer::install_proton_ge,
             installer::get_current_proton_dir,
+            delete_installed_version,
             open_version_folder,
             open_downloader_folder,
             open_mod_folder,
