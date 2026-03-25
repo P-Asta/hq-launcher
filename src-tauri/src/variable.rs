@@ -63,6 +63,21 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
 
         
         ModEntry {
+            dev: "FlooflesDEV".to_string(),
+            name: "LCSeedPicker".to_string(),
+            tags: vec![],
+            enabled: true,
+            low_cap: Some(40),
+            high_cap: Some(49),
+            tag_constraints: BTreeMap::new(),
+            version_config: BTreeMap::from([
+                (40, "1.2.2".to_string()),
+            ]),
+        },
+
+
+        
+        ModEntry {
             dev: "kakeEdition".to_string(),
             name: "CoordinateForEasterEggs".to_string(),
             tags: vec![],
