@@ -1093,7 +1093,7 @@ pub async fn sync_latest_install_from_manifest(app: tauri::AppHandle) -> Result<
             game_version,
             &mods_cfg,
             None,
-            |done, total, detail| {
+            |done, total, progress_info| {
                 let step_progress = if total == 0 {
                     1.0
                 } else {
@@ -1109,11 +1109,11 @@ pub async fn sync_latest_install_from_manifest(app: tauri::AppHandle) -> Result<
                         step_name: "Sync Mods".to_string(),
                         step_progress,
                         overall_percent: overall_from_step(1, step_progress, STEPS_TOTAL),
-                        detail,
-                        downloaded_bytes: None,
-                        total_bytes: None,
-                        extracted_files: Some(done),
-                        total_files: Some(total),
+                        detail: progress_info.detail,
+                        downloaded_bytes: progress_info.downloaded_bytes,
+                        total_bytes: progress_info.total_bytes,
+                        extracted_files: progress_info.extracted_files.or(Some(done)),
+                        total_files: progress_info.total_files.or(Some(total)),
                     },
                 );
             },
@@ -1557,7 +1557,7 @@ pub async fn download_and_setup(
             version,
             &mods_cfg,
             Some(cancel.clone()),
-            |done, total, detail| {
+            |done, total, progress_info| {
                 let step_progress = if total == 0 {
                     1.0
                 } else {
@@ -1572,11 +1572,11 @@ pub async fn download_and_setup(
                         step_name: "Install Mods".to_string(),
                         step_progress,
                         overall_percent: overall_from_step(5, step_progress, STEPS_TOTAL),
-                        detail,
-                        downloaded_bytes: None,
-                        total_bytes: None,
-                        extracted_files: Some(done),
-                        total_files: Some(total),
+                        detail: progress_info.detail,
+                        downloaded_bytes: progress_info.downloaded_bytes,
+                        total_bytes: progress_info.total_bytes,
+                        extracted_files: progress_info.extracted_files.or(Some(done)),
+                        total_files: progress_info.total_files.or(Some(total)),
                     },
                 );
             },

@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::{
     path::Path,
+    sync::atomic::AtomicBool,
+    sync::atomic::Ordering as AtomicOrdering,
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -29,60 +32,21 @@ pub struct ThunderstoreCache {
     pub packages: Vec<PackageListing>,
 }
 
-/// Fetch all packages for a lethal company.
-///
-/// Note: Thunderstore's per-package endpoint may not be available (404),
-/// but the list endpoint returns full version/download_url data.
-pub async fn fetch_community_packages(
-    client: &reqwest::Client,
-    cache_path: &Path,
-) -> Result<Vec<PackageListing>, String> {
-    log::info!(target: "fetch_packages", "Cache path: {cache_path:?}");
-    let now = SystemTime::now()
+const CACHE_TTL_SECS: u64 = 60 * 60;
+
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
-        .as_secs();
-    if cache_path.exists() {
-        let content = std::fs::read_to_string(cache_path).map_err(|e| e.to_string())?;
-        match serde_json::from_str::<ThunderstoreCache>(&content) {
-            Ok(cache) => {
-                if now - cache.time < 60 * 60 {
-                    log::info!(target: "fetch_packages", "Using cached packages");
-                    return Ok(cache.packages);
-                }
-                log::info!(target: "fetch_packages", "Cache expired, fetching new packages");
-            }
-            Err(e) => {
-                // Cache may be empty/corrupted (e.g. interrupted write). Don't fail installs for it.
-                log::warn!(
-                    target: "fetch_packages",
-                    "Failed to parse cache file {}: {e} (will refetch)",
-                    cache_path.to_string_lossy()
-                );
-                let _ = std::fs::remove_file(cache_path);
-            }
-        }
-    }
+        .as_secs()
+}
 
-    let url = "https://thunderstore.io/c/lethal-company/api/v1/package/".to_string();
-    log::info!(target: "fetch_packages", "Thunderstore GET {url}");
-    let packages: Vec<PackageListing> = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .json::<Vec<PackageListing>>()
-        .await
-        .map_err(|e| e.to_string())?;
-
+fn write_cache(cache_path: &Path, packages: &[PackageListing], now: u64) {
     let cache = ThunderstoreCache {
-        packages: packages.clone(),
+        packages: packages.to_vec(),
         time: now,
     };
 
-    // Best-effort persist; failure shouldn't crash installs/updates.
     if let Some(parent) = cache_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             log::warn!(
@@ -106,6 +70,94 @@ pub async fn fetch_community_packages(
             log::warn!(target: "fetch_packages", "Failed to serialize cache: {e}");
         }
     }
+}
 
+pub fn read_cached_packages(
+    cache_path: &Path,
+) -> Result<Option<(Vec<PackageListing>, bool)>, String> {
+    if !cache_path.exists() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(cache_path).map_err(|e| e.to_string())?;
+    match serde_json::from_str::<ThunderstoreCache>(&content) {
+        Ok(cache) => {
+            let stale = now_unix_secs().saturating_sub(cache.time) >= CACHE_TTL_SECS;
+            Ok(Some((cache.packages, stale)))
+        }
+        Err(e) => {
+            log::warn!(
+                target: "fetch_packages",
+                "Failed to parse cache file {}: {e} (will refetch)",
+                cache_path.to_string_lossy()
+            );
+            let _ = std::fs::remove_file(cache_path);
+            Ok(None)
+        }
+    }
+}
+
+pub async fn refresh_community_packages_with_cancel(
+    client: &reqwest::Client,
+    cache_path: &Path,
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<Vec<PackageListing>, String> {
+    let now = now_unix_secs();
+    let url = "https://thunderstore.io/c/lethal-company/api/v1/package/".to_string();
+    log::info!(target: "fetch_packages", "Thunderstore GET {url}");
+    let request = async {
+        client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?
+            .error_for_status()
+            .map_err(|e| e.to_string())?
+            .json::<Vec<PackageListing>>()
+            .await
+            .map_err(|e| e.to_string())
+    };
+    tokio::pin!(request);
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+    let packages: Vec<PackageListing> = loop {
+        tokio::select! {
+            result = &mut request => break result?,
+            _ = interval.tick() => {
+                if cancel.is_some_and(|c| c.load(AtomicOrdering::Relaxed)) {
+                    return Err("Cancelled".to_string());
+                }
+            }
+        }
+    };
+
+    write_cache(cache_path, &packages, now);
     Ok(packages)
+}
+
+/// Fetch all packages for a lethal company.
+///
+/// Note: Thunderstore's per-package endpoint may not be available (404),
+/// but the list endpoint returns full version/download_url data.
+pub async fn fetch_community_packages(
+    client: &reqwest::Client,
+    cache_path: &Path,
+) -> Result<Vec<PackageListing>, String> {
+    fetch_community_packages_with_cancel(client, cache_path, None).await
+}
+
+pub async fn fetch_community_packages_with_cancel(
+    client: &reqwest::Client,
+    cache_path: &Path,
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<Vec<PackageListing>, String> {
+    log::info!(target: "fetch_packages", "Cache path: {cache_path:?}");
+    if let Some((packages, stale)) = read_cached_packages(cache_path)? {
+        if !stale {
+            log::info!(target: "fetch_packages", "Using cached packages");
+            return Ok(packages);
+        }
+        log::info!(target: "fetch_packages", "Cache expired, fetching new packages");
+    }
+
+    refresh_community_packages_with_cancel(client, cache_path, cancel).await
 }

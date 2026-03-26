@@ -72,8 +72,21 @@ fn thunderstore_download_url(dev: &str, name: &str, version: &str) -> String {
     )
 }
 
+fn is_cancelled_error(err: &str) -> bool {
+    err.trim().eq_ignore_ascii_case("cancelled")
+}
+
 pub fn plugins_dir(game_root: &Path) -> PathBuf {
     game_root.join("BepInEx").join("plugins")
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ModInstallProgress {
+    pub detail: Option<String>,
+    pub downloaded_bytes: Option<u64>,
+    pub total_bytes: Option<u64>,
+    pub extracted_files: Option<u64>,
+    pub total_files: Option<u64>,
 }
 
 /// Downloads and installs a list of Thunderstore packages into `BepInEx/plugins`.
@@ -88,13 +101,35 @@ pub async fn install_mods_with_progress<F>(
     mut on_progress: F,
 ) -> Result<(), String>
 where
-    F: FnMut(u64, u64, Option<String>),
+    F: FnMut(u64, u64, ModInstallProgress),
 {
     let client = reqwest::Client::new();
 
     // Fetch Thunderstore package list once (per-package API is unreliable/404).
     let cache_path = crate::thunderstore_cache_path(app)?;
-    let packages = thunderstore::fetch_community_packages(&client, &cache_path).await?;
+    let packages = if let Some((cached_packages, stale)) =
+        thunderstore::read_cached_packages(&cache_path)?
+    {
+        if stale {
+            let cache_path_clone = cache_path.clone();
+            tauri::async_runtime::spawn(async move {
+                let refresh_client = reqwest::Client::new();
+                if let Err(e) = thunderstore::refresh_community_packages_with_cancel(
+                    &refresh_client,
+                    &cache_path_clone,
+                    None,
+                )
+                .await
+                {
+                    log::warn!("Failed to refresh expired Thunderstore cache in background: {e}");
+                }
+            });
+        }
+        cached_packages
+    } else {
+        thunderstore::fetch_community_packages_with_cancel(&client, &cache_path, cancel.as_ref())
+            .await?
+    };
     log::info!("Fetched {} packages", packages.len());
     let mut package_map: HashMap<(String, String), PackageListing> = HashMap::new();
     for p in packages.clone() {
@@ -114,7 +149,14 @@ where
 
     let total_mods = cfg.mods.len() as u64;
     let mut installed: u64 = 0;
-    on_progress(0, total_mods, Some("Starting...".to_string()));
+    on_progress(
+        0,
+        total_mods,
+        ModInstallProgress {
+            detail: Some("Starting...".to_string()),
+            ..Default::default()
+        },
+    );
 
     for (idx, spec) in cfg.mods.iter().enumerate() {
         if cancel
@@ -184,13 +226,16 @@ where
                 on_progress(
                     installed,
                     total_mods,
-                    Some(format!(
-                        "Skipped {}/{}  |  {}-{} (version equal)",
-                        idx + 1,
-                        cfg.mods.len(),
-                        spec.dev,
-                        spec.name
-                    )),
+                    ModInstallProgress {
+                        detail: Some(format!(
+                            "Skipped {}/{}  |  {}-{} (version equal)",
+                            idx + 1,
+                            cfg.mods.len(),
+                            spec.dev,
+                            spec.name
+                        )),
+                        ..Default::default()
+                    },
                 );
                 continue;
             }
@@ -220,7 +265,10 @@ where
             on_progress(
                 installed,
                 total_mods,
-                Some(format!("Skipped {mod_label}{why}")),
+                ModInstallProgress {
+                    detail: Some(format!("Skipped {mod_label}{why}")),
+                    ..Default::default()
+                },
             );
             continue;
         }
@@ -228,7 +276,10 @@ where
         on_progress(
             installed,
             total_mods,
-            Some(format!("Resolving {mod_label}")),
+            ModInstallProgress {
+                detail: Some(format!("Resolving {mod_label}")),
+                ..Default::default()
+            },
         );
 
         let key = (spec.dev.to_lowercase(), spec.name.to_lowercase());
@@ -238,9 +289,12 @@ where
             on_progress(
                 installed,
                 total_mods,
-                Some(format!(
-                    "Failed to resolve {mod_label} (not found in package list)"
-                )),
+                ModInstallProgress {
+                    detail: Some(format!(
+                        "Failed to resolve {mod_label} (not found in package list)"
+                    )),
+                    ..Default::default()
+                },
             );
             continue;
         };
@@ -270,7 +324,10 @@ where
             on_progress(
                 installed,
                 total_mods,
-                Some(format!("Failed to resolve {mod_label} (no versions)")),
+                ModInstallProgress {
+                    detail: Some(format!("Failed to resolve {mod_label} (no versions)")),
+                    ..Default::default()
+                },
             );
             continue;
         }
@@ -287,11 +344,6 @@ where
         {
             return Err("Cancelled".to_string());
         }
-        on_progress(
-            installed,
-            total_mods,
-            Some(format!("Downloading {mod_label}")),
-        );
         log::info!("Downloading {mod_label} from {download_url}");
         let resp = client
             .get(&download_url)
@@ -301,8 +353,21 @@ where
             .error_for_status()
             .map_err(|e| e.to_string())?;
 
+        let total_bytes = resp.content_length();
+        on_progress(
+            installed,
+            total_mods,
+            ModInstallProgress {
+                detail: Some(format!("Downloading {mod_label}")),
+                downloaded_bytes: Some(0),
+                total_bytes,
+                extracted_files: Some(0),
+                total_files: Some(0),
+            },
+        );
         let mut out = std::fs::File::create(&zip_path).map_err(|e| e.to_string())?;
         let mut stream = resp.bytes_stream();
+        let mut downloaded_bytes: u64 = 0;
         while let Some(item) = stream.next().await {
             if cancel
                 .as_ref()
@@ -314,6 +379,18 @@ where
             }
             let chunk = item.map_err(|e| e.to_string())?;
             out.write_all(&chunk).map_err(|e| e.to_string())?;
+            downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
+            on_progress(
+                installed,
+                total_mods,
+                ModInstallProgress {
+                    detail: Some(format!("Downloading {mod_label}")),
+                    downloaded_bytes: Some(downloaded_bytes),
+                    total_bytes,
+                    extracted_files: Some(0),
+                    total_files: Some(0),
+                },
+            );
         }
 
         // Extract into correct BepInEx locations (plugins/patchers), then delete the zip.
@@ -327,7 +404,13 @@ where
         on_progress(
             installed,
             total_mods,
-            Some(format!("Extracting {mod_label}")),
+            ModInstallProgress {
+                detail: Some(format!("Extracting {mod_label}")),
+                downloaded_bytes: Some(downloaded_bytes),
+                total_bytes,
+                extracted_files: Some(0),
+                total_files: Some(0),
+            },
         );
         let folder_name = format!("{}-{}", spec.dev, spec.name);
 
@@ -336,14 +419,46 @@ where
             game_root,
             &folder_name,
             cancel.as_deref(),
-            |_d, _t, _n| {},
+            |done, total, entry_name| {
+                on_progress(
+                    installed,
+                    total_mods,
+                    ModInstallProgress {
+                        detail: Some(
+                            entry_name
+                                .map(|name| format!("Extracting {mod_label}: {name}"))
+                                .unwrap_or_else(|| format!("Extracting {mod_label}")),
+                        ),
+                        downloaded_bytes: Some(downloaded_bytes),
+                        total_bytes,
+                        extracted_files: Some(done),
+                        total_files: Some(total),
+                    },
+                );
+            },
         ) {
+            if is_cancelled_error(&e) {
+                let _ = std::fs::remove_file(&zip_path);
+                let _ = std::fs::remove_dir_all(target_plugins.join(&folder_name));
+                let patchers_folder = game_root
+                    .join("BepInEx")
+                    .join("patchers")
+                    .join(&folder_name);
+                let _ = std::fs::remove_dir_all(patchers_folder);
+                let _ = std::fs::remove_dir_all(&temp_root);
+                return Err(e);
+            }
             installed = installed.saturating_add(1);
             log::error!("Failed to extract into plugins {mod_label}: {e}");
             on_progress(
                 installed,
                 total_mods,
-                Some(format!("Failed to extract {mod_label} ({e})")),
+                ModInstallProgress {
+                    detail: Some(format!("Failed to extract {mod_label} ({e})")),
+                    downloaded_bytes: Some(downloaded_bytes),
+                    total_bytes,
+                    ..Default::default()
+                },
             );
             let _ = std::fs::remove_file(&zip_path);
             continue;
@@ -358,7 +473,13 @@ where
         on_progress(
             installed,
             total_mods,
-            Some(format!("Installed {mod_label}")),
+            ModInstallProgress {
+                detail: Some(format!("Installed {mod_label}")),
+                downloaded_bytes: Some(downloaded_bytes),
+                total_bytes,
+                extracted_files: Some(1),
+                total_files: Some(1),
+            },
         );
     }
 
@@ -556,7 +677,7 @@ pub async fn update_mods_with_progress<F>(
     mut on_progress: F,
 ) -> Result<(), String>
 where
-    F: FnMut(u64, u64, Option<String>),
+    F: FnMut(u64, u64, ModInstallProgress),
 {
     let client = reqwest::Client::new();
 
@@ -582,7 +703,14 @@ where
 
     let total_mods = updatable_mods.len() as u64;
     let mut installed: u64 = 0;
-    on_progress(0, total_mods, Some("Starting...".to_string()));
+    on_progress(
+        0,
+        total_mods,
+        ModInstallProgress {
+            detail: Some("Starting...".to_string()),
+            ..Default::default()
+        },
+    );
 
     for (_idx, spec) in cfg.mods.iter().enumerate() {
         // Add-only: if a plugin folder already exists for this mod, skip it.
@@ -597,7 +725,10 @@ where
         on_progress(
             installed,
             total_mods,
-            Some(format!("Resolving {mod_label}")),
+            ModInstallProgress {
+                detail: Some(format!("Resolving {mod_label}")),
+                ..Default::default()
+            },
         );
 
         let key = (spec.dev.to_lowercase(), spec.name.to_lowercase());
@@ -607,9 +738,12 @@ where
             on_progress(
                 installed,
                 total_mods,
-                Some(format!(
-                    "Failed to resolve {mod_label} (not found in package list)"
-                )),
+                ModInstallProgress {
+                    detail: Some(format!(
+                        "Failed to resolve {mod_label} (not found in package list)"
+                    )),
+                    ..Default::default()
+                },
             );
             continue;
         };
@@ -638,7 +772,10 @@ where
             on_progress(
                 installed,
                 total_mods,
-                Some(format!("Failed to resolve {mod_label} (no versions)")),
+                ModInstallProgress {
+                    detail: Some(format!("Failed to resolve {mod_label} (no versions)")),
+                    ..Default::default()
+                },
             );
             continue;
         }
@@ -652,27 +789,54 @@ where
         on_progress(
             installed,
             total_mods,
-            Some(format!("Downloading {mod_label}")),
+            ModInstallProgress {
+                detail: Some(format!("Downloading {mod_label}")),
+                downloaded_bytes: Some(0),
+                total_bytes: None,
+                extracted_files: Some(0),
+                total_files: Some(0),
+            },
         );
         log::info!("Downloading {mod_label} from {download_url}");
-        let bytes = client
+        let resp = client
             .get(&download_url)
             .send()
             .await
             .map_err(|e| e.to_string())?
             .error_for_status()
-            .map_err(|e| e.to_string())?
-            .bytes()
-            .await
             .map_err(|e| e.to_string())?;
-
-        std::fs::write(&zip_path, &bytes).map_err(|e| e.to_string())?;
+        let total_bytes = resp.content_length();
+        let mut out = std::fs::File::create(&zip_path).map_err(|e| e.to_string())?;
+        let mut stream = resp.bytes_stream();
+        let mut downloaded_bytes: u64 = 0;
+        while let Some(item) = stream.next().await {
+            let chunk = item.map_err(|e| e.to_string())?;
+            out.write_all(&chunk).map_err(|e| e.to_string())?;
+            downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
+            on_progress(
+                installed,
+                total_mods,
+                ModInstallProgress {
+                    detail: Some(format!("Downloading {mod_label}")),
+                    downloaded_bytes: Some(downloaded_bytes),
+                    total_bytes,
+                    extracted_files: Some(0),
+                    total_files: Some(0),
+                },
+            );
+        }
 
         // Extract directly into BepInEx/plugins, then delete the zip.
         on_progress(
             installed,
             total_mods,
-            Some(format!("Extracting {mod_label}")),
+            ModInstallProgress {
+                detail: Some(format!("Extracting {mod_label}")),
+                downloaded_bytes: Some(downloaded_bytes),
+                total_bytes,
+                extracted_files: Some(0),
+                total_files: Some(0),
+            },
         );
         let folder_name = format!("{}-{}", spec.dev, spec.name);
         let existing = target_plugins.join(&folder_name);
@@ -691,14 +855,35 @@ where
             game_root,
             &folder_name,
             None,
-            |_d, _t, _n| {},
+            |done, total, entry_name| {
+                on_progress(
+                    installed,
+                    total_mods,
+                    ModInstallProgress {
+                        detail: Some(
+                            entry_name
+                                .map(|name| format!("Extracting {mod_label}: {name}"))
+                                .unwrap_or_else(|| format!("Extracting {mod_label}")),
+                        ),
+                        downloaded_bytes: Some(downloaded_bytes),
+                        total_bytes,
+                        extracted_files: Some(done),
+                        total_files: Some(total),
+                    },
+                );
+            },
         ) {
             installed = installed.saturating_add(1);
             log::error!("Failed to extract into plugins {mod_label}: {e}");
             on_progress(
                 installed,
                 total_mods,
-                Some(format!("Failed to extract {mod_label} ({e})")),
+                ModInstallProgress {
+                    detail: Some(format!("Failed to extract {mod_label} ({e})")),
+                    downloaded_bytes: Some(downloaded_bytes),
+                    total_bytes,
+                    ..Default::default()
+                },
             );
             let _ = std::fs::remove_file(&zip_path);
             continue;
@@ -713,7 +898,13 @@ where
         on_progress(
             installed,
             total_mods,
-            Some(format!("Installed {mod_label}")),
+            ModInstallProgress {
+                detail: Some(format!("Installed {mod_label}")),
+                downloaded_bytes: Some(downloaded_bytes),
+                total_bytes,
+                extracted_files: Some(1),
+                total_files: Some(1),
+            },
         );
     }
 

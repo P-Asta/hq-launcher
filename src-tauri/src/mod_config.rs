@@ -1,4 +1,8 @@
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering as AtomicOrdering;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Deserializer;
@@ -104,10 +108,38 @@ pub struct RemoteManifest {
 }
 
 impl ModsConfig {
+    async fn await_with_cancel<T, F>(
+        cancel: Option<&Arc<AtomicBool>>,
+        future: F,
+    ) -> Result<T, String>
+    where
+        F: Future<Output = Result<T, String>>,
+    {
+        tokio::pin!(future);
+        let mut interval = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            tokio::select! {
+                result = &mut future => return result,
+                _ = interval.tick() => {
+                    if cancel.is_some_and(|c| c.load(AtomicOrdering::Relaxed)) {
+                        return Err("Cancelled".to_string());
+                    }
+                }
+            }
+        }
+    }
+
     /// you can check json in https://f.asta.rs/hq-launcher/manifest.json
     /// output: (manifest_version, cfg, chain_config, manifests)
     pub async fn fetch_manifest(
         client: &reqwest::Client,
+    ) -> Result<(u32, Self, Vec<Vec<String>>, BTreeMap<u32, String>), String> {
+        Self::fetch_manifest_with_cancel(client, None).await
+    }
+
+    pub async fn fetch_manifest_with_cancel(
+        client: &reqwest::Client,
+        cancel: Option<&Arc<AtomicBool>>,
     ) -> Result<(u32, Self, Vec<Vec<String>>, BTreeMap<u32, String>), String> {
         // Test mode: if a local `manifest.json` exists next to the repo/current folder,
         // prefer it over the remote manifest. This enables rapid iteration without publishing.
@@ -147,17 +179,20 @@ impl ModsConfig {
             // Use stable remote manifest only.
             let url = "https://f.asta.rs/hq-launcher/manifest.json";
             log::info!("Fetching manifest from {url}");
-            client
-                .get(url)
-                .timeout(Duration::from_secs(12))
-                .send()
-                .await
-                .map_err(|e| e.to_string())?
-                .error_for_status()
-                .map_err(|e| e.to_string())?
-                .json::<RemoteManifest>()
-                .await
-                .map_err(|e| e.to_string())?
+            Self::await_with_cancel(cancel, async {
+                client
+                    .get(url)
+                    .timeout(Duration::from_secs(12))
+                    .send()
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .error_for_status()
+                    .map_err(|e| e.to_string())?
+                    .json::<RemoteManifest>()
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+            .await?
         };
 
         let manifests = manifest.manifests.clone();

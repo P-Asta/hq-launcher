@@ -184,7 +184,7 @@ async fn prepare_tagged_mods_for_version(
 
     let client = reqwest::Client::new();
     let (_remote_manifest_version, mods_cfg, _chain_config, _manifests) =
-        ModsConfig::fetch_manifest(&client).await?;
+        ModsConfig::fetch_manifest_with_cancel(&client, cancel.as_ref()).await?;
 
     let want: Vec<String> = tags.iter().map(|t| t.to_lowercase()).collect();
     let mut tagged: Vec<mod_config::ModEntry> = vec![];
@@ -215,56 +215,61 @@ async fn prepare_tagged_mods_for_version(
         .map(|m| (m.dev.clone(), m.name.clone()))
         .collect();
 
-    const STEPS_TOTAL: u32 = 1;
-    progress::emit_progress(
-        app,
-        TaskProgressPayload {
-            version,
-            steps_total: STEPS_TOTAL,
-            step: 1,
-            step_name: step_name.to_string(),
-            step_progress: 0.0,
-            overall_percent: 0.0,
-            detail: Some(format!("Preparing tagged mods: {}", tags.join(", "))),
-            downloaded_bytes: None,
-            total_bytes: None,
-            extracted_files: Some(0),
-            total_files: Some(tagged.len() as u64),
-        },
-    );
+    let missing_tagged_mods = filter_missing_mods_for_version(app, version, &tagged)?;
+    if !missing_tagged_mods.is_empty() {
+        const STEPS_TOTAL: u32 = 1;
+        progress::emit_progress(
+            app,
+            TaskProgressPayload {
+                version,
+                steps_total: STEPS_TOTAL,
+                step: 1,
+                step_name: step_name.to_string(),
+                step_progress: 0.0,
+                overall_percent: 0.0,
+                detail: Some(format!("Installing missing tagged mods: {}", tags.join(", "))),
+                downloaded_bytes: None,
+                total_bytes: None,
+                extracted_files: Some(0),
+                total_files: Some(missing_tagged_mods.len() as u64),
+            },
+        );
 
-    let cfg = ModsConfig { mods: tagged };
-    mods::install_mods_with_progress(
-        app,
-        &game_root,
-        version,
-        &cfg,
-        cancel,
-        |done, total, detail| {
-            let step_progress = if total == 0 {
-                1.0
-            } else {
-                (done as f64 / total as f64).clamp(0.0, 1.0)
-            };
-            progress::emit_progress(
-                app,
-                TaskProgressPayload {
-                    version,
-                    steps_total: STEPS_TOTAL,
-                    step: 1,
-                    step_name: step_name.to_string(),
-                    step_progress,
-                    overall_percent: overall_from_step(1, step_progress, STEPS_TOTAL),
-                    detail,
-                    downloaded_bytes: None,
-                    total_bytes: None,
-                    extracted_files: Some(done),
-                    total_files: Some(total),
-                },
-            );
-        },
-    )
-    .await?;
+        let cfg = ModsConfig {
+            mods: missing_tagged_mods,
+        };
+        mods::install_mods_with_progress(
+            app,
+            &game_root,
+            version,
+            &cfg,
+            cancel,
+            |done, total, progress_info| {
+                let step_progress = if total == 0 {
+                    1.0
+                } else {
+                    (done as f64 / total as f64).clamp(0.0, 1.0)
+                };
+                progress::emit_progress(
+                    app,
+                    TaskProgressPayload {
+                        version,
+                        steps_total: STEPS_TOTAL,
+                        step: 1,
+                        step_name: step_name.to_string(),
+                        step_progress,
+                        overall_percent: overall_from_step(1, step_progress, STEPS_TOTAL),
+                        detail: progress_info.detail,
+                        downloaded_bytes: progress_info.downloaded_bytes,
+                        total_bytes: progress_info.total_bytes,
+                        extracted_files: progress_info.extracted_files.or(Some(done)),
+                        total_files: progress_info.total_files.or(Some(total)),
+                    },
+                );
+            },
+        )
+        .await?;
+    }
 
     Ok(tagged_ids)
 }
@@ -1577,6 +1582,24 @@ fn ensure_practice_mods_disabled_for_version(
     Ok(())
 }
 
+fn filter_missing_mods_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+    mods: &[mod_config::ModEntry],
+) -> Result<Vec<mod_config::ModEntry>, String> {
+    let plugins = plugins_dir(app, version)?;
+    let patchers = patchers_dir(app, version)?;
+
+    Ok(mods
+        .iter()
+        .filter(|m| {
+            mod_dir_for(&plugins, &m.dev, &m.name).is_none()
+                && mod_dir_for(&patchers, &m.dev, &m.name).is_none()
+        })
+        .cloned()
+        .collect())
+}
+
 async fn prepare_practice_mods_for_version(
     app: &tauri::AppHandle,
     version: u32,
@@ -1607,71 +1630,73 @@ async fn prepare_practice_mods_for_version(
         .map(|m| (m.dev.clone(), m.name.clone()))
         .collect();
 
-    // Emit progress so the UI can show work (practice installs can be slow).
-    const STEPS_TOTAL: u32 = 1;
-    progress::emit_progress(
-        app,
-        TaskProgressPayload {
-            version,
-            steps_total: STEPS_TOTAL,
-            step: 1,
-            step_name: "Practice Mods".to_string(),
-            step_progress: 0.0,
-            overall_percent: 0.0,
-            detail: Some("Preparing practice mods...".to_string()),
-            downloaded_bytes: None,
-            total_bytes: None,
-            extracted_files: Some(0),
-            total_files: Some(practice_enabled.len() as u64),
-        },
-    );
-
-    // Install enabled practice mods additively (no overwrite).
-    let cfg = ModsConfig {
-        mods: practice_enabled.clone(),
-    };
-
-    let install_res: Result<(), String> = mods::install_mods_with_progress(
-        app,
-        &game_root,
-        version,
-        &cfg,
-        cancel,
-        |done, total, detail| {
-            let step_progress = if total == 0 {
-                1.0
-            } else {
-                (done as f64 / total as f64).clamp(0.0, 1.0)
-            };
-            progress::emit_progress(
-                app,
-                TaskProgressPayload {
-                    version,
-                    steps_total: STEPS_TOTAL,
-                    step: 1,
-                    step_name: "Practice Mods".to_string(),
-                    step_progress,
-                    overall_percent: overall_from_step(1, step_progress, STEPS_TOTAL),
-                    detail,
-                    downloaded_bytes: None,
-                    total_bytes: None,
-                    extracted_files: Some(done),
-                    total_files: Some(total),
-                },
-            );
-        },
-    )
-    .await;
-
-    if let Err(e) = &install_res {
-        progress::emit_error(
+    let missing_practice_mods = filter_missing_mods_for_version(app, version, &practice_enabled)?;
+    if !missing_practice_mods.is_empty() {
+        // Only show setup progress when new manifest mods actually need to be installed.
+        const STEPS_TOTAL: u32 = 1;
+        progress::emit_progress(
             app,
-            TaskErrorPayload {
+            TaskProgressPayload {
                 version,
-                message: e.clone(),
+                steps_total: STEPS_TOTAL,
+                step: 1,
+                step_name: "Practice Mods".to_string(),
+                step_progress: 0.0,
+                overall_percent: 0.0,
+                detail: Some("Installing missing practice mods...".to_string()),
+                downloaded_bytes: None,
+                total_bytes: None,
+                extracted_files: Some(0),
+                total_files: Some(missing_practice_mods.len() as u64),
             },
         );
-        return Err(e.clone());
+
+        let cfg = ModsConfig {
+            mods: missing_practice_mods,
+        };
+
+        let install_res: Result<(), String> = mods::install_mods_with_progress(
+            app,
+            &game_root,
+            version,
+            &cfg,
+            cancel,
+            |done, total, progress_info| {
+                let step_progress = if total == 0 {
+                    1.0
+                } else {
+                    (done as f64 / total as f64).clamp(0.0, 1.0)
+                };
+                progress::emit_progress(
+                    app,
+                    TaskProgressPayload {
+                        version,
+                        steps_total: STEPS_TOTAL,
+                        step: 1,
+                        step_name: "Practice Mods".to_string(),
+                        step_progress,
+                        overall_percent: overall_from_step(1, step_progress, STEPS_TOTAL),
+                        detail: progress_info.detail,
+                        downloaded_bytes: progress_info.downloaded_bytes,
+                        total_bytes: progress_info.total_bytes,
+                        extracted_files: progress_info.extracted_files.or(Some(done)),
+                        total_files: progress_info.total_files.or(Some(total)),
+                    },
+                );
+            },
+        )
+        .await;
+
+        if let Err(e) = &install_res {
+            progress::emit_error(
+                app,
+                TaskErrorPayload {
+                    version,
+                    message: e.clone(),
+                },
+            );
+            return Err(e.clone());
+        }
     }
 
     // Apply filesystem state for this version: disable all practice mods,
@@ -2218,7 +2243,7 @@ async fn apply_mod_updates(
             version,
             &mods_cfg,
             updatable.clone(),
-            |done, total, detail| {
+            |done, total, progress_info| {
                 let step_progress = if total == 0 {
                     1.0
                 } else {
@@ -2233,11 +2258,11 @@ async fn apply_mod_updates(
                         step_name: "Update Mods".to_string(),
                         step_progress,
                         overall_percent: overall_from_step(2, step_progress, STEPS_TOTAL),
-                        detail,
-                        downloaded_bytes: None,
-                        total_bytes: None,
-                        extracted_files: Some(done),
-                        total_files: Some(total),
+                        detail: progress_info.detail,
+                        downloaded_bytes: progress_info.downloaded_bytes,
+                        total_bytes: progress_info.total_bytes,
+                        extracted_files: progress_info.extracted_files.or(Some(done)),
+                        total_files: progress_info.total_files.or(Some(total)),
                     },
                 );
             },
@@ -3534,6 +3559,7 @@ pub fn run() {
             // Startup housekeeping (best-effort, won't block UI):
             // - Purge mods that remote manifest marks as enabled=false (and their configs)
             // - Ensure default config is downloaded if shared config dir is empty
+            // - Warm the Thunderstore package cache for later update checks
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) =
@@ -3546,6 +3572,19 @@ pub fn run() {
                 }
                 if let Err(e) = installer::ensure_pack_specific_configs_on_startup(&app_handle) {
                     log::warn!("Failed to ensure pack-specific configs on startup: {e}");
+                }
+                match thunderstore_cache_path(&app_handle) {
+                    Ok(cache_path) => {
+                        let client = reqwest::Client::new();
+                        if let Err(e) =
+                            thunderstore::fetch_community_packages(&client, &cache_path).await
+                        {
+                            log::warn!("Failed to warm Thunderstore cache on startup: {e}");
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to resolve Thunderstore cache path on startup: {e}");
+                    }
                 }
                 #[cfg(target_os = "linux")]
                 {

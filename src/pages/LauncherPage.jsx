@@ -43,6 +43,25 @@ function fmtBytes(n) {
   return `${v.toFixed(digits)} ${units[i]}`;
 }
 
+function formatTransferProgress(task) {
+  const downloaded = Number(task?.downloaded_bytes);
+  if (!Number.isFinite(downloaded)) return "";
+  const total = Number(task?.total_bytes);
+  if (Number.isFinite(total) && total > 0) {
+    return `Download ${fmtBytes(downloaded)} / ${fmtBytes(total)}`;
+  }
+  return downloaded > 0 ? `Download ${fmtBytes(downloaded)}` : "";
+}
+
+function formatExtractProgress(task) {
+  const done = Number(task?.extracted_files);
+  const total = Number(task?.total_files);
+  if (Number.isFinite(done) && Number.isFinite(total) && total > 0) {
+    return `Extract ${done.toLocaleString()} / ${total.toLocaleString()} files`;
+  }
+  return "";
+}
+
 function makeDeleteVersionPromptState(overrides = {}) {
   return {
     open: false,
@@ -277,8 +296,10 @@ export default function LauncherPage({
   const [updatePrompt, setUpdatePrompt] = useState({ open: false });
   const [practicePrompt, setPracticePrompt] = useState({ open: false });
   const [practiceTask, setPracticeTask] = useState(null); // last Practice Mods progress payload
+  const [practiceCancelBusy, setPracticeCancelBusy] = useState(false);
   const [presetPrompt, setPresetPrompt] = useState({ open: false });
   const [presetTask, setPresetTask] = useState(null); // last Preset Mods progress payload
+  const [presetCancelBusy, setPresetCancelBusy] = useState(false);
 
   const [checkUpdatePrompt, setCheckUpdatePrompt] = useState({
     open: false,
@@ -316,6 +337,7 @@ export default function LauncherPage({
   const [checkUpdateTask, setCheckUpdateTask] = useState({
     status: "idle", // idle | working | done | error
     version: null,
+    run_mode: null,
     step_name: null,
     steps_total: null,
     step: null,
@@ -336,7 +358,8 @@ export default function LauncherPage({
       : DEFAULT_MOD_PANEL_WIDTH;
   });
   const [isResizingPanels, setIsResizingPanels] = useState(false);
-  const lastAutoCheckedVersionRef = useRef(null);
+  const lastAutoCheckedContextRef = useRef("");
+  const [preparedUpdateContext, setPreparedUpdateContext] = useState("");
   const [didFinishBootstrap, setDidFinishBootstrap] = useState(false);
   const [bootstrapStatus, setBootstrapStatus] = useState(
     "Checking installed versions..."
@@ -1002,16 +1025,25 @@ export default function LauncherPage({
     }
   }
 
-  // auto-run update check once on startup for installed selected version
+  // auto-run update check once the local mod state is ready for this run context
   useEffect(() => {
     if (!didFinishBootstrap) return;
     const version = Number(selectedVersion);
     if (!Number.isFinite(version)) return;
     if (!isInstalled(version)) return;
-    if (lastAutoCheckedVersionRef.current === version) return;
-    lastAutoCheckedVersionRef.current = version;
-    checkModUpdates(version);
-  }, [didFinishBootstrap, selectedVersion, installedVersions]);
+    const contextKey = `${runMode}:${version}`;
+    if (preparedUpdateContext !== contextKey) return;
+    if (lastAutoCheckedContextRef.current === contextKey) return;
+    lastAutoCheckedContextRef.current = contextKey;
+    checkModUpdates(version, { runMode });
+  }, [
+    didFinishBootstrap,
+    installedVersions,
+    isInstalled,
+    preparedUpdateContext,
+    runMode,
+    selectedVersion,
+  ]);
 
   // refresh installed plugin versions when selected version changes
   useEffect(() => {
@@ -1067,6 +1099,7 @@ export default function LauncherPage({
 
         // Practice install modal: only show when practice actually installs missing plugins.
         if (stepName === "Practice Mods") {
+          setPracticeCancelBusy(false);
           setPracticeTask({
             status: didFinish ? "done" : "working",
             ...p,
@@ -1078,6 +1111,7 @@ export default function LauncherPage({
         }
         // Preset install modal (tagged mods like Brutal/Wesley).
         if (stepName === "Preset Mods") {
+          setPresetCancelBusy(false);
           setPresetTask({
             status: didFinish ? "done" : "working",
             ...p,
@@ -1138,6 +1172,7 @@ export default function LauncherPage({
           practicePromptOpenRef.current &&
           practiceTaskRef.current?.step_name === "Practice Mods"
         ) {
+          setPracticeCancelBusy(false);
           setPracticeTask((t) => ({
             ...(t ?? {}),
             status: "error",
@@ -1150,6 +1185,7 @@ export default function LauncherPage({
           presetPromptOpenRef.current &&
           presetTaskRef.current?.step_name === "Preset Mods"
         ) {
+          setPresetCancelBusy(false);
           setPresetTask((t) => ({
             ...(t ?? {}),
             status: "error",
@@ -1202,7 +1238,6 @@ export default function LauncherPage({
       unlistenCheckUpdateProgress = await listen(
         "updatable://progress",
         (event) => {
-        console.log("updatable://progress", event.payload)
           const total = Number(event.payload?.total ?? 0);
           const checked = Number(event.payload?.checked ?? 0);
           const overall_percent =
@@ -1214,6 +1249,7 @@ export default function LauncherPage({
             status: "working",
             ...event.payload,
             version: event.payload?.version ?? t.version,
+            run_mode: t.run_mode,
             overall_percent: overall_percent,
             error: null,
           }));
@@ -1226,6 +1262,7 @@ export default function LauncherPage({
             ...t,
             status: "done",
             ...event.payload,
+            run_mode: t.run_mode,
           }));
           // refresh installed versions list after install
           invoke("list_installed_versions")
@@ -1238,6 +1275,7 @@ export default function LauncherPage({
           ...t,
           status: "error",
           version: event.payload?.version ?? t.version,
+          run_mode: t.run_mode,
           error: event.payload?.message ?? "Unknown error",
         }));
       });
@@ -1441,11 +1479,16 @@ export default function LauncherPage({
     }
   }
 
-  async function checkModUpdates(v) {
+  async function checkModUpdates(v, opts = {}) {
+    const nextRunMode =
+      typeof opts?.runMode === "string" && opts.runMode
+        ? opts.runMode
+        : runMode;
     setCheckUpdateTask((t) => ({
       ...t,
       status: "working",
       version: v,
+      run_mode: nextRunMode,
       overall_percent: 0,
       detail: null,
       updatable_mods: [],
@@ -1454,12 +1497,13 @@ export default function LauncherPage({
       error: null,
     }));
     try {
-      await invoke("check_mod_updates", { version: v, runMode: runMode });
+      await invoke("check_mod_updates", { version: v, runMode: nextRunMode });
     } catch (e) {
       setCheckUpdateTask((t) => ({
         ...t,
         status: "error",
         version: v,
+        run_mode: nextRunMode,
         error: e?.message ?? String(e),
       }));
     }
@@ -2145,8 +2189,10 @@ export default function LauncherPage({
     // Reset modal state; the modals open only if backend emits progress.
     setPresetPrompt({ open: false });
     setPresetTask(null);
+    setPresetCancelBusy(false);
     setPracticePrompt({ open: false });
     setPracticeTask(null);
+    setPracticeCancelBusy(false);
 
     try {
       await invoke("prepare_preset", {
@@ -2179,6 +2225,7 @@ export default function LauncherPage({
       invoke("get_disabled_mods")
         .then((dm) => setDisabledMods(Array.isArray(dm) ? dm : []))
         .catch(() => {});
+      setPreparedUpdateContext(key);
     } catch (e) {
       console.error(e);
       // Ignore stale errors (e.g., cancelled because user picked another mode/version).
@@ -2201,6 +2248,8 @@ export default function LauncherPage({
         }
         setPresetPrompt({ open: false });
         setPracticePrompt({ open: false });
+        setPresetCancelBusy(false);
+        setPracticeCancelBusy(false);
         return;
       }
 
@@ -2348,6 +2397,11 @@ export default function LauncherPage({
   }, [runMode]);
 
   const showBootstrapSkeleton = !didFinishBootstrap;
+  const hasSelectedVersionUpdates =
+    checkUpdateTask.status === "done" &&
+    Number(checkUpdateTask.version) === Number(selectedVersion) &&
+    checkUpdateTask.run_mode === runMode &&
+    (checkUpdateTask.updatable_mods?.length ?? 0) > 0;
 
   return (
     <div className="h-full text-white">
@@ -2555,17 +2609,23 @@ export default function LauncherPage({
             />
           </div>
 
-          {checkUpdateTask.updatable_mods.length > 0 && <Button
+          {hasSelectedVersionUpdates && <Button
             variant="secondary"
             className="h-11"
             onClick={() => {
-              const sameVersion = checkUpdateTask.version === selectedVersion;
-              const alreadyChecked = sameVersion && checkUpdateTask.status === "done";
-              const isChecking = sameVersion && checkUpdateTask.status === "working";
+              const sameContext =
+                Number(checkUpdateTask.version) === Number(selectedVersion) &&
+                checkUpdateTask.run_mode === runMode;
+              const alreadyChecked =
+                sameContext && checkUpdateTask.status === "done";
+              const isChecking =
+                sameContext && checkUpdateTask.status === "working";
 
               // Don't re-check if we already have results for this version.
               // If it's currently checking, just open the modal to show progress.
-              if (!alreadyChecked && !isChecking) checkModUpdates(selectedVersion);
+              if (!alreadyChecked && !isChecking) {
+                checkModUpdates(selectedVersion, { runMode });
+              }
               setCheckUpdatePrompt({ open: true, mods: filteredMods });
             }}
             title="Check mod updates"
@@ -3254,6 +3314,17 @@ export default function LauncherPage({
                       {task.detail ||
                         (bytesText ? `Downloaded: ${bytesText}` : "")}
                     </div>
+                    {(formatTransferProgress(task) ||
+                      formatExtractProgress(task)) && (
+                      <div className="mt-1 text-xs text-white/40">
+                        {[
+                          formatTransferProgress(task),
+                          formatExtractProgress(task),
+                        ]
+                          .filter(Boolean)
+                          .join(" • ")}
+                      </div>
+                    )}
                     {task.error && (
                       <div className="mt-1 text-xs text-red-300">
                         {task.error}
@@ -3604,6 +3675,17 @@ export default function LauncherPage({
                     <div className="truncate text-xs text-white/50">
                       {task.detail || ""}
                     </div>
+                    {(formatTransferProgress(task) ||
+                      formatExtractProgress(task)) && (
+                      <div className="mt-1 text-xs text-white/40">
+                        {[
+                          formatTransferProgress(task),
+                          formatExtractProgress(task),
+                        ]
+                          .filter(Boolean)
+                          .join(" • ")}
+                      </div>
+                    )}
                     {task.error && (
                       <div className="mt-1 text-xs text-red-300">
                         {task.error}
@@ -3689,6 +3771,17 @@ export default function LauncherPage({
                   <div className="truncate text-xs text-white/50">
                     {practiceTask?.detail ?? ""}
                   </div>
+                  {(formatTransferProgress(practiceTask) ||
+                    formatExtractProgress(practiceTask)) && (
+                    <div className="mt-1 text-xs text-white/40">
+                      {[
+                        formatTransferProgress(practiceTask),
+                        formatExtractProgress(practiceTask),
+                      ]
+                        .filter(Boolean)
+                        .join(" • ")}
+                    </div>
+                  )}
                   {practiceTask?.error && (
                     <div className="mt-1 text-xs text-red-300">
                       {practiceTask.error}
@@ -3721,23 +3814,36 @@ export default function LauncherPage({
               <Button
                 variant="secondary"
                 className="h-10 min-w-[120px]"
+                disabled={practiceCancelBusy}
                 onClick={async () => {
                   const st = practiceTask?.status ?? "working";
                   if (st === "working") {
                     explicitCancelKeyRef.current = latestPrepareKeyRef.current;
                     const v = Number(practiceTask?.version ?? selectedVersion);
                     if (!Number.isFinite(v)) return;
+                    setPracticeCancelBusy(true);
+                    setPracticeTask((t) => ({
+                      ...(t ?? {}),
+                      status: "working",
+                      detail: "Cancelling...",
+                      error: null,
+                    }));
                     try {
                       await invoke("cancel_prepare", { version: v });
                     } catch (e) {
                       console.error(e);
+                      setPracticeCancelBusy(false);
                     }
                   } else {
                     setPracticePrompt({ open: false });
                   }
                 }}
               >
-                {(practiceTask?.status ?? "working") === "working" ? "Cancel" : "Close"}
+                {(practiceTask?.status ?? "working") === "working"
+                  ? practiceCancelBusy
+                    ? "Cancelling..."
+                    : "Cancel"
+                  : "Close"}
               </Button>
             </div>
           </div>
@@ -3779,6 +3885,17 @@ export default function LauncherPage({
                   <div className="truncate text-xs text-white/50">
                     {presetTask?.detail ?? ""}
                   </div>
+                  {(formatTransferProgress(presetTask) ||
+                    formatExtractProgress(presetTask)) && (
+                    <div className="mt-1 text-xs text-white/40">
+                      {[
+                        formatTransferProgress(presetTask),
+                        formatExtractProgress(presetTask),
+                      ]
+                        .filter(Boolean)
+                        .join(" • ")}
+                    </div>
+                  )}
                   {presetTask?.error && (
                     <div className="mt-1 text-xs text-red-300">
                       {presetTask.error}
@@ -3811,23 +3928,36 @@ export default function LauncherPage({
               <Button
                 variant="secondary"
                 className="h-10 min-w-[120px]"
+                disabled={presetCancelBusy}
                 onClick={async () => {
                   const st = presetTask?.status ?? "working";
                   if (st === "working") {
                     explicitCancelKeyRef.current = latestPrepareKeyRef.current;
                     const v = Number(presetTask?.version ?? selectedVersion);
                     if (!Number.isFinite(v)) return;
+                    setPresetCancelBusy(true);
+                    setPresetTask((t) => ({
+                      ...(t ?? {}),
+                      status: "working",
+                      detail: "Cancelling...",
+                      error: null,
+                    }));
                     try {
                       await invoke("cancel_prepare", { version: v });
                     } catch (e) {
                       console.error(e);
+                      setPresetCancelBusy(false);
                     }
                   } else {
                     setPresetPrompt({ open: false });
                   }
                 }}
               >
-                {(presetTask?.status ?? "working") === "working" ? "Cancel" : "Close"}
+                {(presetTask?.status ?? "working") === "working"
+                  ? presetCancelBusy
+                    ? "Cancelling..."
+                    : "Cancel"
+                  : "Close"}
               </Button>
             </div>
           </div>
