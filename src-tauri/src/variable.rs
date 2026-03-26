@@ -58,6 +58,8 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
                 (60, "3.2.0".to_string()),
                 (62, "3.2.1".to_string()),
                 (66, "3.3.1".to_string()),
+                (69, "3.3.2".to_string()),
+                (73, "0.0.0".to_string()),
             ]),
         },
 

@@ -215,8 +215,7 @@ async fn prepare_tagged_mods_for_version(
         .map(|m| (m.dev.clone(), m.name.clone()))
         .collect();
 
-    let missing_tagged_mods = filter_missing_mods_for_version(app, version, &tagged)?;
-    if !missing_tagged_mods.is_empty() {
+    if !tagged.is_empty() {
         const STEPS_TOTAL: u32 = 1;
         progress::emit_progress(
             app,
@@ -227,16 +226,16 @@ async fn prepare_tagged_mods_for_version(
                 step_name: step_name.to_string(),
                 step_progress: 0.0,
                 overall_percent: 0.0,
-                detail: Some(format!("Installing missing tagged mods: {}", tags.join(", "))),
+                detail: Some(format!("Syncing tagged mods: {}", tags.join(", "))),
                 downloaded_bytes: None,
                 total_bytes: None,
                 extracted_files: Some(0),
-                total_files: Some(missing_tagged_mods.len() as u64),
+                total_files: Some(tagged.len() as u64),
             },
         );
 
         let cfg = ModsConfig {
-            mods: missing_tagged_mods,
+            mods: tagged.clone(),
         };
         mods::install_mods_with_progress(
             app,
@@ -1688,24 +1687,6 @@ fn ensure_practice_mods_disabled_for_version(
     Ok(())
 }
 
-fn filter_missing_mods_for_version(
-    app: &tauri::AppHandle,
-    version: u32,
-    mods: &[mod_config::ModEntry],
-) -> Result<Vec<mod_config::ModEntry>, String> {
-    let plugins = plugins_dir(app, version)?;
-    let patchers = patchers_dir(app, version)?;
-
-    Ok(mods
-        .iter()
-        .filter(|m| {
-            mod_dir_for(&plugins, &m.dev, &m.name).is_none()
-                && mod_dir_for(&patchers, &m.dev, &m.name).is_none()
-        })
-        .cloned()
-        .collect())
-}
-
 async fn prepare_practice_mods_for_version(
     app: &tauri::AppHandle,
     version: u32,
@@ -1726,9 +1707,10 @@ async fn prepare_practice_mods_for_version(
         .cloned()
         .filter(|m| {
             m.is_compatible(version)
-                && !disabled_list
-                    .mods
-                    .contains(&normalize_mod_id(&m.dev, &m.name))
+                && (is_ui_hidden_mod(m)
+                    || !disabled_list
+                        .mods
+                        .contains(&normalize_mod_id(&m.dev, &m.name)))
         })
         .collect();
     let practice_ids: Vec<(String, String)> = practice_enabled
@@ -1736,9 +1718,7 @@ async fn prepare_practice_mods_for_version(
         .map(|m| (m.dev.clone(), m.name.clone()))
         .collect();
 
-    let missing_practice_mods = filter_missing_mods_for_version(app, version, &practice_enabled)?;
-    if !missing_practice_mods.is_empty() {
-        // Only show setup progress when new manifest mods actually need to be installed.
+    if !practice_enabled.is_empty() {
         const STEPS_TOTAL: u32 = 1;
         progress::emit_progress(
             app,
@@ -1749,16 +1729,16 @@ async fn prepare_practice_mods_for_version(
                 step_name: "Practice Mods".to_string(),
                 step_progress: 0.0,
                 overall_percent: 0.0,
-                detail: Some("Installing missing practice mods...".to_string()),
+                detail: Some("Syncing practice mods...".to_string()),
                 downloaded_bytes: None,
                 total_bytes: None,
                 extracted_files: Some(0),
-                total_files: Some(missing_practice_mods.len() as u64),
+                total_files: Some(practice_enabled.len() as u64),
             },
         );
 
         let cfg = ModsConfig {
-            mods: missing_practice_mods,
+            mods: practice_enabled.clone(),
         };
 
         let install_res: Result<(), String> = mods::install_mods_with_progress(
