@@ -395,7 +395,7 @@
           const windowsAsset = findAsset(
             assets,
             (name) =>
-              (name.includes("windows") || name.endsWith(".exe") || name.endsWith(".msi")) &&
+              (name.endsWith(".msi")) &&
               !name.includes(".sig")
           );
           const linuxAsset = findAsset(
