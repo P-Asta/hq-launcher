@@ -1,7 +1,11 @@
 ## Version (YYYY-MM-DD)
 - Content
 
-## 1.7.4 (2026-03-27)
+## 1.7.5 (2026-03-27)
+- Fixed a bug where `Vlog` and `HQoL` were disabled in Normal mode
+- Fixed a bug where the app launched in situations where it should not have
+
+## ~~1.7.4 (2026-03-27)~~
 - Fix Practice setup so hidden required dependencies such as `LethalNetworkAPI` are still synced even if they were previously disabled.
 - Force-disable `HQoL` and `VLog` during Practice runs, and show disabled mods in the mod list without allowing them to be turned back on while Practice is selected.
 - Improve the Windows installer so WebView setup works more reliably during installation.

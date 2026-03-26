@@ -1094,10 +1094,12 @@ export default function LauncherPage({
         const stepProgress = Number(p?.step_progress ?? 0);
         const overall = Number(p?.overall_percent ?? 0);
         const stepName = String(p?.step_name ?? "");
+        const isModFilesStep = stepName === "Mod Files";
         const isDeleteStep = stepName === "Delete Version";
         const isSetupStep =
           stepName === "Practice Mods" ||
           stepName === "Preset Mods" ||
+          isModFilesStep ||
           isDeleteStep;
         const didFinish =
           (Number.isFinite(totalFiles) &&
@@ -1129,6 +1131,26 @@ export default function LauncherPage({
           });
           if (Number.isFinite(totalFiles) && totalFiles > 0) {
             setPresetPrompt({ open: true });
+          }
+        }
+        if (isModFilesStep) {
+          const nextTask = {
+            status: didFinish ? "done" : "working",
+            ...p,
+            error: null,
+          };
+          if (isPracticeRunMode(runMode)) {
+            setPracticeCancelBusy(false);
+            setPracticeTask(nextTask);
+            if (Number.isFinite(totalFiles) && totalFiles > 0) {
+              setPracticePrompt({ open: true });
+            }
+          } else {
+            setPresetCancelBusy(false);
+            setPresetTask(nextTask);
+            if (Number.isFinite(totalFiles) && totalFiles > 0) {
+              setPresetPrompt({ open: true });
+            }
           }
         }
         if (isDeleteStep) {
@@ -1180,7 +1202,7 @@ export default function LauncherPage({
         // If practice setup fails, keep the modal open and show the error.
         if (
           practicePromptOpenRef.current &&
-          practiceTaskRef.current?.step_name === "Practice Mods"
+          practiceTaskRef.current
         ) {
           setPracticeCancelBusy(false);
           setPracticeTask((t) => ({
@@ -1193,7 +1215,7 @@ export default function LauncherPage({
         // If preset setup fails, keep the modal open and show the error.
         if (
           presetPromptOpenRef.current &&
-          presetTaskRef.current?.step_name === "Preset Mods"
+          presetTaskRef.current
         ) {
           setPresetCancelBusy(false);
           setPresetTask((t) => ({
@@ -1775,9 +1797,6 @@ export default function LauncherPage({
       mod.name
     ).toLowerCase()}`;
     if (isPracticeRunMode(runMode) && nextEnabled && practiceLockedModKeys.has(baseKey)) {
-      return;
-    }
-    if (isPracticeRunMode(runMode) && nextEnabled && disabledSet.has(baseKey)) {
       return;
     }
 
@@ -2731,7 +2750,8 @@ export default function LauncherPage({
                   const busy = modToggleBusyKeys.has(keyLower);
                   const isPracticeMod =
                     isPracticeRunMode(runMode) && practiceModKeys.has(keyLower);
-                  const practiceEnableLocked = isPracticeRunMode(runMode) && !enabled;
+                  const practiceEnableLocked =
+                    isPracticeRunMode(runMode) && practiceLockedModKeys.has(keyLower);
                   return (
                     <div
                       key={modKey(m)}

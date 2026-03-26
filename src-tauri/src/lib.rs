@@ -1582,6 +1582,15 @@ fn for_each_file_recursive(
     Ok(())
 }
 
+fn collect_files_recursive(root: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
+    let mut out = vec![];
+    for_each_file_recursive(root, |path| {
+        out.push(path.to_path_buf());
+        Ok(())
+    })?;
+    Ok(out)
+}
+
 fn set_mod_files_old_suffix(mod_dir: &std::path::Path, enabled: bool) -> Result<(), String> {
     if !mod_dir.exists() {
         return Ok(());
@@ -1617,6 +1626,125 @@ fn set_mod_files_old_suffix(mod_dir: &std::path::Path, enabled: bool) -> Result<
             std::fs::rename(path, new_path).map_err(|e| e.to_string())
         })
     }
+}
+
+fn wait_for_mod_file_renames_to_settle() {
+    // Renames are synchronous, but a short pause helps avoid launch races on some systems
+    // where the game starts while plugin DLL name changes are still propagating.
+    std::thread::sleep(std::time::Duration::from_millis(350));
+}
+
+fn apply_mod_file_state_ops_with_progress(
+    app: &tauri::AppHandle,
+    version: u32,
+    step_name: &str,
+    ops: Vec<(std::path::PathBuf, bool, String)>,
+) -> Result<(), String> {
+    let mut planned: Vec<(std::path::PathBuf, bool, String, Vec<std::path::PathBuf>)> = vec![];
+    let mut total_files: u64 = 0;
+
+    for (dir, enabled, label) in ops {
+        if !dir.exists() {
+            continue;
+        }
+        let files = collect_files_recursive(&dir)?;
+        total_files = total_files.saturating_add(files.len() as u64);
+        planned.push((dir, enabled, label, files));
+    }
+
+    progress::emit_progress(
+        app,
+        TaskProgressPayload {
+            version,
+            steps_total: 1,
+            step: 1,
+            step_name: step_name.to_string(),
+            step_progress: if total_files == 0 { 1.0 } else { 0.0 },
+            overall_percent: if total_files == 0 { 100.0 } else { 0.0 },
+            detail: Some("Applying mod file changes...".to_string()),
+            downloaded_bytes: None,
+            total_bytes: None,
+            extracted_files: Some(0),
+            total_files: Some(total_files),
+        },
+    );
+
+    let mut done: u64 = 0;
+    for (_dir, enabled, label, files) in planned {
+        for path in files {
+            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if enabled {
+                if name.to_lowercase().ends_with(".old") {
+                    let mut new_name = name.to_string();
+                    new_name.truncate(new_name.len().saturating_sub(4));
+                    let new_path = path.with_file_name(new_name);
+                    if !new_path.exists() {
+                        std::fs::rename(&path, new_path).map_err(|e| e.to_string())?;
+                    }
+                }
+            } else if !name.to_lowercase().ends_with(".old") {
+                let new_path = path.with_file_name(format!("{name}.old"));
+                if !new_path.exists() {
+                    std::fs::rename(&path, new_path).map_err(|e| e.to_string())?;
+                }
+            }
+
+            done = done.saturating_add(1);
+            let step_progress = if total_files == 0 {
+                1.0
+            } else {
+                (done as f64 / total_files as f64).clamp(0.0, 1.0)
+            };
+            progress::emit_progress(
+                app,
+                TaskProgressPayload {
+                    version,
+                    steps_total: 1,
+                    step: 1,
+                    step_name: step_name.to_string(),
+                    step_progress,
+                    overall_percent: overall_from_step(1, step_progress, 1),
+                    detail: Some(format!("Applying mod file changes: {label}")),
+                    downloaded_bytes: None,
+                    total_bytes: None,
+                    extracted_files: Some(done),
+                    total_files: Some(total_files),
+                },
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn emit_basic_mod_files_progress(
+    app: &tauri::AppHandle,
+    version: u32,
+    working: bool,
+    detail: &str,
+) {
+    let (step_progress, overall_percent, extracted_files) = if working {
+        (0.0, 0.0, 0)
+    } else {
+        (1.0, 100.0, 1)
+    };
+
+    progress::emit_progress(
+        app,
+        TaskProgressPayload {
+            version,
+            steps_total: 1,
+            step: 1,
+            step_name: "Mod Files".to_string(),
+            step_progress,
+            overall_percent,
+            detail: Some(detail.to_string()),
+            downloaded_bytes: None,
+            total_bytes: None,
+            extracted_files: Some(extracted_files),
+            total_files: Some(1),
+        },
+    );
 }
 
 // (intentionally no "is_disabled"/"is_mod_enabled" helpers; frontend uses disablemod list as source of truth)
@@ -1656,6 +1784,36 @@ fn sync_hqol_with_disablemod_for_version(
         let _ = set_mod_files_old_suffix(&dir, !disabled);
     }
     Ok(())
+}
+
+fn sync_named_mod_with_disablemod_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+    dev: &str,
+    name: &str,
+) -> Result<(), String> {
+    let disabled = read_disablemod(app)?
+        .mods
+        .contains(&normalize_mod_id(dev, name));
+
+    let plugins = plugins_dir(app, version)?;
+    if let Some(dir) = mod_dir_for(&plugins, dev, name) {
+        let _ = set_mod_files_old_suffix(&dir, !disabled);
+    }
+
+    let patchers = patchers_dir(app, version)?;
+    if let Some(dir) = mod_dir_for(&patchers, dev, name) {
+        let _ = set_mod_files_old_suffix(&dir, !disabled);
+    }
+
+    Ok(())
+}
+
+fn sync_vlog_with_disablemod_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<(), String> {
+    sync_named_mod_with_disablemod_for_version(app, version, "HQHQTeam", "VLog")
 }
 
 fn sync_practice_locked_mods_for_version(version_plugins_dir: &std::path::Path) -> Result<(), String> {
@@ -1806,29 +1964,31 @@ async fn prepare_practice_mods_for_version(
         }
     }
 
-    // Apply filesystem state for this version: disable all practice mods,
-    // then re-enable only the compatible subset that the user has not disabled.
     let plugins = plugins_dir(app, version)?;
     let patchers = patchers_dir(app, version)?;
+    let mut rename_ops: Vec<(std::path::PathBuf, bool, String)> = vec![];
     for m in &practice_all {
         if let Some(dir) = mod_dir_for(&plugins, &m.dev, &m.name) {
-            let _ = set_mod_files_old_suffix(&dir, false);
+            rename_ops.push((dir, false, format!("{}-{}", m.dev, m.name)));
         }
         if let Some(dir) = mod_dir_for(&patchers, &m.dev, &m.name) {
-            let _ = set_mod_files_old_suffix(&dir, false);
+            rename_ops.push((dir, false, format!("{}-{}", m.dev, m.name)));
         }
     }
     for m in &practice_enabled {
         if let Some(dir) = mod_dir_for(&plugins, &m.dev, &m.name) {
-            let _ = set_mod_files_old_suffix(&dir, true);
+            rename_ops.push((dir, true, format!("{}-{}", m.dev, m.name)));
         }
         if let Some(dir) = mod_dir_for(&patchers, &m.dev, &m.name) {
-            let _ = set_mod_files_old_suffix(&dir, true);
+            rename_ops.push((dir, true, format!("{}-{}", m.dev, m.name)));
         }
     }
-
-    // Practice runs always force-disable HQoL and VLog at runtime.
-    let _ = sync_practice_locked_mods_for_version(&plugins);
+    for (dev, name) in [("HQHQTeam", "HQoL"), ("HQHQTeam", "HQOL"), ("HQHQTeam", "VLog")] {
+        if let Some(dir) = mod_dir_for(&plugins, dev, name) {
+            rename_ops.push((dir, false, format!("{dev}-{name}")));
+        }
+    }
+    let _ = apply_mod_file_state_ops_with_progress(app, version, "Mod Files", rename_ops);
 
     progress::emit_finished(
         app,
@@ -1860,6 +2020,33 @@ struct ActiveDownload {
 struct PrepareState {
     next_id: std::sync::atomic::AtomicU64,
     active: Mutex<Option<ActivePrepare>>,
+}
+
+fn wait_for_prepare_to_finish(
+    state: &PrepareState,
+    version: u32,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    loop {
+        let is_active_for_version = {
+            let guard = state
+                .active
+                .lock()
+                .map_err(|_| "prepare state lock poisoned".to_string())?;
+            guard.as_ref().is_some_and(|a| a.version == version)
+        };
+
+        if !is_active_for_version {
+            return Ok(());
+        }
+
+        if start.elapsed() >= timeout {
+            return Err("mod file changes are still in progress; please wait a moment and try again".to_string());
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 struct ActivePrepare {
@@ -2423,7 +2610,9 @@ fn launch_game(
     app: tauri::AppHandle,
     version: u32,
     state: State<'_, GameState>,
+    prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
+    wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
     let dir = version_dir(&app, version)?;
     if !dir.exists() {
         return Err(format!(
@@ -2465,12 +2654,12 @@ fn launch_game(
 
     // Ensure disabled mods are applied for this version before launch.
     let _ = apply_disabled_mods_for_version(&app, version);
-    // Practice runs keep HQoL/VLog forced off; normal runs follow disablemod.json.
-    if let Ok(plugins) = plugins_dir(&app, version) {
-        let _ = sync_practice_locked_mods_for_version(&plugins);
-    }
+    // For HQoL specifically, also ensure `.old` matches disablemod.json on normal runs.
+    let _ = sync_hqol_with_disablemod_for_version(&app, version);
+    let _ = sync_vlog_with_disablemod_for_version(&app, version);
     let _ = ensure_reverb_trigger_fix_cfg(&app, version);
     let _ = ensure_hqol_dont_store_item_cfg(&app, version, "DungeonKeyItem");
+    wait_for_mod_file_renames_to_settle();
 
     #[cfg(target_os = "windows")]
     let mut command = std::process::Command::new(&exe_path);
@@ -2531,7 +2720,9 @@ async fn launch_game_practice(
     app: tauri::AppHandle,
     version: u32,
     state: State<'_, GameState>,
+    prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
+    wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
     let dir = version_dir(&app, version)?;
     if !dir.exists() {
         return Err(format!(
@@ -2576,6 +2767,10 @@ async fn launch_game_practice(
 
     // Ensure disabled mods are applied for this version before launch.
     let _ = apply_disabled_mods_for_version(&app, version);
+    if let Ok(plugins) = plugins_dir(&app, version) {
+        let _ = sync_practice_locked_mods_for_version(&plugins);
+    }
+    wait_for_mod_file_renames_to_settle();
 
     #[cfg(target_os = "windows")]
     let mut command = std::process::Command::new(&exe_path);
@@ -2639,7 +2834,9 @@ async fn launch_game_preset(
     preset: String,
     practice: bool,
     state: State<'_, GameState>,
+    prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
+    wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
     // Normalize preset and map to manifest tags.
     let tags = preset_tags_for_name(&preset);
 
@@ -2712,6 +2909,7 @@ async fn launch_game_preset(
     } else {
         // For HQoL specifically, also ensure `.old` matches disablemod.json on normal runs.
         let _ = sync_hqol_with_disablemod_for_version(&app, version);
+        let _ = sync_vlog_with_disablemod_for_version(&app, version);
     }
     let _ = ensure_reverb_trigger_fix_cfg(&app, version);
     let _ = ensure_hqol_dont_store_item_cfg(&app, version, "DungeonKeyItem");
@@ -2719,6 +2917,7 @@ async fn launch_game_preset(
         let lock_moons = !practice && !tags.iter().any(|t| t.eq_ignore_ascii_case("smhq"));
         let _ = ensure_wesley_moonscripts_cfg(&app, version, lock_moons);
     }
+    wait_for_mod_file_renames_to_settle();
 
     // Runtime-only tag gating: disable tagged mods not relevant to this run.
     // (No disablemod.json writes; next run will re-evaluate.)
@@ -2825,6 +3024,8 @@ async fn prepare_preset_for_version(
         return Err("Cancelled".to_string());
     }
 
+    emit_basic_mod_files_progress(app, version, true, "Applying mode-specific mod file changes...");
+
     // Apply persisted disable list (user + practice) now.
     let _ = apply_disabled_mods_for_version(app, version);
     if practice {
@@ -2833,9 +3034,11 @@ async fn prepare_preset_for_version(
         }
     } else {
         let _ = sync_hqol_with_disablemod_for_version(app, version);
+        let _ = sync_vlog_with_disablemod_for_version(app, version);
     }
     let _ = ensure_reverb_trigger_fix_cfg(app, version);
     let _ = ensure_hqol_dont_store_item_cfg(app, version, "DungeonKeyItem");
+    emit_basic_mod_files_progress(app, version, false, "Finished applying mode-specific mod file changes.");
 
     // Runtime-only tag gating: disable tagged mods not relevant to this selected run.
     let _ = disable_irrelevant_tagged_mods_for_run(app, version, &tags, &practice_ids).await;
