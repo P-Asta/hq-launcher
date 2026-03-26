@@ -1092,6 +1092,7 @@ pub async fn sync_latest_install_from_manifest(app: tauri::AppHandle) -> Result<
             &game_root,
             game_version,
             &mods_cfg,
+            &[],
             None,
             |done, total, progress_info| {
                 let step_progress = if total == 0 {
@@ -1556,6 +1557,7 @@ pub async fn download_and_setup(
             &extract_dir,
             version,
             &mods_cfg,
+            &[],
             Some(cancel.clone()),
             |done, total, progress_info| {
                 let step_progress = if total == 0 {

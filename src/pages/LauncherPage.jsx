@@ -125,6 +125,11 @@ function isModCompatibleWithVersion(mod, version) {
   return true;
 }
 
+const PRACTICE_LOCKED_MOD_KEYS = new Set([
+  "hqhqteam::hqol",
+  "hqhqteam::vlog",
+]);
+
 function valueLabel(v) {
   if (!v) return "";
   if (v.type === "Bool") return v.data ? "true" : "false";
@@ -596,6 +601,11 @@ export default function LauncherPage({
     () => new Set(practiceReferenceMods.map((m) => modKeyLower(m))),
     [practiceReferenceMods]
   );
+
+  const practiceLockedModKeys = useMemo(() => {
+    if (!isPracticeRunMode(runMode)) return new Set();
+    return PRACTICE_LOCKED_MOD_KEYS;
+  }, [runMode]);
 
   useEffect(() => {
     if (!isPracticeRunMode(runMode)) return;
@@ -1764,6 +1774,12 @@ export default function LauncherPage({
     const baseKey = `${String(mod.dev).toLowerCase()}::${String(
       mod.name
     ).toLowerCase()}`;
+    if (isPracticeRunMode(runMode) && nextEnabled && practiceLockedModKeys.has(baseKey)) {
+      return;
+    }
+    if (isPracticeRunMode(runMode) && nextEnabled && disabledSet.has(baseKey)) {
+      return;
+    }
 
     // If the mod has a chained config file, toggle linked mods too.
     let modsToToggle = [mod];
@@ -2709,11 +2725,13 @@ export default function LauncherPage({
                   const coverSrc = installedModIconUrls[keyLower];
                   const description =
                     installedModDescriptions[keyLower] || "Click to edit config";
-                  const enabled = !disabledSet.has(keyLower);
+                  const enabled =
+                    !disabledSet.has(keyLower) && !practiceLockedModKeys.has(keyLower);
                   const installedVer = installedModVersions[keyLower];
                   const busy = modToggleBusyKeys.has(keyLower);
                   const isPracticeMod =
                     isPracticeRunMode(runMode) && practiceModKeys.has(keyLower);
+                  const practiceEnableLocked = isPracticeRunMode(runMode) && !enabled;
                   return (
                     <div
                       key={modKey(m)}
@@ -2784,7 +2802,7 @@ export default function LauncherPage({
                         >
                           <Switch
                             checked={enabled}
-                            disabled={busy}
+                            disabled={busy || practiceEnableLocked}
                             onCheckedChange={(v) =>
                               toggleModEnabledForMod(m, !!v)
                             }
@@ -2869,7 +2887,14 @@ export default function LauncherPage({
                           selectedMod.name
                         ).toLowerCase()}`;
                         const v = installedModVersions[k];
-                        return v ? `Installed: v${v}` : "Not installed";
+                        const forcedOff = practiceLockedModKeys.has(k);
+                        const userOff = disabledSet.has(k);
+                        const stateLabel = forcedOff
+                          ? "Off in Practice"
+                          : userOff
+                          ? "Disabled"
+                          : "Enabled";
+                        return `${v ? `Installed: v${v}` : "Not installed"} · ${stateLabel}`;
                       })()}
                     </div>
                   </div>

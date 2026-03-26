@@ -243,6 +243,7 @@ async fn prepare_tagged_mods_for_version(
             &game_root,
             version,
             &cfg,
+            tags,
             cancel,
             |done, total, progress_info| {
                 let step_progress = if total == 0 {
@@ -1657,6 +1658,15 @@ fn sync_hqol_with_disablemod_for_version(
     Ok(())
 }
 
+fn sync_practice_locked_mods_for_version(version_plugins_dir: &std::path::Path) -> Result<(), String> {
+    for (dev, name) in [("HQHQTeam", "HQoL"), ("HQHQTeam", "HQOL"), ("HQHQTeam", "VLog")] {
+        if let Some(dir) = mod_dir_for(version_plugins_dir, dev, name) {
+            let _ = set_mod_files_old_suffix(&dir, false);
+        }
+    }
+    Ok(())
+}
+
 fn ensure_practice_mods_disabled_for_version(
     app: &tauri::AppHandle,
     version: u32,
@@ -1756,6 +1766,7 @@ async fn prepare_practice_mods_for_version(
             &game_root,
             version,
             &cfg,
+            &[],
             cancel,
             |done, total, progress_info| {
                 let step_progress = if total == 0 {
@@ -1816,17 +1827,8 @@ async fn prepare_practice_mods_for_version(
         }
     }
 
-    // Special rule: when running Practice and Imperium is installed, force-disable HQoL (HQHQTeam).
-    // Otherwise, HQoL should follow disablemod.json state.
-    let imperium_installed = mod_dir_for(&plugins, "giosuel", "Imperium").is_some();
-    if let Some(hqol_dir) = hqol_mod_dir(&plugins) {
-        if imperium_installed {
-            let _ = set_mod_files_old_suffix(&hqol_dir, false);
-        } else {
-            // Re-sync HQoL to user's config.
-            let _ = sync_hqol_with_disablemod_for_version(app, version);
-        }
-    }
+    // Practice runs always force-disable HQoL and VLog at runtime.
+    let _ = sync_practice_locked_mods_for_version(&plugins);
 
     progress::emit_finished(
         app,

@@ -80,6 +80,19 @@ pub fn plugins_dir(game_root: &Path) -> PathBuf {
     game_root.join("BepInEx").join("plugins")
 }
 
+fn install_compatibility_matches(spec: &ModEntry, game_version: u32, active_tags: &[String]) -> bool {
+    if !active_tags.is_empty()
+        && spec
+            .tags
+            .iter()
+            .any(|tag| active_tags.iter().any(|active| tag.eq_ignore_ascii_case(active)))
+    {
+        return spec.is_compatible_for_tags(game_version, active_tags);
+    }
+
+    spec.is_compatible(game_version)
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ModInstallProgress {
     pub detail: Option<String>,
@@ -97,6 +110,7 @@ pub async fn install_mods_with_progress<F>(
     game_root: &Path,
     game_version: u32,
     cfg: &ModsConfig,
+    active_tags: &[String],
     cancel: Option<Arc<AtomicBool>>,
     mut on_progress: F,
 ) -> Result<(), String>
@@ -258,7 +272,7 @@ where
 
         let mod_label = format!("{}-{}", spec.dev, spec.name);
 
-        if !spec.is_compatible(game_version) {
+        if !install_compatibility_matches(spec, game_version, active_tags) {
             installed = installed.saturating_add(1);
             let why = incompatible_reason(spec, game_version);
             log::warn!("Skipping {mod_label}{why}");
