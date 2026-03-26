@@ -470,9 +470,14 @@ where
 
     let plugins_root = game_root.join("BepInEx").join("plugins");
     let patchers_root = game_root.join("BepInEx").join("patchers");
+    let config_root = game_root.join("BepInEx").join("config");
+    let allow_config_payload = folder_name.eq_ignore_ascii_case("LeKAKiD-FontPatcher");
 
     std::fs::create_dir_all(&plugins_root).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&patchers_root).map_err(|e| e.to_string())?;
+    if allow_config_payload {
+        std::fs::create_dir_all(&config_root).map_err(|e| e.to_string())?;
+    }
 
     let file = File::open(zip_path).map_err(|e| e.to_string())?;
     let mut archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
@@ -598,14 +603,18 @@ where
             "plugins" | "plugin" => plugin_dest_dir.clone(),
             "patchers" | "patcher" => patcher_dest_dir.clone(),
             "config" => {
-                // Explicitly ignore config payloads.
-                processed = processed.saturating_add(1);
-                on_progress(
-                    processed,
-                    total_entries,
-                    Some("Skipped config entry".to_string()),
-                );
-                continue;
+                if allow_config_payload {
+                    config_root.clone()
+                } else {
+                    // Explicitly ignore config payloads.
+                    processed = processed.saturating_add(1);
+                    on_progress(
+                        processed,
+                        total_entries,
+                        Some("Skipped config entry".to_string()),
+                    );
+                    continue;
+                }
             }
             _ => plugin_dest_dir.clone(), // fallback
         };

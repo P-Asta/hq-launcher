@@ -404,6 +404,101 @@ fn version_config_dir(app: &tauri::AppHandle, version: u32) -> Result<std::path:
     Ok(version_dir(app, version)?.join("BepInEx").join("config"))
 }
 
+fn parse_font_assets_path_from_cfg(cfg_text: &str) -> Option<String> {
+    let mut in_path_section = false;
+
+    for raw_line in cfg_text.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+            continue;
+        }
+
+        if line.starts_with('[') && line.ends_with(']') {
+            in_path_section = line[1..line.len() - 1].trim().eq_ignore_ascii_case("Path");
+            continue;
+        }
+
+        if !in_path_section {
+            continue;
+        }
+
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if !key.trim().eq_ignore_ascii_case("FontAssetsPath") {
+            continue;
+        }
+
+        let value = value.trim().trim_matches('"');
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+
+    None
+}
+
+fn fontpatcher_assets_dir_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<std::path::PathBuf, String> {
+    let cfg_dir = version_config_dir(app, version)?;
+    let default_dir = cfg_dir.join("FontPatcher").join("default");
+    let cfg_path = cfg_dir.join("lekakid.lcfontpatcher.cfg");
+
+    if !cfg_path.exists() {
+        return Ok(default_dir);
+    }
+
+    let cfg_text = std::fs::read_to_string(&cfg_path).map_err(|e| {
+        format!(
+            "failed to read fontpatcher config {}: {e}",
+            cfg_path.to_string_lossy()
+        )
+    })?;
+
+    let Some(raw_path) = parse_font_assets_path_from_cfg(&cfg_text) else {
+        return Ok(default_dir);
+    };
+
+    if raw_path.eq_ignore_ascii_case("FontPatcher\\default")
+        || raw_path.eq_ignore_ascii_case("FontPatcher/default")
+    {
+        return Ok(default_dir);
+    }
+
+    let rel_path = std::path::Path::new(&raw_path);
+    if rel_path.is_absolute() {
+        return Ok(rel_path.to_path_buf());
+    }
+
+    Ok(cfg_dir.join(rel_path))
+}
+
+fn sync_fontpatcher_with_assets_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<(), String> {
+    let assets_dir = fontpatcher_assets_dir_for_version(app, version)?;
+    let assets_available = assets_dir.is_dir();
+    let disabled = read_disablemod(app)?
+        .mods
+        .contains(&normalize_mod_id("LeKAKiD", "FontPatcher"));
+
+    let enabled = assets_available && !disabled;
+    let plugins = plugins_dir(app, version)?;
+    if let Some(dir) = mod_dir_for(&plugins, "LeKAKiD", "FontPatcher") {
+        let _ = set_mod_files_old_suffix(&dir, enabled);
+    }
+
+    let patchers = patchers_dir(app, version)?;
+    if let Some(dir) = mod_dir_for(&patchers, "LeKAKiD", "FontPatcher") {
+        let _ = set_mod_files_old_suffix(&dir, enabled);
+    }
+
+    Ok(())
+}
+
 fn ensure_wesley_moonscripts_cfg(
     app: &tauri::AppHandle,
     version: u32,
@@ -1537,6 +1632,7 @@ fn apply_disabled_mods_for_version(app: &tauri::AppHandle, version: u32) -> Resu
             let _ = set_mod_files_old_suffix(&dir, false);
         }
     }
+    let _ = sync_fontpatcher_with_assets_for_version(app, version);
     Ok(())
 }
 

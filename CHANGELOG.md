@@ -1,10 +1,11 @@
 ## Version (YYYY-MM-DD)
 - Content
 
-## 1.7.2 (2026-03-26)
+## 1.7.3 (2026-03-26)
 - Fixed an issue where the “Cancel” button had significant lag.
 - Added a progress indicator when downloading and extracting large files so you can tell if the app has frozen.
 - Optimized the process for saving Thunderstore information. (I hope this works well.)
+- Fixed an issue where English text was occasionally not displayed due to fontpatcher (a mod that displays unsupported languages).
 
 ## 1.7.1 (2026-03-25)
 - Add more Practice mods, including `CoordinateForEasterEggs`, `Yukieji_UnityExplorer`, `LCSeedPicker`, and `IntroTweaks` plus the required hidden helper dependencies on supported versions.
