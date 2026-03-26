@@ -215,7 +215,8 @@ async fn prepare_tagged_mods_for_version(
         .map(|m| (m.dev.clone(), m.name.clone()))
         .collect();
 
-    if !tagged.is_empty() {
+    let missing_tagged_mods = filter_missing_mods_for_version(app, version, &tagged)?;
+    if !missing_tagged_mods.is_empty() {
         const STEPS_TOTAL: u32 = 1;
         progress::emit_progress(
             app,
@@ -226,16 +227,16 @@ async fn prepare_tagged_mods_for_version(
                 step_name: step_name.to_string(),
                 step_progress: 0.0,
                 overall_percent: 0.0,
-                detail: Some(format!("Syncing tagged mods: {}", tags.join(", "))),
+                detail: Some(format!("Installing missing tagged mods: {}", tags.join(", "))),
                 downloaded_bytes: None,
                 total_bytes: None,
                 extracted_files: Some(0),
-                total_files: Some(tagged.len() as u64),
+                total_files: Some(missing_tagged_mods.len() as u64),
             },
         );
 
         let cfg = ModsConfig {
-            mods: tagged.clone(),
+            mods: missing_tagged_mods,
         };
         mods::install_mods_with_progress(
             app,
@@ -1666,6 +1667,24 @@ fn sync_practice_locked_mods_for_version(version_plugins_dir: &std::path::Path) 
     Ok(())
 }
 
+fn filter_missing_mods_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+    mods: &[mod_config::ModEntry],
+) -> Result<Vec<mod_config::ModEntry>, String> {
+    let plugins = plugins_dir(app, version)?;
+    let patchers = patchers_dir(app, version)?;
+
+    Ok(mods
+        .iter()
+        .filter(|m| {
+            mod_dir_for(&plugins, &m.dev, &m.name).is_none()
+                && mod_dir_for(&patchers, &m.dev, &m.name).is_none()
+        })
+        .cloned()
+        .collect())
+}
+
 fn ensure_practice_mods_disabled_for_version(
     app: &tauri::AppHandle,
     version: u32,
@@ -1718,7 +1737,8 @@ async fn prepare_practice_mods_for_version(
         .map(|m| (m.dev.clone(), m.name.clone()))
         .collect();
 
-    if !practice_enabled.is_empty() {
+    let missing_practice_mods = filter_missing_mods_for_version(app, version, &practice_enabled)?;
+    if !missing_practice_mods.is_empty() {
         const STEPS_TOTAL: u32 = 1;
         progress::emit_progress(
             app,
@@ -1729,16 +1749,16 @@ async fn prepare_practice_mods_for_version(
                 step_name: "Practice Mods".to_string(),
                 step_progress: 0.0,
                 overall_percent: 0.0,
-                detail: Some("Syncing practice mods...".to_string()),
+                detail: Some("Installing missing practice mods...".to_string()),
                 downloaded_bytes: None,
                 total_bytes: None,
                 extracted_files: Some(0),
-                total_files: Some(practice_enabled.len() as u64),
+                total_files: Some(missing_practice_mods.len() as u64),
             },
         );
 
         let cfg = ModsConfig {
-            mods: practice_enabled.clone(),
+            mods: missing_practice_mods,
         };
 
         let install_res: Result<(), String> = mods::install_mods_with_progress(
@@ -2445,8 +2465,10 @@ fn launch_game(
 
     // Ensure disabled mods are applied for this version before launch.
     let _ = apply_disabled_mods_for_version(&app, version);
-    // For HQoL specifically, also ensure `.old` matches disablemod.json on normal runs.
-    let _ = sync_hqol_with_disablemod_for_version(&app, version);
+    // Practice runs keep HQoL/VLog forced off; normal runs follow disablemod.json.
+    if let Ok(plugins) = plugins_dir(&app, version) {
+        let _ = sync_practice_locked_mods_for_version(&plugins);
+    }
     let _ = ensure_reverb_trigger_fix_cfg(&app, version);
     let _ = ensure_hqol_dont_store_item_cfg(&app, version, "DungeonKeyItem");
 
@@ -2683,8 +2705,14 @@ async fn launch_game_preset(
 
     // Ensure disabled mods are applied for this version before launch.
     let _ = apply_disabled_mods_for_version(&app, version);
-    // For HQoL specifically, also ensure `.old` matches disablemod.json on normal runs.
-    let _ = sync_hqol_with_disablemod_for_version(&app, version);
+    if practice {
+        if let Ok(plugins) = plugins_dir(&app, version) {
+            let _ = sync_practice_locked_mods_for_version(&plugins);
+        }
+    } else {
+        // For HQoL specifically, also ensure `.old` matches disablemod.json on normal runs.
+        let _ = sync_hqol_with_disablemod_for_version(&app, version);
+    }
     let _ = ensure_reverb_trigger_fix_cfg(&app, version);
     let _ = ensure_hqol_dont_store_item_cfg(&app, version, "DungeonKeyItem");
     if tags.iter().any(|t| t.eq_ignore_ascii_case("wesley")) {
@@ -2799,7 +2827,13 @@ async fn prepare_preset_for_version(
 
     // Apply persisted disable list (user + practice) now.
     let _ = apply_disabled_mods_for_version(app, version);
-    let _ = sync_hqol_with_disablemod_for_version(app, version);
+    if practice {
+        if let Ok(plugins) = plugins_dir(app, version) {
+            let _ = sync_practice_locked_mods_for_version(&plugins);
+        }
+    } else {
+        let _ = sync_hqol_with_disablemod_for_version(app, version);
+    }
     let _ = ensure_reverb_trigger_fix_cfg(app, version);
     let _ = ensure_hqol_dont_store_item_cfg(app, version, "DungeonKeyItem");
 

@@ -1,6 +1,11 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.7.4 (2026-03-27)
+- Fix Practice setup so hidden required dependencies such as `LethalNetworkAPI` are still synced even if they were previously disabled.
+- Force-disable `HQoL` and `VLog` during Practice runs, and show disabled mods in the mod list without allowing them to be turned back on while Practice is selected.
+- Improve the Windows installer so WebView setup works more reliably during installation.
+
 ## 1.7.3 (2026-03-26)
 - Fixed an issue where the “Cancel” button had significant lag.
 - Added a progress indicator when downloading and extracting large files so you can tell if the app has frozen.
