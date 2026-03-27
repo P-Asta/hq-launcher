@@ -138,6 +138,32 @@ async fn effective_mods_config_for_run_mode(
     Ok(ModsConfig { mods: effective })
 }
 
+async fn find_mod_entry_for_install(
+    version: u32,
+    dev: &str,
+    name: &str,
+) -> Result<Option<mod_config::ModEntry>, String> {
+    let practice_match = variable::get_practice_mod_list().into_iter().find(|m| {
+        m.is_compatible(version)
+            && m.dev.eq_ignore_ascii_case(dev)
+            && m.name.eq_ignore_ascii_case(name)
+    });
+    if practice_match.is_some() {
+        return Ok(practice_match);
+    }
+
+    let client = reqwest::Client::new();
+    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests) =
+        ModsConfig::fetch_manifest(&client).await?;
+
+    Ok(mods_cfg.mods.into_iter().find(|m| {
+        m.enabled
+            && m.is_compatible(version)
+            && m.dev.eq_ignore_ascii_case(dev)
+            && m.name.eq_ignore_ascii_case(name)
+    }))
+}
+
 async fn prepare_tagged_mods_for_version(
     app: &tauri::AppHandle,
     version: u32,
@@ -1582,15 +1608,6 @@ fn for_each_file_recursive(
     Ok(())
 }
 
-fn collect_files_recursive(root: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
-    let mut out = vec![];
-    for_each_file_recursive(root, |path| {
-        out.push(path.to_path_buf());
-        Ok(())
-    })?;
-    Ok(out)
-}
-
 fn set_mod_files_old_suffix(mod_dir: &std::path::Path, enabled: bool) -> Result<(), String> {
     if !mod_dir.exists() {
         return Ok(());
@@ -1634,89 +1651,6 @@ fn wait_for_mod_file_renames_to_settle() {
     std::thread::sleep(std::time::Duration::from_millis(350));
 }
 
-fn apply_mod_file_state_ops_with_progress(
-    app: &tauri::AppHandle,
-    version: u32,
-    step_name: &str,
-    ops: Vec<(std::path::PathBuf, bool, String)>,
-) -> Result<(), String> {
-    let mut planned: Vec<(std::path::PathBuf, bool, String, Vec<std::path::PathBuf>)> = vec![];
-    let mut total_files: u64 = 0;
-
-    for (dir, enabled, label) in ops {
-        if !dir.exists() {
-            continue;
-        }
-        let files = collect_files_recursive(&dir)?;
-        total_files = total_files.saturating_add(files.len() as u64);
-        planned.push((dir, enabled, label, files));
-    }
-
-    progress::emit_progress(
-        app,
-        TaskProgressPayload {
-            version,
-            steps_total: 1,
-            step: 1,
-            step_name: step_name.to_string(),
-            step_progress: if total_files == 0 { 1.0 } else { 0.0 },
-            overall_percent: if total_files == 0 { 100.0 } else { 0.0 },
-            detail: Some("Applying mod file changes...".to_string()),
-            downloaded_bytes: None,
-            total_bytes: None,
-            extracted_files: Some(0),
-            total_files: Some(total_files),
-        },
-    );
-
-    let mut done: u64 = 0;
-    for (_dir, enabled, label, files) in planned {
-        for path in files {
-            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            if enabled {
-                if name.to_lowercase().ends_with(".old") {
-                    let mut new_name = name.to_string();
-                    new_name.truncate(new_name.len().saturating_sub(4));
-                    let new_path = path.with_file_name(new_name);
-                    if !new_path.exists() {
-                        std::fs::rename(&path, new_path).map_err(|e| e.to_string())?;
-                    }
-                }
-            } else if !name.to_lowercase().ends_with(".old") {
-                let new_path = path.with_file_name(format!("{name}.old"));
-                if !new_path.exists() {
-                    std::fs::rename(&path, new_path).map_err(|e| e.to_string())?;
-                }
-            }
-
-            done = done.saturating_add(1);
-            let step_progress = if total_files == 0 {
-                1.0
-            } else {
-                (done as f64 / total_files as f64).clamp(0.0, 1.0)
-            };
-            progress::emit_progress(
-                app,
-                TaskProgressPayload {
-                    version,
-                    steps_total: 1,
-                    step: 1,
-                    step_name: step_name.to_string(),
-                    step_progress,
-                    overall_percent: overall_from_step(1, step_progress, 1),
-                    detail: Some(format!("Applying mod file changes: {label}")),
-                    downloaded_bytes: None,
-                    total_bytes: None,
-                    extracted_files: Some(done),
-                    total_files: Some(total_files),
-                },
-            );
-        }
-    }
-
-    Ok(())
-}
-
 fn emit_basic_mod_files_progress(
     app: &tauri::AppHandle,
     version: u32,
@@ -1745,6 +1679,21 @@ fn emit_basic_mod_files_progress(
             total_files: Some(1),
         },
     );
+}
+
+fn describe_mode_file_changes(practice: bool, tags: &[String]) -> String {
+    let mut parts: Vec<String> = vec![];
+    if practice {
+        parts.push("practice mods".to_string());
+        parts.push("VLog".to_string());
+    } else {
+        parts.push("run-mode mods".to_string());
+        parts.push("VLog".to_string());
+    }
+    if !tags.is_empty() {
+        parts.push(format!("preset mods ({})", tags.join(", ")));
+    }
+    format!("Applying mod file changes for {}...", parts.join(", "))
 }
 
 // (intentionally no "is_disabled"/"is_mod_enabled" helpers; frontend uses disablemod list as source of truth)
@@ -1817,7 +1766,7 @@ fn sync_vlog_with_disablemod_for_version(
 }
 
 fn sync_practice_locked_mods_for_version(version_plugins_dir: &std::path::Path) -> Result<(), String> {
-    for (dev, name) in [("HQHQTeam", "HQoL"), ("HQHQTeam", "HQOL"), ("HQHQTeam", "VLog")] {
+    for (dev, name) in [("HQHQTeam", "VLog")] {
         if let Some(dir) = mod_dir_for(version_plugins_dir, dev, name) {
             let _ = set_mod_files_old_suffix(&dir, false);
         }
@@ -1983,20 +1932,14 @@ async fn prepare_practice_mods_for_version(
             rename_ops.push((dir, true, format!("{}-{}", m.dev, m.name)));
         }
     }
-    for (dev, name) in [("HQHQTeam", "HQoL"), ("HQHQTeam", "HQOL"), ("HQHQTeam", "VLog")] {
+    for (dev, name) in [("HQHQTeam", "VLog")] {
         if let Some(dir) = mod_dir_for(&plugins, dev, name) {
             rename_ops.push((dir, false, format!("{dev}-{name}")));
         }
     }
-    let _ = apply_mod_file_state_ops_with_progress(app, version, "Mod Files", rename_ops);
-
-    progress::emit_finished(
-        app,
-        TaskFinishedPayload {
-            version,
-            path: game_root.to_string_lossy().to_string(),
-        },
-    );
+    for (dir, enabled, _label) in rename_ops {
+        let _ = set_mod_files_old_suffix(&dir, enabled);
+    }
 
     Ok(practice_ids)
 }
@@ -3004,8 +2947,6 @@ async fn prepare_preset_for_version(
     let practice_ids = if practice {
         prepare_practice_mods_for_version(app, version, Some(cancel.clone())).await?
     } else {
-        // Selecting a non-practice run should disable practice mods now (not at launch).
-        ensure_practice_mods_disabled_for_version(app, version)?;
         vec![]
     };
 
@@ -3017,14 +2958,19 @@ async fn prepare_preset_for_version(
         prepare_tagged_mods_for_version(app, version, &tags, "Preset Mods", Some(cancel.clone()))
             .await?;
 
+    let mod_files_detail = describe_mode_file_changes(practice, &tags);
+    emit_basic_mod_files_progress(app, version, true, &mod_files_detail);
+
+    if !practice {
+        // Selecting a non-practice run should disable practice mods now (not at launch).
+        ensure_practice_mods_disabled_for_version(app, version)?;
+    }
     // Ensure preset mods are enabled (can override practice-disable overlap).
     let _ = force_enable_mods_for_version(app, version, &preset_ids);
 
     if cancel.load(Ordering::Relaxed) {
         return Err("Cancelled".to_string());
     }
-
-    emit_basic_mod_files_progress(app, version, true, "Applying mode-specific mod file changes...");
 
     // Apply persisted disable list (user + practice) now.
     let _ = apply_disabled_mods_for_version(app, version);
@@ -3038,10 +2984,16 @@ async fn prepare_preset_for_version(
     }
     let _ = ensure_reverb_trigger_fix_cfg(app, version);
     let _ = ensure_hqol_dont_store_item_cfg(app, version, "DungeonKeyItem");
-    emit_basic_mod_files_progress(app, version, false, "Finished applying mode-specific mod file changes.");
 
     // Runtime-only tag gating: disable tagged mods not relevant to this selected run.
     let _ = disable_irrelevant_tagged_mods_for_run(app, version, &tags, &practice_ids).await;
+    wait_for_mod_file_renames_to_settle();
+    emit_basic_mod_files_progress(
+        app,
+        version,
+        false,
+        "Finished applying mod file changes, including VLog state updates.",
+    );
 
     Ok(true)
 }
@@ -3159,7 +3111,7 @@ fn apply_disabled_mods(app: tauri::AppHandle, version: u32) -> Result<bool, Stri
 }
 
 #[tauri::command]
-fn set_mod_enabled(
+async fn set_mod_enabled(
     app: tauri::AppHandle,
     version: u32,
     dev: String,
@@ -3179,12 +3131,82 @@ fn set_mod_enabled(
     }
     write_disablemod(&app, &list)?;
 
-    // Apply to current version immediately (still add-only / no overwrite).
     let plugins = plugins_dir(&app, version)?;
+    let patchers = patchers_dir(&app, version)?;
+
+    if enabled
+        && mod_dir_for(&plugins, &dev, &name).is_none()
+        && mod_dir_for(&patchers, &dev, &name).is_none()
+    {
+        let game_root = version_dir(&app, version)?;
+        if !game_root.exists() {
+            return Err(format!(
+                "version folder not found: {}",
+                game_root.to_string_lossy()
+            ));
+        }
+
+        let Some(spec) = find_mod_entry_for_install(version, &dev, &name).await? else {
+            return Err(format!("mod not found in available configs: {dev}-{name}"));
+        };
+
+        let cfg = ModsConfig { mods: vec![spec] };
+        progress::emit_progress(
+            &app,
+            TaskProgressPayload {
+                version,
+                steps_total: 1,
+                step: 1,
+                step_name: "Enable Mod".to_string(),
+                step_progress: 0.0,
+                overall_percent: 0.0,
+                detail: Some(format!("Installing {dev}-{name}...")),
+                downloaded_bytes: None,
+                total_bytes: None,
+                extracted_files: Some(0),
+                total_files: Some(1),
+            },
+        );
+        mods::install_mods_with_progress(
+            &app,
+            &game_root,
+            version,
+            &cfg,
+            &[],
+            None,
+            |done, total, progress_info| {
+                let step_progress = if total == 0 {
+                    1.0
+                } else {
+                    (done as f64 / total as f64).clamp(0.0, 1.0)
+                };
+                progress::emit_progress(
+                    &app,
+                    TaskProgressPayload {
+                        version,
+                        steps_total: 1,
+                        step: 1,
+                        step_name: "Enable Mod".to_string(),
+                        step_progress,
+                        overall_percent: overall_from_step(1, step_progress, 1),
+                        detail: progress_info
+                            .detail
+                            .or_else(|| Some(format!("Installing {dev}-{name}..."))),
+                        downloaded_bytes: progress_info.downloaded_bytes,
+                        total_bytes: progress_info.total_bytes,
+                        extracted_files: progress_info.extracted_files.or(Some(done)),
+                        total_files: progress_info.total_files.or(Some(total)),
+                    },
+                );
+            },
+        )
+        .await?;
+    }
+
+    // Apply to current version immediately.
     if let Some(dir) = mod_dir_for(&plugins, &dev, &name) {
         let _ = set_mod_files_old_suffix(&dir, enabled);
     }
-    let patchers = patchers_dir(&app, version)?;
     if let Some(dir) = mod_dir_for(&patchers, &dev, &name) {
         let _ = set_mod_files_old_suffix(&dir, enabled);
     }

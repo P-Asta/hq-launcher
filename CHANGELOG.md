@@ -1,6 +1,10 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## v1.7.6 (2026-03-27)
+- The issue where certain settings would not apply or would apply incorrectly when running the game immediately after changing the `Run Mode` has been resolved.
+- `HQoL` is no longer disabled in `Practice Mode`.
+
 ## 1.7.5 (2026-03-27)
 - Fixed a bug where `Vlog` and `HQoL` were disabled in Normal mode
 - Fixed a bug where the app launched in situations where it should not have

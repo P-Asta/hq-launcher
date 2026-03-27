@@ -126,7 +126,6 @@ function isModCompatibleWithVersion(mod, version) {
 }
 
 const PRACTICE_LOCKED_MOD_KEYS = new Set([
-  "hqhqteam::hqol",
   "hqhqteam::vlog",
 ]);
 
@@ -1060,6 +1059,30 @@ export default function LauncherPage({
     refreshInstalledModVersions(selectedVersion);
   }, [selectedVersion, installedVersions]);
 
+  // Startup can race with plugin file discovery, especially for practice-related mods.
+  // Do a short delayed re-scan so icons/descriptions catch up after initial bootstrap.
+  useEffect(() => {
+    if (!didFinishBootstrap) return;
+    const version = Number(selectedVersion);
+    if (!Number.isFinite(version)) return;
+    if (!isInstalled(version)) return;
+
+    const timeoutId = setTimeout(() => {
+      refreshInstalledModVersions(version, {
+        retries: isPracticeRunMode(runMode) ? 6 : 2,
+        delayMs: 300,
+      }).catch(() => {});
+    }, 350);
+
+    return () => clearTimeout(timeoutId);
+  }, [
+    didFinishBootstrap,
+    isInstalled,
+    runMode,
+    selectedVersion,
+    practiceMods,
+  ]);
+
   const disabledSet = useMemo(() => {
     const s = new Set();
     for (const m of disabledMods) {
@@ -1094,9 +1117,11 @@ export default function LauncherPage({
         const stepProgress = Number(p?.step_progress ?? 0);
         const overall = Number(p?.overall_percent ?? 0);
         const stepName = String(p?.step_name ?? "");
+        const isEnableModStep = stepName === "Enable Mod";
         const isModFilesStep = stepName === "Mod Files";
         const isDeleteStep = stepName === "Delete Version";
         const isSetupStep =
+          isEnableModStep ||
           stepName === "Practice Mods" ||
           stepName === "Preset Mods" ||
           isModFilesStep ||
@@ -1169,6 +1194,15 @@ export default function LauncherPage({
               error: "",
             })
           );
+        }
+        if (isEnableModStep) {
+          setUpdatePrompt({ open: true });
+          setTask((t) => ({
+            ...t,
+            status: didFinish ? "done" : "working",
+            ...p,
+            error: null,
+          }));
         }
         // IMPORTANT: Keep preset/practice setup progress OUT of the download prompt state.
         // Otherwise the "Download version" modal can get stuck showing setup progress.
@@ -2333,7 +2367,48 @@ export default function LauncherPage({
       return;
     }
     try {
-      const pid = await invoke("launch_game", { version: selectedVersion });
+      let pid;
+      if (runMode === "practice") {
+        pid = await invoke("launch_game_practice", { version: selectedVersion });
+      } else if (runMode === "brutal") {
+        pid = await invoke("launch_game_preset", {
+          version: selectedVersion,
+          preset: "brutal",
+          practice: false,
+        });
+      } else if (runMode === "brutal_practice") {
+        pid = await invoke("launch_game_preset", {
+          version: selectedVersion,
+          preset: "brutal",
+          practice: true,
+        });
+      } else if (runMode === "wesley") {
+        pid = await invoke("launch_game_preset", {
+          version: selectedVersion,
+          preset: "wesley",
+          practice: false,
+        });
+      } else if (runMode === "wesley_practice") {
+        pid = await invoke("launch_game_preset", {
+          version: selectedVersion,
+          preset: "wesley",
+          practice: true,
+        });
+      } else if (runMode === "wesley_smhq") {
+        pid = await invoke("launch_game_preset", {
+          version: selectedVersion,
+          preset: "wesley_smhq",
+          practice: false,
+        });
+      } else if (runMode === "smhq") {
+        pid = await invoke("launch_game_preset", {
+          version: selectedVersion,
+          preset: "smhq",
+          practice: false,
+        });
+      } else {
+        pid = await invoke("launch_game", { version: selectedVersion });
+      }
       setGameStatus({
         running: true,
         pid: typeof pid === "number" ? pid : null,
@@ -2497,11 +2572,11 @@ export default function LauncherPage({
                       if (e.button !== 0) return;
                       e.preventDefault();
                       e.stopPropagation();
-                      startSelectedRun();
                     }}
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
+                      startSelectedRun();
                     }}
                   >
                     <Play className="h-4 w-4" />
