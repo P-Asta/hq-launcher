@@ -1,6 +1,11 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.7.7 (2026-03-28)
+- The issue where double-clicking the Run button caused the program to run multiple times and crash has been resolved.
+- When selecting `Wesley's` or `Brutal` mode, any additional installed mods are now displayed.
+
+
 ## v1.7.6 (2026-03-27)
 - The issue where certain settings would not apply or would apply incorrectly when running the game immediately after changing the `Run Mode` has been resolved.
 - `HQoL` is no longer disabled in `Practice Mode`.

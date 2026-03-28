@@ -1947,6 +1947,7 @@ async fn prepare_practice_mods_for_version(
 #[derive(Default)]
 struct GameState {
     child: Mutex<Option<std::process::Child>>,
+    launch_lock: Mutex<()>,
 }
 
 #[derive(Default)]
@@ -2691,6 +2692,21 @@ async fn launch_game_practice(
         .parent()
         .ok_or_else(|| "invalid exe path".to_string())?;
 
+    // Practice run: install + enable practice mods (compatible with this game version).
+    let _ = prepare_practice_mods_for_version(&app, version, None).await?;
+
+    // Ensure disabled mods are applied for this version before launch.
+    let _ = apply_disabled_mods_for_version(&app, version);
+    if let Ok(plugins) = plugins_dir(&app, version) {
+        let _ = sync_practice_locked_mods_for_version(&plugins);
+    }
+    wait_for_mod_file_renames_to_settle();
+
+    let _launch_guard = state
+        .launch_lock
+        .lock()
+        .map_err(|_| "game launch lock poisoned".to_string())?;
+
     // If already running, return an error.
     {
         let mut guard = state
@@ -2704,16 +2720,6 @@ async fn launch_game_practice(
         }
         *guard = None;
     }
-
-    // Practice run: install + enable practice mods (compatible with this game version).
-    let _ = prepare_practice_mods_for_version(&app, version, None).await?;
-
-    // Ensure disabled mods are applied for this version before launch.
-    let _ = apply_disabled_mods_for_version(&app, version);
-    if let Ok(plugins) = plugins_dir(&app, version) {
-        let _ = sync_practice_locked_mods_for_version(&plugins);
-    }
-    wait_for_mod_file_renames_to_settle();
 
     #[cfg(target_os = "windows")]
     let mut command = std::process::Command::new(&exe_path);
@@ -2822,20 +2828,6 @@ async fn launch_game_preset(
         .parent()
         .ok_or_else(|| "invalid exe path".to_string())?;
 
-    // If already running, return an error.
-    {
-        let mut guard = state
-            .child
-            .lock()
-            .map_err(|_| "game state lock poisoned".to_string())?;
-        if let Some(child) = guard.as_mut() {
-            if child.try_wait().map_err(|e| e.to_string())?.is_none() {
-                return Err("game is already running".to_string());
-            }
-        }
-        *guard = None;
-    }
-
     if !practice {
         // Non-practice run: force-disable practice mods.
         ensure_practice_mods_disabled_for_version(&app, version)?;
@@ -2865,6 +2857,25 @@ async fn launch_game_preset(
     // Runtime-only tag gating: disable tagged mods not relevant to this run.
     // (No disablemod.json writes; next run will re-evaluate.)
     let _ = disable_irrelevant_tagged_mods_for_run(&app, version, &tags, &[]).await;
+
+    let _launch_guard = state
+        .launch_lock
+        .lock()
+        .map_err(|_| "game launch lock poisoned".to_string())?;
+
+    // If already running, return an error.
+    {
+        let mut guard = state
+            .child
+            .lock()
+            .map_err(|_| "game state lock poisoned".to_string())?;
+        if let Some(child) = guard.as_mut() {
+            if child.try_wait().map_err(|e| e.to_string())?.is_none() {
+                return Err("game is already running".to_string());
+            }
+        }
+        *guard = None;
+    }
 
     #[cfg(target_os = "windows")]
     let mut command = std::process::Command::new(&exe_path);
@@ -3086,6 +3097,10 @@ fn get_game_status(state: State<'_, GameState>) -> Result<GameStatus, String> {
 
 #[tauri::command]
 fn stop_game(state: State<'_, GameState>) -> Result<bool, String> {
+    let _launch_guard = state
+        .launch_lock
+        .lock()
+        .map_err(|_| "game launch lock poisoned".to_string())?;
     let mut guard = state
         .child
         .lock()

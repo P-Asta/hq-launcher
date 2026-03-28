@@ -173,6 +173,139 @@ function getInitialRunMode() {
   return RUN_MODE_VALUES.includes(savedRunMode) ? savedRunMode : "hq";
 }
 
+function getLaunchRequestForRunMode(mode, version) {
+  if (mode === "practice") {
+    return {
+      command: "launch_game_practice",
+      args: { version },
+    };
+  }
+  if (mode === "brutal") {
+    return {
+      command: "launch_game_preset",
+      args: { version, preset: "brutal", practice: false },
+    };
+  }
+  if (mode === "brutal_practice") {
+    return {
+      command: "launch_game_preset",
+      args: { version, preset: "brutal", practice: true },
+    };
+  }
+  if (mode === "wesley") {
+    return {
+      command: "launch_game_preset",
+      args: { version, preset: "wesley", practice: false },
+    };
+  }
+  if (mode === "wesley_practice") {
+    return {
+      command: "launch_game_preset",
+      args: { version, preset: "wesley", practice: true },
+    };
+  }
+  if (mode === "wesley_smhq") {
+    return {
+      command: "launch_game_preset",
+      args: { version, preset: "wesley_smhq", practice: false },
+    };
+  }
+  if (mode === "smhq") {
+    return {
+      command: "launch_game_preset",
+      args: { version, preset: "smhq", practice: false },
+    };
+  }
+  return {
+    command: "launch_game",
+    args: { version },
+  };
+}
+
+function isPresetSummaryMod(mod) {
+  return mod?.isPresetSummary === true;
+}
+
+function listEntryKey(entry) {
+  return entry?.summary_id ?? modKey(entry);
+}
+
+function matchesVersionCaps(version, lowCap, highCap) {
+  const v = Number(version);
+  if (!Number.isFinite(v)) return true;
+  const low = toOptionalNumber(lowCap);
+  const high = toOptionalNumber(highCap);
+  if (low != null && v < low) return false;
+  if (high != null && v > high) return false;
+  return true;
+}
+
+function findTagConstraint(mod, activeTag) {
+  const constraints = mod?.tag_constraints;
+  if (!constraints || typeof constraints !== "object") return null;
+  for (const [tag, rule] of Object.entries(constraints)) {
+    if (String(tag).toLowerCase() === String(activeTag).toLowerCase()) {
+      return rule ?? null;
+    }
+  }
+  return null;
+}
+
+function isModCompatibleWithTags(mod, version, activeTags) {
+  const modTags = Array.isArray(mod?.tags) ? mod.tags : [];
+  if (modTags.length === 0) return false;
+
+  for (const activeTag of Array.isArray(activeTags) ? activeTags : []) {
+    const matchesTag = modTags.some(
+      (tag) => String(tag).toLowerCase() === String(activeTag).toLowerCase()
+    );
+    if (!matchesTag) continue;
+
+    const constraint = findTagConstraint(mod, activeTag);
+    const lowCap = constraint?.low_cap ?? mod?.low_cap ?? null;
+    const highCap = constraint?.high_cap ?? mod?.high_cap ?? null;
+    if (matchesVersionCaps(version, lowCap, highCap)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function getPresetSummarySpec(mode) {
+  if (mode === "brutal" || mode === "brutal_practice") {
+    return {
+      summary_id: "preset::brutal",
+      name: "Brutal Mods",
+      subtitle: "",
+      activeTags: ["Brutal"],
+      iconKey: "drinkablewater::brutal_company_minus",
+    };
+  }
+
+  if (mode === "wesley" || mode === "wesley_practice") {
+    return {
+      summary_id: "preset::wesley",
+      name: "Wesley's Mods",
+      subtitle: "",
+      activeTags: ["Wesley"],
+      iconKey: "magic_wesley::wesleys_moons",
+    };
+  }
+
+  if (mode === "wesley_smhq") {
+    return {
+      summary_id: "preset::wesley_smhq",
+      name: "Wesley's Mods",
+      subtitle: "",
+      activeTags: ["Wesley", "SMHQ"],
+      iconKey: "magic_wesley::wesleys_moons",
+    };
+  }
+
+  return null;
+}
+
 function SkeletonBlock({ className }) {
   return (
     <div
@@ -354,6 +487,7 @@ export default function LauncherPage({
 
   const [gameStatus, setGameStatus] = useState({ running: false, pid: null });
   const [runMode, setRunMode] = useState(getInitialRunMode); // hq | practice | brutal | brutal_practice | wesley | wesley_practice | smhq
+  const [launchBusy, setLaunchBusy] = useState(false);
   const [modPanelWidthPercent, setModPanelWidthPercent] = useState(() => {
     if (typeof window === "undefined") return DEFAULT_MOD_PANEL_WIDTH;
     const saved = Number(localStorage.getItem(MOD_PANEL_WIDTH_STORAGE_KEY));
@@ -384,6 +518,8 @@ export default function LauncherPage({
   const presetPromptOpenRef = useRef(false);
   const practiceTaskRef = useRef(null);
   const presetTaskRef = useRef(null);
+  const runModeRef = useRef(runMode);
+  const selectedVersionRef = useRef(selectedVersion);
   const modContextMenuRef = useRef(null);
   const versionContextMenuRef = useRef(null);
   const splitContainerRef = useRef(null);
@@ -406,6 +542,17 @@ export default function LauncherPage({
   useEffect(() => {
     presetTaskRef.current = presetTask;
   }, [presetTask]);
+  useEffect(() => {
+    runModeRef.current = runMode;
+  }, [runMode]);
+  useEffect(() => {
+    selectedVersionRef.current = selectedVersion;
+  }, [selectedVersion]);
+  useEffect(() => {
+    if (gameStatus.running) {
+      setLaunchBusy(false);
+    }
+  }, [gameStatus.running]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -562,6 +709,43 @@ export default function LauncherPage({
     const byV = installedModDescriptionsByVersion?.[v];
     return byV && typeof byV === "object" ? byV : {};
   }, [installedModDescriptionsByVersion, selectedVersion]);
+
+  const presetSummaryEntry = useMemo(() => {
+    const spec = getPresetSummarySpec(runMode);
+    if (!spec) return null;
+
+    const taggedMods = (Array.isArray(manifest.mods) ? manifest.mods : []).filter(
+      (mod) =>
+        !isUiHiddenMod(mod) &&
+        isModCompatibleWithTags(mod, selectedVersion, spec.activeTags)
+    );
+
+    const installedCount = taggedMods.filter(
+      (mod) => !!installedModVersions[modKeyLower(mod)]
+    ).length;
+
+    return {
+      isPresetSummary: true,
+      summary_id: spec.summary_id,
+      name: spec.name,
+      dev: spec.subtitle,
+      description:
+        taggedMods.length > 0
+          ? `${taggedMods.length} mods installed by this preset.`
+          : "mods installed by this preset.",
+      summaryTags: spec.activeTags,
+      summaryItems: taggedMods,
+      totalCount: taggedMods.length,
+      installedCount,
+      iconSrc: installedModIconUrls[spec.iconKey] ?? null,
+    };
+  }, [
+    installedModIconUrls,
+    installedModVersions,
+    manifest.mods,
+    runMode,
+    selectedVersion,
+  ]);
 
   const practiceReferenceMods = useMemo(() => {
     const mods = Array.isArray(practiceMods)
@@ -770,9 +954,20 @@ export default function LauncherPage({
     installedModVersions,
   ]);
 
+  const displayedMods = useMemo(() => {
+    if (!presetSummaryEntry) return filteredMods;
+    return [presetSummaryEntry, ...filteredMods];
+  }, [filteredMods, presetSummaryEntry]);
+
   // If a tagged/preset-only mod was selected (e.g. before this filtering), clear the selection.
   useEffect(() => {
     if (!selectedMod) return;
+    if (isPresetSummaryMod(selectedMod)) {
+      if (!presetSummaryEntry || selectedMod.summary_id !== presetSummaryEntry.summary_id) {
+        setSelectedMod(null);
+      }
+      return;
+    }
     if (Array.isArray(selectedMod?.tags) && selectedMod.tags.length > 0) {
       setSelectedMod(null);
       return;
@@ -780,7 +975,7 @@ export default function LauncherPage({
     if (!availableModKeys.has(modKeyLower(selectedMod))) {
       setSelectedMod(null);
     }
-  }, [selectedMod, availableModKeys]);
+  }, [selectedMod, availableModKeys, presetSummaryEntry]);
 
   // Best-effort prefetch of config-file matches per mod so chain-dedup is accurate.
   useEffect(() => {
@@ -1412,6 +1607,16 @@ export default function LauncherPage({
       return;
     }
 
+    if (isPresetSummaryMod(selectedMod)) {
+      setConfigFiles([]);
+      setActiveConfigPath("");
+      setCfgFile(null);
+      setActiveSection("");
+      setCfgError("");
+      setModEnabled(true);
+      return;
+    }
+
     (async () => {
       // enabled state is global (disablemod file) and applies to all versions
       const key = `${String(selectedMod.dev).toLowerCase()}::${String(
@@ -1821,6 +2026,7 @@ export default function LauncherPage({
 
   async function toggleModEnabledForMod(mod, nextEnabled, opts) {
     if (!mod) return;
+    if (isPresetSummaryMod(mod)) return;
     const propagateChain = opts?.propagateChain ?? true;
     if (!isInstalled(selectedVersion)) {
       openDownloadPrompt(selectedVersion);
@@ -1911,6 +2117,7 @@ export default function LauncherPage({
 
   async function toggleModEnabled(nextEnabled) {
     if (!selectedMod) return;
+    if (isPresetSummaryMod(selectedMod)) return;
     return toggleModEnabledForMod(selectedMod, nextEnabled);
   }
 
@@ -1979,6 +2186,7 @@ export default function LauncherPage({
   const selectedVersionLabel = Number.isFinite(Number(selectedVersion))
     ? `v${selectedVersion}`
     : "Select version";
+  const selectedPresetSummary = isPresetSummaryMod(selectedMod) ? selectedMod : null;
   const showResizablePanels = !!selectedMod;
   const promptVersion = downloadPrompt.version;
   const promptIsWorking =
@@ -2360,55 +2568,29 @@ export default function LauncherPage({
     }
   }
 
-  async function startSelectedRun() {
+  async function startSelectedRun(opts = {}) {
+    if (launchBusy) return;
     if (gameStatus.running) return stopRun();
-    if (!isInstalled(selectedVersion)) {
-      openDownloadPrompt(selectedVersion);
+
+    const nextRunMode =
+      typeof opts?.runMode === "string" && opts.runMode
+        ? opts.runMode
+        : runModeRef.current;
+    const nextVersion = Number(
+      opts?.version ?? selectedVersionRef.current ?? selectedVersion
+    );
+
+    if (!Number.isFinite(nextVersion)) return;
+
+    if (!isInstalled(nextVersion)) {
+      openDownloadPrompt(nextVersion);
       return;
     }
+
+    setLaunchBusy(true);
     try {
-      let pid;
-      if (runMode === "practice") {
-        pid = await invoke("launch_game_practice", { version: selectedVersion });
-      } else if (runMode === "brutal") {
-        pid = await invoke("launch_game_preset", {
-          version: selectedVersion,
-          preset: "brutal",
-          practice: false,
-        });
-      } else if (runMode === "brutal_practice") {
-        pid = await invoke("launch_game_preset", {
-          version: selectedVersion,
-          preset: "brutal",
-          practice: true,
-        });
-      } else if (runMode === "wesley") {
-        pid = await invoke("launch_game_preset", {
-          version: selectedVersion,
-          preset: "wesley",
-          practice: false,
-        });
-      } else if (runMode === "wesley_practice") {
-        pid = await invoke("launch_game_preset", {
-          version: selectedVersion,
-          preset: "wesley",
-          practice: true,
-        });
-      } else if (runMode === "wesley_smhq") {
-        pid = await invoke("launch_game_preset", {
-          version: selectedVersion,
-          preset: "wesley_smhq",
-          practice: false,
-        });
-      } else if (runMode === "smhq") {
-        pid = await invoke("launch_game_preset", {
-          version: selectedVersion,
-          preset: "smhq",
-          practice: false,
-        });
-      } else {
-        pid = await invoke("launch_game", { version: selectedVersion });
-      }
+      const launchRequest = getLaunchRequestForRunMode(nextRunMode, nextVersion);
+      const pid = await invoke(launchRequest.command, launchRequest.args);
       setGameStatus({
         running: true,
         pid: typeof pid === "number" ? pid : null,
@@ -2418,9 +2600,11 @@ export default function LauncherPage({
       setTask((t) => ({
         ...t,
         status: "error",
-        version: selectedVersion,
+        version: nextVersion,
         error: e?.message ?? String(e),
       }));
+    } finally {
+      setLaunchBusy(false);
     }
   }
 
@@ -2533,75 +2717,84 @@ export default function LauncherPage({
               Stop
             </Button>
           ) : (
-            <Select
-              value={runMode}
-              onValueChange={async (v) => {
-                const prevRun = runMode;
-                const prevVer = selectedVersion;
-                const minV = minRequiredForRunMode(v);
-                const effectiveV =
-                  typeof minV === "number" ? Math.max(Number(selectedVersion), minV) : selectedVersion;
-
-                setRunMode(v);
-                if (effectiveV !== selectedVersion) {
-                  setSelectedVersion(effectiveV);
-                  if (isInstalled(effectiveV)) {
-                    try {
-                      await invoke("apply_disabled_mods", { version: effectiveV });
-                    } catch {}
-                  } else {
-                    openDownloadPrompt(effectiveV);
-                    return;
-                  }
-                }
-                await prepareRunMode(v, effectiveV, {
-                  prevRunMode: prevRun,
-                  prevVersion: prevVer,
-                });
-              }}
+            <div
+              className="flex h-11 overflow-hidden rounded-xl border border-black/10 bg-white text-black shadow-sm"
+              title={selectedRunOption?.title ?? ""}
             >
-              <SelectTrigger
-                showIcon={false}
-                className="h-11 w-fit overflow-hidden rounded-xl border-black/10 bg-white px-0 text-[14px] font-[620] tracking-[-0.014em] text-black hover:bg-white/90 focus:ring-black/10"
-                title={selectedRunOption?.title ?? ""}
+              <button
+                type="button"
+                className="flex h-full select-none items-center gap-2 px-5 text-[14px] font-[620] tracking-[-0.014em] transition-colors hover:bg-black/[0.04] disabled:cursor-not-allowed disabled:opacity-70"
+                disabled={launchBusy}
+                onClick={() =>
+                  startSelectedRun({
+                    runMode,
+                    version: selectedVersion,
+                  })
+                }
               >
-                <div className="flex h-full w-full items-stretch">
-                  <div
-                    className="flex h-full select-none items-center gap-2 px-5 text-[14px] font-[620] tracking-[-0.014em]"
-                    onPointerDown={(e) => {
-                      if (e.button !== 0) return;
-                      e.preventDefault();
-                      e.stopPropagation();
-                    }}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      startSelectedRun();
-                    }}
-                  >
-                    <Play className="h-4 w-4" />
-                    {selectedRunOption?.buttonLabel ??
-                      selectedRunOption?.label ??
-                      "Start Run"}
-                  </div>
-                  <div className="flex w-10 items-center justify-center border-l border-black/10">
+                {launchBusy ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Play className="h-4 w-4" />
+                )}
+                {selectedRunOption?.buttonLabel ??
+                  selectedRunOption?.label ??
+                  "Start Run"}
+              </button>
+
+              <Select
+                value={runMode}
+                disabled={launchBusy}
+                onValueChange={async (v) => {
+                  const prevRun = runMode;
+                  const prevVer = selectedVersion;
+                  const minV = minRequiredForRunMode(v);
+                  const effectiveV =
+                    typeof minV === "number"
+                      ? Math.max(Number(selectedVersion), minV)
+                      : selectedVersion;
+
+                  setRunMode(v);
+                  if (effectiveV !== selectedVersion) {
+                    setSelectedVersion(effectiveV);
+                    if (isInstalled(effectiveV)) {
+                      try {
+                        await invoke("apply_disabled_mods", { version: effectiveV });
+                      } catch {}
+                    } else {
+                      openDownloadPrompt(effectiveV);
+                      return;
+                    }
+                  }
+                  await prepareRunMode(v, effectiveV, {
+                    prevRunMode: prevRun,
+                    prevVersion: prevVer,
+                  });
+                }}
+              >
+                <SelectTrigger
+                  showIcon={false}
+                  className="h-full w-10 shrink-0 rounded-none border-0 border-l border-black/10 bg-transparent px-0 text-black hover:bg-black/[0.04] focus:ring-0"
+                  aria-label="Select run mode"
+                >
+                  <div className="flex h-full w-full items-center justify-center">
                     <ChevronDown className="h-4 w-4 text-black/70" />
                     <span className="sr-only">Select run mode</span>
                   </div>
-                </div>
-              </SelectTrigger>
-              <SelectContent className="min-w-48 border-white/10" align="start">
-                {RUN_OPTIONS.map((opt) =>
-                  opt.type === "separator" ? (
-                    <SelectSeparator key={opt.key} className="bg-white/20" />
-                  ) : (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ),
-                )}
-              </SelectContent>
-            </Select>
+                </SelectTrigger>
+                <SelectContent className="min-w-48 border-white/10" align="start">
+                  {RUN_OPTIONS.map((opt) =>
+                    opt.type === "separator" ? (
+                      <SelectSeparator key={opt.key} className="bg-white/20" />
+                    ) : (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ),
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
           )}
 
           <div className="w-fit">
@@ -2803,22 +2996,24 @@ export default function LauncherPage({
                 Mods{" "}
               </div>
               <div className="text-xs text-white/40">
-                {filteredMods.length} items
+                {displayedMods.length} items
               </div>
             </div>
 
             <div className="h-[calc(100%-2.25rem)] overflow-auto pr-1">
               <div className="flex flex-col gap-2">
-                {filteredMods.map((m) => {
+                {displayedMods.map((m) => {
+                  const presetSummary = isPresetSummaryMod(m);
                   const selected =
-                    selectedMod && modKey(selectedMod) === modKey(m);
+                    selectedMod && listEntryKey(selectedMod) === listEntryKey(m);
                   const initials = `${m.dev?.[0] ?? "M"}${
                     m.name?.[0] ?? "M"
                   }`.toUpperCase();
                   const keyLower = modKeyLower(m);
-                  const coverSrc = installedModIconUrls[keyLower];
-                  const description =
-                    installedModDescriptions[keyLower] || "Click to edit config";
+                  const coverSrc = presetSummary ? m.iconSrc : installedModIconUrls[keyLower];
+                  const description = presetSummary
+                    ? m.description
+                    : installedModDescriptions[keyLower] || "Click to edit config";
                   const enabled =
                     !disabledSet.has(keyLower) && !practiceLockedModKeys.has(keyLower);
                   const installedVer = installedModVersions[keyLower];
@@ -2829,16 +3024,19 @@ export default function LauncherPage({
                     isPracticeRunMode(runMode) && practiceLockedModKeys.has(keyLower);
                   return (
                     <div
-                      key={modKey(m)}
+                      key={listEntryKey(m)}
                       className={cn(
                         "group flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition",
                         selected
                           ? "border-panel-outline bg-white/10"
                           : "border-panel-outline bg-black/10 hover:bg-white/10",
-                          installedVer || "opacity-40"
+                        !presetSummary && !installedVer && "opacity-40"
                       )}
                       onClick={() => setSelectedMod(m)}
-                      onContextMenu={(e) => openModContextMenu(e, m)}
+                      onContextMenu={(e) => {
+                        if (presetSummary) return;
+                        openModContextMenu(e, m);
+                      }}
                       role="button"
                       tabIndex={0}
                       onKeyDown={(e) => {
@@ -2857,6 +3055,11 @@ export default function LauncherPage({
                           <div className="truncate text-sm text-white/40">
                             {m.dev}
                           </div>
+                          {/* {presetSummary ? (
+                            <div className="rounded-full border border-sky-400/30 bg-sky-400/10 px-2 py-0.5 text-[11px] font-medium text-sky-100">
+                              Locked
+                            </div>
+                          ) : null} */}
                           {isPracticeMod ? (
                             <div className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[11px] font-medium text-emerald-200">
                               Practice
@@ -2877,38 +3080,31 @@ export default function LauncherPage({
                         </div>
                       </div>
                       <div className="self-stretch flex shrink-0 items-center">
-                        {/* <div
-                          className={cn(
-                            "rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px]",
-                            installedVer ? "text-white/60" : "text-white/35"
-                          )}
-                          title={
-                            installedVer
-                              ? `Installed: v${installedVer}`
-                              : "Not installed"
-                          }
-                        >
-                          {installedVer ? `v${installedVer}` : "not installed"}
-                        </div> */}
-                        <div
-                          onClick={(e) => e.stopPropagation()}
-                          onKeyDown={(e) => e.stopPropagation()}
-                          className="inline-flex"
-                        >
-                          <Switch
-                            checked={enabled}
-                            disabled={busy || practiceEnableLocked}
-                            onCheckedChange={(v) =>
-                              toggleModEnabledForMod(m, !!v)
-                            }
-                          />
-                        </div>
+                        {presetSummary ? (
+                          <div className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-medium text-white/65">
+                            {m.totalCount} mods
+                          </div>
+                        ) : (
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => e.stopPropagation()}
+                            className="inline-flex"
+                          >
+                            <Switch
+                              checked={enabled}
+                              disabled={busy || practiceEnableLocked}
+                              onCheckedChange={(v) =>
+                                toggleModEnabledForMod(m, !!v)
+                              }
+                            />
+                          </div>
+                        )}
                       </div>
                       {/* <Settings2 className="mt-1 h-4 w-4 shrink-0 text-white/30 opacity-0 transition group-hover:opacity-100" /> */}
                     </div>
                   );
                 })}
-                {filteredMods.length === 0 && (
+                {displayedMods.length === 0 && (
                   <div className="px-2 py-10 text-center text-sm text-white/40">
                     No mods found.
                   </div>
@@ -2964,7 +3160,14 @@ export default function LauncherPage({
                         {selectedMod.dev}
                       </div>
                     </div>
-                    {(() => {
+                    {selectedPresetSummary ? (
+                      <>
+                        <div className="mt-1 line-clamp-2 text-sm text-white/55">
+                          {selectedPresetSummary.installedCount} / {selectedPresetSummary.totalCount} preset mods are installed for v{selectedVersion}.
+                        </div>
+                      </>
+                    ) : null}
+                    {selectedPresetSummary ? null : (() => {
                       const k = `${String(selectedMod.dev).toLowerCase()}::${String(
                         selectedMod.name
                       ).toLowerCase()}`;
@@ -2976,6 +3179,7 @@ export default function LauncherPage({
                         </div>
                       );
                     })()}
+                    {selectedPresetSummary ? null : (
                     <div className="mt-1 text-xs text-white/45">
                       {(() => {
                         const k = `${String(selectedMod.dev).toLowerCase()}::${String(
@@ -2992,6 +3196,7 @@ export default function LauncherPage({
                         return `${v ? `Installed: v${v}` : "Not installed"} · ${stateLabel}`;
                       })()}
                     </div>
+                    )}
                   </div>
                   <button
                     type="button"
@@ -3005,6 +3210,103 @@ export default function LauncherPage({
                   </button>
                 </div>
 
+                {selectedPresetSummary ? (
+                  <>
+                    {/* <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                      <div className="rounded-2xl border border-panel-outline bg-black/10 px-3 py-2">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-white/40">
+                          Preset Tags
+                        </div>
+                        <div className="mt-1 text-sm text-white/85">
+                          {selectedPresetSummary.summaryTags.join(" + ")}
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-panel-outline bg-black/10 px-3 py-2">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-white/40">
+                          Installed
+                        </div>
+                        <div className="mt-1 text-sm text-white/85">
+                          {selectedPresetSummary.installedCount} / {selectedPresetSummary.totalCount}
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-panel-outline bg-black/10 px-3 py-2">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-white/40">
+                          State
+                        </div>
+                        <div className="mt-1 text-sm text-white/85">
+                          Always enabled by preset
+                        </div>
+                      </div>
+                    </div> */}
+
+                    <div className="min-h-0 flex flex-1 overflow-hidden">
+                      <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-panel-outline bg-black/10 p-3">
+                        {selectedPresetSummary.summaryItems.length === 0 ? (
+                          <div className="flex h-full items-center justify-center text-sm text-white/40">
+                            No preset-tagged mods are available for this version.
+                          </div>
+                        ) : (
+                          <div className="flex flex-col gap-2">
+                            {selectedPresetSummary.summaryItems.map((mod) => {
+                              const keyLower = modKeyLower(mod);
+                              const installedVer = installedModVersions[keyLower];
+                              const iconSrc = installedModIconUrls[keyLower];
+                              const description =
+                                installedModDescriptions[keyLower] ||
+                                "Preset-tagged mod";
+                              const disabledByUser = disabledSet.has(keyLower);
+                              return (
+                                <div
+                                  key={modKey(mod)}
+                                  className="flex items-center gap-3 rounded-2xl border border-panel-outline bg-white/5 px-3 py-3"
+                                >
+                                  <ModCover
+                                    src={iconSrc}
+                                    initials={`${mod.dev?.[0] ?? "M"}${
+                                      mod.name?.[0] ?? "M"
+                                    }`.toUpperCase()}
+                                  />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-baseline gap-2">
+                                      <div className="truncate text-sm font-semibold text-white/90">
+                                        {mod.name}
+                                      </div>
+                                      <div className="truncate text-xs text-white/40">
+                                        {mod.dev}
+                                      </div>
+                                    </div>
+                                    <div className="mt-1 truncate text-xs text-white/50">
+                                      {description}
+                                    </div>
+                                  </div>
+                                  <div className="shrink-0 text-right">
+                                    <div className="text-xs font-medium text-white/75">
+                                      {installedVer
+                                        ? `v${installedVer}`
+                                        : selectedInstalled
+                                        ? "Missing"
+                                        : "Pending"}
+                                    </div>
+                                    <div className="mt-1 text-[11px] text-white/40">
+                                      {disabledByUser
+                                        ? "User disabled"
+                                        : installedVer
+                                        ? "Installed"
+                                        : selectedInstalled
+                                        ? "Will sync on prepare"
+                                        : "Needs download"}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
                 {configLinkState?.is_installed && configLinkState?.is_linked === false && (
                   <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs text-amber-200">
                     Config is currently <span className="font-semibold">unlinked</span>. Changes will be
@@ -3344,6 +3646,8 @@ export default function LauncherPage({
                       })()}
                     </div>
                   </div>
+                )}
+                  </>
                 )}
               </div>
             </div>
