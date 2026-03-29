@@ -1,0 +1,30 @@
+<svg width="1600" height="1000" viewBox="0 0 1600 1000" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1600" height="1000" rx="36" fill="#11141B"/>
+  <rect x="36" y="36" width="1528" height="928" rx="28" fill="#171B24" stroke="#2B3342" stroke-width="2"/>
+  <rect x="72" y="72" width="300" height="856" rx="26" fill="#121722"/>
+  <rect x="104" y="114" width="180" height="18" rx="9" fill="#7DF29A"/>
+  <rect x="104" y="152" width="232" height="14" rx="7" fill="#C7D0DD" fill-opacity="0.45"/>
+  <rect x="104" y="210" width="236" height="76" rx="22" fill="#1E2632"/>
+  <rect x="104" y="304" width="236" height="76" rx="22" fill="#1E2632"/>
+  <rect x="104" y="398" width="236" height="76" rx="22" fill="#1E2632"/>
+  <rect x="104" y="492" width="236" height="76" rx="22" fill="#1E2632"/>
+  <rect x="408" y="72" width="1120" height="856" rx="26" fill="#121722"/>
+  <rect x="448" y="112" width="280" height="18" rx="9" fill="#FFB36A"/>
+  <rect x="448" y="150" width="400" height="14" rx="7" fill="#C7D0DD" fill-opacity="0.45"/>
+  <rect x="448" y="224" width="1040" height="118" rx="24" fill="#1E2632"/>
+  <rect x="484" y="264" width="220" height="16" rx="8" fill="#E9EDF5"/>
+  <rect x="484" y="294" width="320" height="12" rx="6" fill="#C7D0DD" fill-opacity="0.45"/>
+  <rect x="1368" y="250" width="84" height="40" rx="20" fill="#7DF29A" fill-opacity="0.2"/>
+  <circle cx="1420" cy="270" r="18" fill="#7DF29A"/>
+  <rect x="448" y="370" width="1040" height="118" rx="24" fill="#1E2632"/>
+  <rect x="484" y="410" width="240" height="16" rx="8" fill="#E9EDF5"/>
+  <rect x="484" y="440" width="280" height="12" rx="6" fill="#C7D0DD" fill-opacity="0.45"/>
+  <rect x="1328" y="402" width="124" height="34" rx="17" fill="#2B3342"/>
+  <rect x="448" y="516" width="1040" height="312" rx="26" fill="#1C2330"/>
+  <rect x="486" y="556" width="210" height="16" rx="8" fill="#8BAAFF"/>
+  <rect x="486" y="592" width="360" height="12" rx="6" fill="#C7D0DD" fill-opacity="0.45"/>
+  <rect x="486" y="644" width="964" height="12" rx="6" fill="#C7D0DD" fill-opacity="0.25"/>
+  <rect x="486" y="684" width="964" height="12" rx="6" fill="#C7D0DD" fill-opacity="0.25"/>
+  <rect x="486" y="724" width="964" height="12" rx="6" fill="#C7D0DD" fill-opacity="0.25"/>
+  <text x="968" y="886" fill="#E9EDF5" font-family="Arial, sans-serif" font-size="48" text-anchor="middle">Replace with your mods and config screenshot</text>
+</svg>

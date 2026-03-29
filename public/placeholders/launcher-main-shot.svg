@@ -1,0 +1,45 @@
+<svg width="1600" height="1000" viewBox="0 0 1600 1000" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1600" height="1000" rx="36" fill="#11141B"/>
+  <rect x="36" y="36" width="1528" height="928" rx="28" fill="#171B24" stroke="#2B3342" stroke-width="2"/>
+  <rect x="72" y="72" width="1456" height="64" rx="18" fill="#10131A"/>
+  <circle cx="112" cy="104" r="10" fill="#FF6A3D"/>
+  <circle cx="146" cy="104" r="10" fill="#FFD166"/>
+  <circle cx="180" cy="104" r="10" fill="#7DF29A"/>
+  <rect x="230" y="90" width="210" height="28" rx="14" fill="#232B38"/>
+  <rect x="72" y="172" width="360" height="728" rx="24" fill="#121722"/>
+  <rect x="102" y="214" width="300" height="22" rx="11" fill="#2D3644"/>
+  <rect x="102" y="258" width="260" height="16" rx="8" fill="#252E3B"/>
+  <rect x="102" y="314" width="300" height="84" rx="20" fill="#1E2632"/>
+  <rect x="122" y="338" width="108" height="16" rx="8" fill="#7DF29A" fill-opacity="0.85"/>
+  <rect x="122" y="366" width="220" height="12" rx="6" fill="#C7D0DD" fill-opacity="0.45"/>
+  <rect x="102" y="422" width="300" height="84" rx="20" fill="#1E2632"/>
+  <rect x="122" y="446" width="126" height="16" rx="8" fill="#FFB36A" fill-opacity="0.9"/>
+  <rect x="122" y="474" width="206" height="12" rx="6" fill="#C7D0DD" fill-opacity="0.45"/>
+  <rect x="102" y="530" width="300" height="84" rx="20" fill="#1E2632"/>
+  <rect x="122" y="554" width="144" height="16" rx="8" fill="#8BAAFF" fill-opacity="0.9"/>
+  <rect x="122" y="582" width="212" height="12" rx="6" fill="#C7D0DD" fill-opacity="0.45"/>
+  <rect x="468" y="172" width="1024" height="240" rx="28" fill="url(#paint0_linear)"/>
+  <rect x="508" y="216" width="240" height="20" rx="10" fill="white" fill-opacity="0.9"/>
+  <rect x="508" y="252" width="400" height="14" rx="7" fill="white" fill-opacity="0.45"/>
+  <rect x="508" y="286" width="182" height="44" rx="14" fill="#8BC34A"/>
+  <rect x="468" y="448" width="486" height="452" rx="28" fill="#121722"/>
+  <rect x="506" y="492" width="260" height="18" rx="9" fill="#2D3644"/>
+  <rect x="506" y="528" width="360" height="12" rx="6" fill="#C7D0DD" fill-opacity="0.45"/>
+  <rect x="506" y="580" width="410" height="260" rx="24" fill="#1C2330"/>
+  <rect x="986" y="448" width="506" height="452" rx="28" fill="#121722"/>
+  <rect x="1024" y="492" width="280" height="18" rx="9" fill="#2D3644"/>
+  <rect x="1024" y="528" width="390" height="12" rx="6" fill="#C7D0DD" fill-opacity="0.45"/>
+  <rect x="1024" y="576" width="430" height="52" rx="20" fill="#1F2734"/>
+  <rect x="1048" y="594" width="140" height="16" rx="8" fill="#7DF29A"/>
+  <rect x="1024" y="648" width="430" height="52" rx="20" fill="#1F2734"/>
+  <rect x="1048" y="666" width="120" height="16" rx="8" fill="#FFB36A"/>
+  <rect x="1024" y="720" width="430" height="52" rx="20" fill="#1F2734"/>
+  <rect x="1048" y="738" width="180" height="16" rx="8" fill="#8BAAFF"/>
+  <text x="800" y="934" fill="#E9EDF5" font-family="Arial, sans-serif" font-size="48" text-anchor="middle">Replace with your main launcher screenshot</text>
+  <defs>
+    <linearGradient id="paint0_linear" x1="468" y1="172" x2="1492" y2="412" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF6A3D"/>
+      <stop offset="1" stop-color="#7DF29A"/>
+    </linearGradient>
+  </defs>
+</svg>
