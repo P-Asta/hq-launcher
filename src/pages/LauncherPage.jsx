@@ -2399,14 +2399,24 @@ export default function LauncherPage({
     return selectedRunOption.label;
   }, [selectedRunOption]);
 
+  const discordSmallImage = useMemo(() => {
+    if (!selectedRunOption?.value) return null;
+    if (selectedRunOption.value.startsWith("brutal")) return "brutal";
+    if (selectedRunOption.value.startsWith("wesley")) return "wesleys";
+    return null;
+  }, [selectedRunOption]);
+
   const discordPresence = useMemo(() => {
     if (gameStatus.running) {
       return {
         details: `Playing ${discordRunLabel}`,
         large_image: "orange",
         large_text: `${selectedRunOption.value.indexOf("practice") == -1? "grinding": "practicing"} v${selectedVersion}`,
+        small_image: discordSmallImage,
+        small_text: discordRunLabel,
         button_label: "Download",
         button_url: DISCORD_DOWNLOAD_URL,
+        use_stream_overlays: true,
       };
     }
 
@@ -2414,11 +2424,15 @@ export default function LauncherPage({
       details: "Idle",
       large_image: "black",
       large_text: "HQ Launcher",
+      small_image: discordSmallImage,
+      small_text: discordRunLabel,
       // state: selectedVersion? `v${selectedVersion}`: "",
       button_label: "Download",
       button_url: DISCORD_DOWNLOAD_URL,
+      use_stream_overlays: false,
     };
   }, [
+    discordSmallImage,
     discordRunLabel,
     gameStatus.running,
     selectedVersion,
@@ -2427,6 +2441,18 @@ export default function LauncherPage({
   useEffect(() => {
     invoke("set_discord_presence", { payload: discordPresence }).catch(() => {});
   }, [discordPresence]);
+
+  useEffect(() => {
+    if (!gameStatus.running) return undefined;
+
+    const intervalId = window.setInterval(() => {
+      invoke("set_discord_presence", { payload: discordPresence }).catch(() => {});
+    }, 15000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [discordPresence, gameStatus.running]);
 
   useEffect(() => {
     return () => {
