@@ -1,6 +1,14 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.7.9 (2026-03-28)
+- Using `streamOverlays` mode makes Discord rich presence more colorful.
+- When using Wesley's HQ, the following items are automatically applied to HQoL:
+```
+Royal apparatus, Bloody apparatus, Cosmic apparatus, Atlantica videotape, Acidir videotape, Asteroid-13 videotape, Junic videotape, Hyx videotape, Floppy disk, Infernis videotape, Etern videotape, Empra videotape, Filitrios videotape, Motra videotape, Hyve videotape, Utril videotape, Gratar videotape, Gloom videotape
+```
+- Mod compatibility for v80 practice mode has been added.
+
 ## 1.7.7 (2026-03-28)
 - The issue where double-clicking the Run button caused the program to run multiple times and crash has been resolved.
 - When selecting `Wesley's` or `Brutal` mode, any additional installed mods are now displayed.
