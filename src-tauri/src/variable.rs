@@ -33,6 +33,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
                 (62, "0.2.7".to_string()),
                 (66, "0.2.8".to_string()),
                 (70, "1.1.1".to_string()),
+                (80, "0.0.0".to_string()),
             ]),
         },
         ModEntry {
@@ -59,11 +60,9 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
                 (62, "3.2.1".to_string()),
                 (66, "3.3.1".to_string()),
                 (69, "3.3.2".to_string()),
-                (73, "0.0.0".to_string()),
+                (80, "0.0.0".to_string()),
             ]),
         },
-
-        
         ModEntry {
             dev: "FlooflesDEV".to_string(),
             name: "LCSeedPicker".to_string(),
@@ -72,13 +71,8 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
             low_cap: Some(40),
             high_cap: Some(49),
             tag_constraints: BTreeMap::new(),
-            version_config: BTreeMap::from([
-                (40, "1.2.2".to_string()),
-            ]),
+            version_config: BTreeMap::from([(40, "1.2.2".to_string())]),
         },
-
-
-        
         ModEntry {
             dev: "kakeEdition".to_string(),
             name: "CoordinateForEasterEggs".to_string(),
@@ -89,6 +83,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
             tag_constraints: BTreeMap::new(),
             version_config: BTreeMap::from([
                 (50, "0.1.1".to_string()),
+                (80, "0.0.0".to_string()),
             ]),
         },
         ModEntry {
@@ -99,9 +94,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
             low_cap: Some(50),
             high_cap: Some(72),
             tag_constraints: BTreeMap::new(),
-            version_config: BTreeMap::from([
-                (50, "1.0.0".to_string()),
-            ]),
+            version_config: BTreeMap::from([(50, "1.0.0".to_string())]),
         },
         ModEntry {
             dev: "Evaisa".to_string(),
@@ -115,6 +108,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
                 (50, "0.16.0".to_string()),
                 (70, "1.1.0".to_string()),
                 (73, "1.1.1".to_string()),
+                (80, "0.0.0".to_string()),
             ]),
         },
         ModEntry {
@@ -127,6 +121,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
             tag_constraints: BTreeMap::new(),
             version_config: BTreeMap::from([
                 (50, "0.6.3".to_string()),
+                (80, "0.0.0".to_string())
             ]),
         },
         ModEntry {
@@ -139,6 +134,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
             tag_constraints: BTreeMap::new(),
             version_config: BTreeMap::from([
                 (50, "0.6.3".to_string()),
+                (80, "0.0.0".to_string())
             ]),
         },
         ModEntry {
@@ -151,9 +147,9 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
             tag_constraints: BTreeMap::new(),
             version_config: BTreeMap::from([
                 (50, "0.0.5".to_string()),
+                (80, "0.0.0".to_string())
             ]),
         },
-
         ModEntry {
             dev: "megumin".to_string(),
             name: "LethalDevMode".to_string(),
@@ -204,7 +200,6 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
             tag_constraints: BTreeMap::new(),
             version_config: BTreeMap::new(),
         },
-        
         ModEntry {
             dev: "LethalCompanyModding".to_string(),
             name: "Yukieji_UnityExplorer".to_string(),
@@ -217,6 +212,6 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
                 (40, "4.12.7".to_string()),
                 (73, "4.13.1".to_string()),
             ]),
-        }
+        },
     ]
 }

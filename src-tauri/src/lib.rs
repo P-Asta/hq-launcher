@@ -51,14 +51,41 @@ fn preset_and_practice_for_run_mode(run_mode: &str) -> (String, bool) {
     }
 }
 
+fn is_wesley_base_run(tags: &[String], practice: bool) -> bool {
+    !practice
+        && tags.iter().any(|t| t.eq_ignore_ascii_case("wesley"))
+        && !tags.iter().any(|t| t.eq_ignore_ascii_case("smhq"))
+}
+
+const HQOL_DONT_STORE_CFG_FILES: [&str; 2] = ["OreoM.HQoL.72.cfg", "OreoM.HQoL.73.cfg"];
+
+const WESLEY_HQOL_DONT_STORE_ITEMS: [&str; 18] = [
+    "Royal apparatus",
+    "Bloody apparatus",
+    "Cosmic apparatus",
+    "Atlantica videotape",
+    "Acidir videotape",
+    "Asteroid-13 videotape",
+    "Junic videotape",
+    "Hyx videotape",
+    "Floppy disk",
+    "Infernis videotape",
+    "Etern videotape",
+    "Empra videotape",
+    "Filitrios videotape",
+    "Motra videotape",
+    "Hyve videotape",
+    "Utril videotape",
+    "Gratar videotape",
+    "Gloom videotape",
+];
+
 fn merge_mod_entries_prefer_later(
     base: Vec<mod_config::ModEntry>,
     overlay: Vec<mod_config::ModEntry>,
 ) -> Vec<mod_config::ModEntry> {
-    let overlay_names: std::collections::HashSet<String> = overlay
-        .iter()
-        .map(|m| m.name.to_lowercase())
-        .collect();
+    let overlay_names: std::collections::HashSet<String> =
+        overlay.iter().map(|m| m.name.to_lowercase()).collect();
 
     let mut merged: Vec<mod_config::ModEntry> = base
         .into_iter()
@@ -253,7 +280,10 @@ async fn prepare_tagged_mods_for_version(
                 step_name: step_name.to_string(),
                 step_progress: 0.0,
                 overall_percent: 0.0,
-                detail: Some(format!("Installing missing tagged mods: {}", tags.join(", "))),
+                detail: Some(format!(
+                    "Installing missing tagged mods: {}",
+                    tags.join(", ")
+                )),
                 downloaded_bytes: None,
                 total_bytes: None,
                 extracted_files: Some(0),
@@ -698,20 +728,182 @@ pub(crate) fn ensure_reverb_trigger_fix_cfg(
     Ok(())
 }
 
-pub(crate) fn ensure_hqol_dont_store_item_cfg(
-    app: &tauri::AppHandle,
+#[derive(Clone, Serialize, Deserialize)]
+struct HqolDontStoreBackupEntry {
+    file_name: String,
+    rhs: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct HqolDontStoreBackup {
     version: u32,
-    wanted: &str,
-) -> Result<(), String> {
-    let plugins = plugins_dir(app, version)?;
-    if hqol_mod_dir(&plugins).is_none() {
-        return Ok(());
+    files: Vec<HqolDontStoreBackupEntry>,
+}
+
+fn hqol_dont_store_backup_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
+        .join("hqol_wesley_dont_store_backup.json"))
+}
+
+fn read_hqol_dont_store_backup(
+    app: &tauri::AppHandle,
+) -> Result<Option<HqolDontStoreBackup>, String> {
+    let path = hqol_dont_store_backup_path(app)?;
+    if !path.exists() {
+        return Ok(None);
     }
 
-    let cfg_dir = version_config_dir(app, version)?;
-    std::fs::create_dir_all(&cfg_dir).map_err(|e| e.to_string())?;
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    match serde_json::from_str::<HqolDontStoreBackup>(&text) {
+        Ok(backup) => Ok(Some(backup)),
+        Err(e) => {
+            log::warn!("Failed to parse HQoL Wesley dont-store backup, clearing stale file: {e}");
+            let _ = std::fs::remove_file(&path);
+            Ok(None)
+        }
+    }
+}
 
-    for file_name in ["OreoM.HQoL.72.cfg", "OreoM.HQoL.73.cfg"] {
+fn write_hqol_dont_store_backup(
+    app: &tauri::AppHandle,
+    backup: Option<&HqolDontStoreBackup>,
+) -> Result<(), String> {
+    let path = hqol_dont_store_backup_path(app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    if let Some(backup) = backup {
+        let json = serde_json::to_string_pretty(backup).map_err(|e| e.to_string())?;
+        std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    } else if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+fn extract_hqol_dont_store_rhs(text: &str) -> Option<String> {
+    let mut in_general = false;
+
+    for seg in text.split_inclusive(['\n', '\r']) {
+        let line = if seg.ends_with("\r\n") {
+            seg.trim_end_matches("\r\n")
+        } else if seg.ends_with('\n') {
+            seg.trim_end_matches('\n')
+        } else if seg.ends_with('\r') {
+            seg.trim_end_matches('\r')
+        } else {
+            seg
+        };
+
+        let trimmed = line.trim_start();
+        let trimmed_all = line.trim();
+
+        if trimmed_all.starts_with('[') && trimmed_all.ends_with(']') {
+            in_general = trimmed_all.eq_ignore_ascii_case("[General]");
+        }
+
+        if !in_general {
+            continue;
+        }
+
+        let Some(eq_idx) = trimmed.find('=') else {
+            continue;
+        };
+        let (left, _) = trimmed.split_at(eq_idx);
+        if left.trim() == "Dont store list" {
+            return Some(trimmed[eq_idx + 1..].to_string());
+        }
+    }
+
+    None
+}
+
+fn replace_hqol_dont_store_rhs(text: &str, replacement_rhs: &str) -> (String, bool) {
+    let mut changed = false;
+    let mut in_general = false;
+    let mut out = String::with_capacity(text.len() + replacement_rhs.len());
+
+    for seg in text.split_inclusive(['\n', '\r']) {
+        let (line, nl) = if seg.ends_with("\r\n") {
+            (seg.trim_end_matches("\r\n"), "\r\n")
+        } else if seg.ends_with('\n') {
+            (seg.trim_end_matches('\n'), "\n")
+        } else if seg.ends_with('\r') {
+            (seg.trim_end_matches('\r'), "\r")
+        } else {
+            (seg, "")
+        };
+
+        let trimmed = line.trim_start();
+        let trimmed_all = line.trim();
+
+        if trimmed_all.starts_with('[') && trimmed_all.ends_with(']') {
+            in_general = trimmed_all.eq_ignore_ascii_case("[General]");
+        }
+
+        if in_general {
+            if let Some(eq_idx) = trimmed.find('=') {
+                let (left, _) = trimmed.split_at(eq_idx);
+                if left.trim() == "Dont store list" {
+                    let indent_len = line.len().saturating_sub(trimmed.len());
+                    let indent = &line[..indent_len];
+                    let current_rhs = &trimmed[eq_idx + 1..];
+                    changed |= current_rhs != replacement_rhs;
+                    out.push_str(indent);
+                    out.push_str("Dont store list =");
+                    out.push_str(replacement_rhs);
+                    out.push_str(nl);
+                    continue;
+                }
+            }
+        }
+
+        out.push_str(line);
+        out.push_str(nl);
+    }
+
+    (out, changed)
+}
+
+fn wesley_hqol_dont_store_rhs(current_rhs: &str) -> String {
+    let comment = current_rhs
+        .find('#')
+        .map(|idx| &current_rhs[idx..])
+        .unwrap_or("");
+    let leading_ws_len = current_rhs.len() - current_rhs.trim_start().len();
+    let leading_ws = &current_rhs[..leading_ws_len];
+    let prefix = if leading_ws.is_empty() {
+        " "
+    } else {
+        leading_ws
+    };
+
+    format!(
+        "{}{}{}",
+        prefix,
+        WESLEY_HQOL_DONT_STORE_ITEMS.join(", "),
+        comment
+    )
+}
+
+fn apply_wesley_hqol_dont_store_override(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<(), String> {
+    let _ = restore_hqol_wesley_dont_store_backup_if_present(app)?;
+
+    let cfg_dir = version_config_dir(app, version)?;
+    let mut backup = HqolDontStoreBackup {
+        version,
+        files: vec![],
+    };
+
+    for file_name in HQOL_DONT_STORE_CFG_FILES {
         let cfg_path = cfg_dir.join(file_name);
         if !cfg_path.exists() {
             continue;
@@ -719,83 +911,58 @@ pub(crate) fn ensure_hqol_dont_store_item_cfg(
 
         let bytes = std::fs::read(&cfg_path).map_err(|e| e.to_string())?;
         let text = String::from_utf8_lossy(&bytes);
+        let Some(current_rhs) = extract_hqol_dont_store_rhs(&text) else {
+            continue;
+        };
 
-        let mut changed = false;
-        let mut in_general = false;
-        let mut out = String::with_capacity(text.len() + wanted.len() + 4);
+        backup.files.push(HqolDontStoreBackupEntry {
+            file_name: file_name.to_string(),
+            rhs: current_rhs.clone(),
+        });
 
-        for seg in text.split_inclusive(['\n', '\r']) {
-            let (line, nl) = if seg.ends_with("\r\n") {
-                (seg.trim_end_matches("\r\n"), "\r\n")
-            } else if seg.ends_with('\n') {
-                (seg.trim_end_matches('\n'), "\n")
-            } else if seg.ends_with('\r') {
-                (seg.trim_end_matches('\r'), "\r")
-            } else {
-                (seg, "")
-            };
-
-            let trimmed = line.trim_start();
-            let trimmed_all = line.trim();
-
-            if trimmed_all.starts_with('[') && trimmed_all.ends_with(']') {
-                in_general = trimmed_all.eq_ignore_ascii_case("[General]");
-            }
-
-            if in_general {
-                if let Some(eq_idx) = trimmed.find('=') {
-                    let (left, right_all) = trimmed.split_at(eq_idx);
-                    if left.trim() == "Dont store list" {
-                        let indent_len = line.len().saturating_sub(trimmed.len());
-                        let indent = &line[..indent_len];
-                        let right_all = right_all.trim_start_matches('=');
-                        let (right, comment) = match right_all.find('#') {
-                            Some(i) => (&right_all[..i], &right_all[i..]),
-                            None => (right_all, ""),
-                        };
-
-                        let mut items: Vec<String> = vec![];
-                        let mut has_wanted = false;
-                        for item in right.split(',') {
-                            let item = item.trim();
-                            if item.is_empty() {
-                                continue;
-                            }
-                            if item.eq_ignore_ascii_case(wanted) {
-                                if has_wanted {
-                                    changed = true;
-                                    continue;
-                                }
-                                has_wanted = true;
-                            }
-                            items.push(item.to_string());
-                        }
-
-                        if !has_wanted {
-                            items.push(wanted.to_string());
-                            changed = true;
-                        }
-
-                        out.push_str(indent);
-                        out.push_str("Dont store list = ");
-                        out.push_str(&items.join(", "));
-                        out.push_str(comment);
-                        out.push_str(nl);
-                        continue;
-                    }
-                }
-            }
-
-            out.push_str(line);
-            out.push_str(nl);
-        }
-
+        let override_rhs = wesley_hqol_dont_store_rhs(&current_rhs);
+        let (updated, changed) = replace_hqol_dont_store_rhs(&text, &override_rhs);
         if changed {
-            std::fs::write(&cfg_path, out).map_err(|e| e.to_string())?;
+            std::fs::write(&cfg_path, updated).map_err(|e| e.to_string())?;
         }
     }
 
+    if backup.files.is_empty() {
+        write_hqol_dont_store_backup(app, None)?;
+    } else {
+        write_hqol_dont_store_backup(app, Some(&backup))?;
+    }
+
     Ok(())
+}
+
+pub(crate) fn restore_hqol_wesley_dont_store_backup_if_present(
+    app: &tauri::AppHandle,
+) -> Result<bool, String> {
+    let Some(backup) = read_hqol_dont_store_backup(app)? else {
+        return Ok(false);
+    };
+
+    let cfg_dir = version_config_dir(app, backup.version)?;
+    let mut restored = false;
+
+    for entry in &backup.files {
+        let cfg_path = cfg_dir.join(&entry.file_name);
+        if !cfg_path.exists() {
+            continue;
+        }
+
+        let bytes = std::fs::read(&cfg_path).map_err(|e| e.to_string())?;
+        let text = String::from_utf8_lossy(&bytes);
+        let (updated, changed) = replace_hqol_dont_store_rhs(&text, &entry.rhs);
+        if changed {
+            std::fs::write(&cfg_path, updated).map_err(|e| e.to_string())?;
+            restored = true;
+        }
+    }
+
+    write_hqol_dont_store_backup(app, None)?;
+    Ok(restored)
 }
 
 fn ensure_weather_registry_cfg(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
@@ -1765,7 +1932,9 @@ fn sync_vlog_with_disablemod_for_version(
     sync_named_mod_with_disablemod_for_version(app, version, "HQHQTeam", "VLog")
 }
 
-fn sync_practice_locked_mods_for_version(version_plugins_dir: &std::path::Path) -> Result<(), String> {
+fn sync_practice_locked_mods_for_version(
+    version_plugins_dir: &std::path::Path,
+) -> Result<(), String> {
     for (dev, name) in [("HQHQTeam", "VLog")] {
         if let Some(dir) = mod_dir_for(version_plugins_dir, dev, name) {
             let _ = set_mod_files_old_suffix(&dir, false);
@@ -1986,7 +2155,10 @@ fn wait_for_prepare_to_finish(
         }
 
         if start.elapsed() >= timeout {
-            return Err("mod file changes are still in progress; please wait a moment and try again".to_string());
+            return Err(
+                "mod file changes are still in progress; please wait a moment and try again"
+                    .to_string(),
+            );
         }
 
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -2499,7 +2671,6 @@ async fn apply_mod_updates(
         .await?;
 
         let _ = ensure_reverb_trigger_fix_cfg(&app, version);
-        let _ = ensure_hqol_dont_store_item_cfg(&app, version, "DungeonKeyItem");
 
         Ok(())
     }
@@ -2601,8 +2772,8 @@ fn launch_game(
     // For HQoL specifically, also ensure `.old` matches disablemod.json on normal runs.
     let _ = sync_hqol_with_disablemod_for_version(&app, version);
     let _ = sync_vlog_with_disablemod_for_version(&app, version);
+    let _ = restore_hqol_wesley_dont_store_backup_if_present(&app);
     let _ = ensure_reverb_trigger_fix_cfg(&app, version);
-    let _ = ensure_hqol_dont_store_item_cfg(&app, version, "DungeonKeyItem");
     wait_for_mod_file_renames_to_settle();
 
     #[cfg(target_os = "windows")]
@@ -2700,6 +2871,7 @@ async fn launch_game_practice(
     if let Ok(plugins) = plugins_dir(&app, version) {
         let _ = sync_practice_locked_mods_for_version(&plugins);
     }
+    let _ = restore_hqol_wesley_dont_store_backup_if_present(&app);
     wait_for_mod_file_renames_to_settle();
 
     let _launch_guard = state
@@ -2847,7 +3019,11 @@ async fn launch_game_preset(
         let _ = sync_vlog_with_disablemod_for_version(&app, version);
     }
     let _ = ensure_reverb_trigger_fix_cfg(&app, version);
-    let _ = ensure_hqol_dont_store_item_cfg(&app, version, "DungeonKeyItem");
+    if is_wesley_base_run(&tags, practice) {
+        apply_wesley_hqol_dont_store_override(&app, version)?;
+    } else {
+        let _ = restore_hqol_wesley_dont_store_backup_if_present(&app);
+    }
     if tags.iter().any(|t| t.eq_ignore_ascii_case("wesley")) {
         let lock_moons = !practice && !tags.iter().any(|t| t.eq_ignore_ascii_case("smhq"));
         let _ = ensure_wesley_moonscripts_cfg(&app, version, lock_moons);
@@ -2994,7 +3170,9 @@ async fn prepare_preset_for_version(
         let _ = sync_vlog_with_disablemod_for_version(app, version);
     }
     let _ = ensure_reverb_trigger_fix_cfg(app, version);
-    let _ = ensure_hqol_dont_store_item_cfg(app, version, "DungeonKeyItem");
+    if !is_wesley_base_run(&tags, practice) {
+        let _ = restore_hqol_wesley_dont_store_backup_if_present(app);
+    }
 
     // Runtime-only tag gating: disable tagged mods not relevant to this selected run.
     let _ = disable_irrelevant_tagged_mods_for_run(app, version, &tags, &practice_ids).await;
@@ -3068,7 +3246,10 @@ fn cancel_prepare(version: u32, state: State<'_, PrepareState>) -> Result<bool, 
 }
 
 #[tauri::command]
-fn get_game_status(state: State<'_, GameState>) -> Result<GameStatus, String> {
+fn get_game_status(
+    app: tauri::AppHandle,
+    state: State<'_, GameState>,
+) -> Result<GameStatus, String> {
     let mut guard = state
         .child
         .lock()
@@ -3081,6 +3262,9 @@ fn get_game_status(state: State<'_, GameState>) -> Result<GameStatus, String> {
             }),
             Some(_) => {
                 *guard = None;
+                if let Err(e) = restore_hqol_wesley_dont_store_backup_if_present(&app) {
+                    log::warn!("Failed to restore HQoL Wesley dont-store backup after exit: {e}");
+                }
                 Ok(GameStatus {
                     running: false,
                     pid: None,
@@ -3096,7 +3280,7 @@ fn get_game_status(state: State<'_, GameState>) -> Result<GameStatus, String> {
 }
 
 #[tauri::command]
-fn stop_game(state: State<'_, GameState>) -> Result<bool, String> {
+fn stop_game(app: tauri::AppHandle, state: State<'_, GameState>) -> Result<bool, String> {
     let _launch_guard = state
         .launch_lock
         .lock()
@@ -3108,8 +3292,14 @@ fn stop_game(state: State<'_, GameState>) -> Result<bool, String> {
     if let Some(mut child) = guard.take() {
         let _ = child.kill();
         let _ = child.wait();
+        if let Err(e) = restore_hqol_wesley_dont_store_backup_if_present(&app) {
+            log::warn!("Failed to restore HQoL Wesley dont-store backup after stop: {e}");
+        }
         Ok(true)
     } else {
+        if let Err(e) = restore_hqol_wesley_dont_store_backup_if_present(&app) {
+            log::warn!("Failed to restore HQoL Wesley dont-store backup without active child: {e}");
+        }
         Ok(false)
     }
 }
@@ -3516,6 +3706,25 @@ fn read_config_file(app: tauri::AppHandle, rel_path: String) -> Result<String, S
     }
     let path = base.join(rel);
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn open_config_file_for_version(
+    app: tauri::AppHandle,
+    version: u32,
+    rel_path: String,
+) -> Result<bool, String> {
+    let base = version_config_dir(&app, version)?;
+    let rel = std::path::Path::new(&rel_path);
+    if !is_safe_rel_path(rel) {
+        return Err("invalid path".to_string());
+    }
+    let path = base.join(rel);
+    if !path.exists() {
+        return Err(format!("config file not found: {}", rel_path));
+    }
+    opener::open(path).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -3979,6 +4188,7 @@ pub fn run() {
             list_config_files_for_mod_for_version,
             list_config_files_for_mod,
             read_config_file,
+            open_config_file_for_version,
             read_bepinex_cfg,
             read_bepinex_cfg_for_version,
             set_bepinex_cfg_entry,

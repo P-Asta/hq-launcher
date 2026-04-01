@@ -10,11 +10,7 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant},
 };
-use tungstenite::{
-    client::IntoClientRequest,
-    stream::MaybeTlsStream,
-    Message, WebSocket,
-};
+use tungstenite::{client::IntoClientRequest, stream::MaybeTlsStream, Message, WebSocket};
 
 const DISCORD_CLIENT_ID: &str = "1481955684320018593";
 const DEFAULT_STREAM_OVERLAYS_WS_PORT: u16 = 8000;
@@ -178,7 +174,9 @@ fn receive_stream_overlays_data() -> Option<StreamOverlaysEnvelope> {
             let _ = stream.set_read_timeout(Some(Duration::from_millis(1200)));
         }
         MaybeTlsStream::NativeTls(stream) => {
-            let _ = stream.get_mut().set_read_timeout(Some(Duration::from_millis(1200)));
+            let _ = stream
+                .get_mut()
+                .set_read_timeout(Some(Duration::from_millis(1200)));
         }
         #[allow(unreachable_patterns)]
         _ => {}
@@ -213,7 +211,10 @@ fn truncate_text(value: String) -> String {
     if value.chars().count() <= max_chars {
         value
     } else {
-        let truncated = value.chars().take(max_chars.saturating_sub(1)).collect::<String>();
+        let truncated = value
+            .chars()
+            .take(max_chars.saturating_sub(1))
+            .collect::<String>();
         format!("{truncated}…")
     }
 }

@@ -80,12 +80,17 @@ pub fn plugins_dir(game_root: &Path) -> PathBuf {
     game_root.join("BepInEx").join("plugins")
 }
 
-fn install_compatibility_matches(spec: &ModEntry, game_version: u32, active_tags: &[String]) -> bool {
+fn install_compatibility_matches(
+    spec: &ModEntry,
+    game_version: u32,
+    active_tags: &[String],
+) -> bool {
     if !active_tags.is_empty()
-        && spec
-            .tags
-            .iter()
-            .any(|tag| active_tags.iter().any(|active| tag.eq_ignore_ascii_case(active)))
+        && spec.tags.iter().any(|tag| {
+            active_tags
+                .iter()
+                .any(|active| tag.eq_ignore_ascii_case(active))
+        })
     {
         return spec.is_compatible_for_tags(game_version, active_tags);
     }

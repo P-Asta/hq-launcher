@@ -507,6 +507,7 @@ export default function LauncherPage({
     x: 0,
     y: 0,
     mod: null,
+    configPath: "",
   });
   const [versionContextMenu, setVersionContextMenu] = useState({
     open: false,
@@ -2231,20 +2232,57 @@ export default function LauncherPage({
   }
 
   function closeModContextMenu() {
-    setModContextMenu((prev) => ({ ...prev, open: false, mod: null }));
+    setModContextMenu((prev) => ({
+      ...prev,
+      open: false,
+      mod: null,
+      configPath: "",
+    }));
   }
 
   function closeVersionContextMenu() {
     setVersionContextMenu((prev) => ({ ...prev, open: false, version: null }));
   }
 
-  function openModContextMenu(event, mod) {
+  async function openModContextMenu(event, mod) {
     event.preventDefault();
+    const version = Number(selectedVersion);
+    const keyLower = `${String(mod?.dev ?? "").toLowerCase()}::${String(
+      mod?.name ?? ""
+    ).toLowerCase()}`;
+    let configPath = "";
+
+    const cachedFiles = modCfgFilesByKey[`${version}::${keyLower}`];
+    if (Array.isArray(cachedFiles)) {
+      configPath = cachedFiles.find((p) =>
+        String(p).toLowerCase().endsWith(".cfg")
+      ) ?? "";
+    } else if (Number.isFinite(version) && mod?.dev && mod?.name) {
+      try {
+        const files = await invoke("list_config_files_for_mod_for_version", {
+          version,
+          dev: mod.dev,
+          name: mod.name,
+        });
+        const list = (Array.isArray(files) ? files : [])
+          .map((p) => String(p))
+          .filter((p) => p.toLowerCase().endsWith(".cfg"));
+        configPath = list[0] ?? "";
+        setModCfgFilesByKey((prev) => ({
+          ...prev,
+          [`${version}::${keyLower}`]: list,
+        }));
+      } catch {
+        configPath = "";
+      }
+    }
+
     setModContextMenu({
       open: true,
       x: event.clientX,
       y: event.clientY,
       mod,
+      configPath,
     });
   }
 
@@ -2297,6 +2335,21 @@ export default function LauncherPage({
         version,
         dev: mod.dev,
         name: mod.name,
+      });
+    } catch (e) {
+      window.alert(e?.message ?? String(e));
+    } finally {
+      closeModContextMenu();
+    }
+  }
+
+  async function openSelectedConfigFile(configPath) {
+    const version = Number(selectedVersion);
+    if (!Number.isFinite(version) || !configPath) return;
+    try {
+      await invoke("open_config_file_for_version", {
+        version,
+        relPath: configPath,
       });
     } catch (e) {
       window.alert(e?.message ?? String(e));
@@ -3699,6 +3752,14 @@ export default function LauncherPage({
           >
             Open Mod Folder
           </button>
+          {modContextMenu.configPath ? (
+            <button
+              className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/10"
+              onClick={() => openSelectedConfigFile(modContextMenu.configPath)}
+            >
+              Open Config File
+            </button>
+          ) : null}
         </div>
       )}
 

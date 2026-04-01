@@ -1037,8 +1037,8 @@ pub async fn ensure_default_config(app: tauri::AppHandle) -> Result<(), String> 
 pub fn ensure_pack_specific_configs_on_startup(app: &tauri::AppHandle) -> Result<(), String> {
     for (version, _) in installed_version_dirs(app)? {
         crate::ensure_reverb_trigger_fix_cfg(app, version)?;
-        crate::ensure_hqol_dont_store_item_cfg(app, version, "DungeonKeyItem")?;
     }
+    let _ = crate::restore_hqol_wesley_dont_store_backup_if_present(app)?;
     Ok(())
 }
 
@@ -1122,7 +1122,6 @@ pub async fn sync_latest_install_from_manifest(app: tauri::AppHandle) -> Result<
         .await?;
 
         crate::ensure_reverb_trigger_fix_cfg(&app, game_version)?;
-        crate::ensure_hqol_dont_store_item_cfg(&app, game_version, "DungeonKeyItem")?;
 
         // Mark sync as complete for the UI.
         progress::emit_progress(
@@ -1586,7 +1585,6 @@ pub async fn download_and_setup(
         .await?;
 
         crate::ensure_reverb_trigger_fix_cfg(&app, version)?;
-        crate::ensure_hqol_dont_store_item_cfg(&app, version, "DungeonKeyItem")?;
         write_manifest_state(
             &app,
             &ManifestState {
