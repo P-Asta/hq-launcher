@@ -11,7 +11,7 @@ mod variable;
 mod zip_utils;
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -49,6 +49,12 @@ fn preset_and_practice_for_run_mode(run_mode: &str) -> (String, bool) {
         "smhq" => ("smhq".to_string(), false),
         _ => ("hq".to_string(), false),
     }
+}
+
+fn is_run_mode_tag(tag: &str) -> bool {
+    tag.eq_ignore_ascii_case("brutal")
+        || tag.eq_ignore_ascii_case("wesley")
+        || tag.eq_ignore_ascii_case("smhq")
 }
 
 fn is_wesley_base_run(tags: &[String], practice: bool) -> bool {
@@ -331,6 +337,28 @@ async fn prepare_tagged_mods_for_version(
     Ok(tagged_ids)
 }
 
+async fn run_mode_tagged_mod_ids(
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<Vec<(String, String)>, String> {
+    let client = reqwest::Client::new();
+    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests) =
+        ModsConfig::fetch_manifest_with_cancel(&client, cancel).await?;
+
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut tagged_ids: Vec<(String, String)> = vec![];
+    for m in mods_cfg.mods {
+        if !m.tags.iter().any(|t| is_run_mode_tag(t)) {
+            continue;
+        }
+        let key = normalize_mod_key(&m.dev, &m.name);
+        if seen.insert(key) {
+            tagged_ids.push((m.dev, m.name));
+        }
+    }
+
+    Ok(tagged_ids)
+}
+
 fn force_enable_mods_for_version(
     app: &tauri::AppHandle,
     version: u32,
@@ -361,53 +389,6 @@ fn force_enable_mods_for_version(
         }
         if let Some(dir) = mod_dir_for(&patchers, dev, name) {
             let _ = set_mod_files_old_suffix(&dir, true);
-        }
-    }
-
-    Ok(())
-}
-
-async fn disable_irrelevant_tagged_mods_for_run(
-    app: &tauri::AppHandle,
-    version: u32,
-    active_tags: &[String],
-    protected_ids: &[(String, String)],
-) -> Result<(), String> {
-    let client = reqwest::Client::new();
-    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests) =
-        ModsConfig::fetch_manifest(&client).await?;
-
-    let active_lower: Vec<String> = active_tags.iter().map(|t| t.to_lowercase()).collect();
-    let protected: std::collections::HashSet<String> = protected_ids
-        .iter()
-        .map(|(d, n)| format!("{}::{}", d.to_lowercase(), n.to_lowercase()))
-        .collect();
-    let plugins = plugins_dir(app, version)?;
-    let patchers = patchers_dir(app, version)?;
-
-    for m in mods_cfg.mods {
-        if m.tags.is_empty() {
-            continue;
-        }
-        // Never disable mods we explicitly prepared (e.g. practice mods) even if their manifest entry is tagged.
-        let id = format!("{}::{}", m.dev.to_lowercase(), m.name.to_lowercase());
-        if protected.contains(&id) {
-            continue;
-        }
-        let matches_active = m
-            .tags
-            .iter()
-            .any(|t| active_lower.contains(&t.to_lowercase()));
-
-        // If this mod has tags but doesn't match the current run's tags, disable it
-        // for this run only (do NOT write to disablemod.json).
-        if !matches_active {
-            if let Some(dir) = mod_dir_for(&plugins, &m.dev, &m.name) {
-                let _ = set_mod_files_old_suffix(&dir, false);
-            }
-            if let Some(dir) = mod_dir_for(&patchers, &m.dev, &m.name) {
-                let _ = set_mod_files_old_suffix(&dir, false);
-            }
         }
     }
 
@@ -1755,24 +1736,40 @@ fn normalize_mod_id(dev: &str, name: &str) -> DisabledMod {
     }
 }
 
-fn for_each_file_recursive(
-    root: &std::path::Path,
-    mut f: impl FnMut(&std::path::Path) -> Result<(), String>,
-) -> Result<(), String> {
+fn normalize_mod_key(dev: &str, name: &str) -> String {
+    let id = normalize_mod_id(dev, name);
+    format!("{}::{}", id.dev, id.name)
+}
+
+fn mod_keys_from_pairs(mods: &[(String, String)]) -> HashSet<String> {
+    mods.iter()
+        .map(|(dev, name)| normalize_mod_key(dev, name))
+        .collect()
+}
+
+fn disabled_mod_keys(disabled_mods: &[DisabledMod]) -> HashSet<String> {
+    disabled_mods
+        .iter()
+        .map(|m| normalize_mod_key(&m.dev, &m.name))
+        .collect()
+}
+
+fn collect_mod_entries_recursive(root: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
+    let mut out: Vec<std::path::PathBuf> = vec![];
     let mut stack: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         for e in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
             let e = e.map_err(|e| e.to_string())?;
             let path = e.path();
             let ty = e.file_type().map_err(|e| e.to_string())?;
+            out.push(path.clone());
             if ty.is_dir() {
                 stack.push(path);
-            } else if ty.is_file() {
-                f(&path)?;
             }
         }
     }
-    Ok(())
+    out.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    Ok(out)
 }
 
 fn set_mod_files_old_suffix(mod_dir: &std::path::Path, enabled: bool) -> Result<(), String> {
@@ -1780,36 +1777,104 @@ fn set_mod_files_old_suffix(mod_dir: &std::path::Path, enabled: bool) -> Result<
         return Ok(());
     }
 
+    let entries = collect_mod_entries_recursive(mod_dir)?;
+
     if enabled {
         // Remove .old suffix
-        for_each_file_recursive(mod_dir, |path| {
+        for path in entries {
             let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
             if !name.to_lowercase().ends_with(".old") {
-                return Ok(());
+                continue;
             }
             let mut new_name = name.to_string();
             new_name.truncate(new_name.len().saturating_sub(4));
             let new_path = path.with_file_name(new_name);
             if new_path.exists() {
                 // Don't overwrite; keep the .old file.
-                return Ok(());
+                continue;
             }
-            std::fs::rename(path, new_path).map_err(|e| e.to_string())
-        })
+            std::fs::rename(&path, new_path).map_err(|e| e.to_string())?;
+        }
     } else {
         // Add .old suffix
-        for_each_file_recursive(mod_dir, |path| {
+        for path in entries {
             let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
             if name.to_lowercase().ends_with(".old") {
-                return Ok(());
+                continue;
             }
             let new_path = path.with_file_name(format!("{name}.old"));
             if new_path.exists() {
-                return Ok(());
+                continue;
             }
-            std::fs::rename(path, new_path).map_err(|e| e.to_string())
-        })
+            std::fs::rename(&path, new_path).map_err(|e| e.to_string())?;
+        }
     }
+
+    Ok(())
+}
+
+fn sync_mod_dirs_with_effective_state(
+    root: &std::path::Path,
+    disabled_keys: &HashSet<String>,
+    forced_disabled_keys: &HashSet<String>,
+    forced_enabled_keys: &HashSet<String>,
+) -> Result<(), String> {
+    if !root.exists() {
+        return Ok(());
+    }
+
+    let rd = std::fs::read_dir(root).map_err(|e| e.to_string())?;
+    for e in rd {
+        let e = e.map_err(|e| e.to_string())?;
+        let path = e.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let folder = e.file_name().to_string_lossy().to_string();
+        let Some((dev, name)) = folder.split_once('-') else {
+            continue;
+        };
+        let key = normalize_mod_key(dev, name);
+        let enabled = if forced_enabled_keys.contains(&key) {
+            true
+        } else if forced_disabled_keys.contains(&key) {
+            false
+        } else {
+            !disabled_keys.contains(&key)
+        };
+        set_mod_files_old_suffix(&path, enabled)?;
+    }
+
+    Ok(())
+}
+
+fn apply_effective_mod_states_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+    forced_disabled_mods: &[(String, String)],
+    forced_enabled_mods: &[(String, String)],
+) -> Result<(), String> {
+    let list = read_disablemod(app)?;
+    let disabled_keys = disabled_mod_keys(&list.mods);
+    let forced_disabled_keys = mod_keys_from_pairs(forced_disabled_mods);
+    let forced_enabled_keys = mod_keys_from_pairs(forced_enabled_mods);
+
+    let plugins = plugins_dir(app, version)?;
+    let patchers = patchers_dir(app, version)?;
+    sync_mod_dirs_with_effective_state(
+        &plugins,
+        &disabled_keys,
+        &forced_disabled_keys,
+        &forced_enabled_keys,
+    )?;
+    sync_mod_dirs_with_effective_state(
+        &patchers,
+        &disabled_keys,
+        &forced_disabled_keys,
+        &forced_enabled_keys,
+    )?;
+    let _ = sync_fontpatcher_with_assets_for_version(app, version);
+    Ok(())
 }
 
 fn wait_for_mod_file_renames_to_settle() {
@@ -1866,19 +1931,7 @@ fn describe_mode_file_changes(practice: bool, tags: &[String]) -> String {
 // (intentionally no "is_disabled"/"is_mod_enabled" helpers; frontend uses disablemod list as source of truth)
 
 fn apply_disabled_mods_for_version(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
-    let list = read_disablemod(app)?;
-    let plugins = plugins_dir(app, version)?;
-    let patchers = patchers_dir(app, version)?;
-    for m in list.mods {
-        if let Some(dir) = mod_dir_for(&plugins, &m.dev, &m.name) {
-            let _ = set_mod_files_old_suffix(&dir, false);
-        }
-        if let Some(dir) = mod_dir_for(&patchers, &m.dev, &m.name) {
-            let _ = set_mod_files_old_suffix(&dir, false);
-        }
-    }
-    let _ = sync_fontpatcher_with_assets_for_version(app, version);
-    Ok(())
+    apply_effective_mod_states_for_version(app, version, &[], &[])
 }
 
 fn hqol_mod_dir(plugins_dir: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -1930,6 +1983,19 @@ fn sync_vlog_with_disablemod_for_version(
     version: u32,
 ) -> Result<(), String> {
     sync_named_mod_with_disablemod_for_version(app, version, "HQHQTeam", "VLog")
+}
+
+fn practice_mode_mod_ids() -> Vec<(String, String)> {
+    variable::get_practice_mod_list()
+        .into_iter()
+        .map(|m| (m.dev, m.name))
+        .collect()
+}
+
+fn practice_mode_forced_disabled_ids() -> Vec<(String, String)> {
+    let mut mods = practice_mode_mod_ids();
+    mods.push(("HQHQTeam".to_string(), "VLog".to_string()));
+    mods
 }
 
 fn sync_practice_locked_mods_for_version(
@@ -2721,7 +2787,7 @@ fn get_steam_client_path(launcher_root: &std::path::Path) -> std::path::PathBuf 
 }
 
 #[tauri::command]
-fn launch_game(
+async fn launch_game(
     app: tauri::AppHandle,
     version: u32,
     state: State<'_, GameState>,
@@ -2767,8 +2833,11 @@ fn launch_game(
         *guard = None;
     }
 
-    // Ensure disabled mods are applied for this version before launch.
-    let _ = apply_disabled_mods_for_version(&app, version);
+    let mut forced_disabled_ids = practice_mode_mod_ids();
+    forced_disabled_ids.extend(run_mode_tagged_mod_ids(None).await?);
+
+    // Non-practice launch: mode-required disabled mods win over the saved disabled list.
+    let _ = apply_effective_mod_states_for_version(&app, version, &forced_disabled_ids, &[]);
     // For HQoL specifically, also ensure `.old` matches disablemod.json on normal runs.
     let _ = sync_hqol_with_disablemod_for_version(&app, version);
     let _ = sync_vlog_with_disablemod_for_version(&app, version);
@@ -2864,10 +2933,17 @@ async fn launch_game_practice(
         .ok_or_else(|| "invalid exe path".to_string())?;
 
     // Practice run: install + enable practice mods (compatible with this game version).
-    let _ = prepare_practice_mods_for_version(&app, version, None).await?;
+    let practice_ids = prepare_practice_mods_for_version(&app, version, None).await?;
+    let mut forced_disabled_ids = practice_mode_forced_disabled_ids();
+    forced_disabled_ids.extend(run_mode_tagged_mod_ids(None).await?);
 
-    // Ensure disabled mods are applied for this version before launch.
-    let _ = apply_disabled_mods_for_version(&app, version);
+    // Practice mode state wins over the saved disabled list on launch.
+    let _ = apply_effective_mod_states_for_version(
+        &app,
+        version,
+        &forced_disabled_ids,
+        &practice_ids,
+    );
     if let Ok(plugins) = plugins_dir(&app, version) {
         let _ = sync_practice_locked_mods_for_version(&plugins);
     }
@@ -2961,10 +3037,12 @@ async fn launch_game_preset(
     // Normalize preset and map to manifest tags.
     let tags = preset_tags_for_name(&preset);
 
-    if practice {
+    let practice_ids = if practice {
         // Practice run: install + enable practice mods (compatible with this game version).
-        let _ = prepare_practice_mods_for_version(&app, version, None).await?;
-    }
+        prepare_practice_mods_for_version(&app, version, None).await?
+    } else {
+        vec![]
+    };
 
     // Install preset-tagged mods additively (no overwrite).
     // For practice runs, install these AFTER practice mods so preset-specific pins can win.
@@ -3007,8 +3085,26 @@ async fn launch_game_preset(
         let _ = force_enable_mods_for_version(&app, version, &preset_ids);
     }
 
-    // Ensure disabled mods are applied for this version before launch.
-    let _ = apply_disabled_mods_for_version(&app, version);
+    let tagged_disabled_ids = run_mode_tagged_mod_ids(None).await?;
+    let mut forced_enabled_ids = preset_ids.clone();
+    forced_enabled_ids.extend(practice_ids.clone());
+    let forced_disabled_ids = if practice {
+        let mut ids = practice_mode_forced_disabled_ids();
+        ids.extend(tagged_disabled_ids);
+        ids
+    } else {
+        let mut ids = practice_mode_mod_ids();
+        ids.extend(tagged_disabled_ids);
+        ids
+    };
+
+    // Mode-required state must win over the saved disabled list at launch time too.
+    let _ = apply_effective_mod_states_for_version(
+        &app,
+        version,
+        &forced_disabled_ids,
+        &forced_enabled_ids,
+    );
     if practice {
         if let Ok(plugins) = plugins_dir(&app, version) {
             let _ = sync_practice_locked_mods_for_version(&plugins);
@@ -3029,10 +3125,6 @@ async fn launch_game_preset(
         let _ = ensure_wesley_moonscripts_cfg(&app, version, lock_moons);
     }
     wait_for_mod_file_renames_to_settle();
-
-    // Runtime-only tag gating: disable tagged mods not relevant to this run.
-    // (No disablemod.json writes; next run will re-evaluate.)
-    let _ = disable_irrelevant_tagged_mods_for_run(&app, version, &tags, &[]).await;
 
     let _launch_guard = state
         .launch_lock
@@ -3159,8 +3251,26 @@ async fn prepare_preset_for_version(
         return Err("Cancelled".to_string());
     }
 
-    // Apply persisted disable list (user + practice) now.
-    let _ = apply_disabled_mods_for_version(app, version);
+    let tagged_disabled_ids = run_mode_tagged_mod_ids(Some(&cancel)).await?;
+    let mut forced_enabled_ids = preset_ids.clone();
+    forced_enabled_ids.extend(practice_ids.clone());
+    let forced_disabled_ids = if practice {
+        let mut ids = practice_mode_forced_disabled_ids();
+        ids.extend(tagged_disabled_ids);
+        ids
+    } else {
+        let mut ids = practice_mode_mod_ids();
+        ids.extend(tagged_disabled_ids);
+        ids
+    };
+
+    // Apply the effective state for this mode now. Mode-required changes have priority.
+    let _ = apply_effective_mod_states_for_version(
+        app,
+        version,
+        &forced_disabled_ids,
+        &forced_enabled_ids,
+    );
     if practice {
         if let Ok(plugins) = plugins_dir(app, version) {
             let _ = sync_practice_locked_mods_for_version(&plugins);
@@ -3173,9 +3283,6 @@ async fn prepare_preset_for_version(
     if !is_wesley_base_run(&tags, practice) {
         let _ = restore_hqol_wesley_dont_store_backup_if_present(app);
     }
-
-    // Runtime-only tag gating: disable tagged mods not relevant to this selected run.
-    let _ = disable_irrelevant_tagged_mods_for_run(app, version, &tags, &practice_ids).await;
     wait_for_mod_file_renames_to_settle();
     emit_basic_mod_files_progress(
         app,

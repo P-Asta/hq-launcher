@@ -1,6 +1,15 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+
+
+## ~~1.7.11 (2026-04-04)~~
+- Fixed mod enable/disable sync so selecting a version now rechecks every installed mod folder and removes stale `.old` suffixes for mods not listed in `disablemod.json`, preventing manually-disabled files from staying disabled by mistake.
+- The issue where all mods from version 1.7.10 were enabled has been resolved.
+
+## 1.7.10 (2026-04-04)
+- Fixed mod enable/disable sync so selecting a version now rechecks every installed mod folder and removes stale `.old` suffixes for mods not listed in `disablemod.json`, preventing manually-disabled files from staying disabled by mistake.
+
 ## 1.7.9 (2026-03-28)
 - Using `streamOverlays` mode makes Discord rich presence more colorful.
 - When using Wesley's HQ, the following items are automatically applied to HQoL:
