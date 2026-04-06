@@ -8,7 +8,7 @@ use std::{
     net::TcpStream,
     path::PathBuf,
     sync::Mutex,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tungstenite::{client::IntoClientRequest, stream::MaybeTlsStream, Message, WebSocket};
 
@@ -40,6 +40,7 @@ struct ResolvedPresencePayload {
     button_label: Option<String>,
     button_url: Option<String>,
     party: Option<[i32; 2]>,
+    start_timestamp: Option<i64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -66,6 +67,7 @@ struct StreamOverlaysEnvelope {
 pub struct DiscordPresenceState {
     client: Mutex<Option<DiscordIpcClient>>,
     last_payload: Mutex<Option<ResolvedPresencePayload>>,
+    in_game_started_at: Mutex<Option<i64>>,
 }
 
 fn ensure_connected(state: &DiscordPresenceState) -> Result<(), String> {
@@ -90,6 +92,10 @@ fn build_activity<'a>(payload: &'a ResolvedPresencePayload) -> activity::Activit
 
     if let Some(state) = payload.state.as_deref() {
         activity = activity.state(state);
+    }
+
+    if let Some(start_timestamp) = payload.start_timestamp {
+        activity = activity.timestamps(activity::Timestamps::new().start(start_timestamp));
     }
 
     if payload.large_image.is_some() || payload.large_text.is_some() {
@@ -230,6 +236,7 @@ fn resolve_presence_payload(payload: &PresencePayload) -> ResolvedPresencePayloa
         button_label: payload.button_label.clone(),
         button_url: payload.button_url.clone(),
         party: None,
+        start_timestamp: None,
     };
 
     if !payload.use_stream_overlays {
@@ -297,12 +304,38 @@ fn resolve_presence_payload(payload: &PresencePayload) -> ResolvedPresencePayloa
     resolved
 }
 
+fn is_in_game_presence(payload: &ResolvedPresencePayload) -> bool {
+    payload.large_image.as_deref() == Some("orange")
+}
+
+fn current_unix_timestamp() -> Option<i64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+}
+
 #[tauri::command]
 pub fn set_discord_presence(
     payload: PresencePayload,
     state: tauri::State<'_, DiscordPresenceState>,
 ) -> Result<bool, String> {
-    let resolved_payload = resolve_presence_payload(&payload);
+    let mut resolved_payload = resolve_presence_payload(&payload);
+
+    {
+        let mut started_at = state
+            .in_game_started_at
+            .lock()
+            .map_err(|_| "discord presence timer lock poisoned".to_string())?;
+
+        if is_in_game_presence(&resolved_payload) {
+            let start_timestamp = (*started_at).or_else(current_unix_timestamp);
+            *started_at = start_timestamp;
+            resolved_payload.start_timestamp = start_timestamp;
+        } else {
+            *started_at = None;
+        }
+    }
 
     {
         let last = state
@@ -348,6 +381,14 @@ pub fn clear_discord_presence(
             .lock()
             .map_err(|_| "discord presence cache lock poisoned".to_string())?;
         *last = None;
+    }
+
+    {
+        let mut started_at = state
+            .in_game_started_at
+            .lock()
+            .map_err(|_| "discord presence timer lock poisoned".to_string())?;
+        *started_at = None;
     }
 
     let mut client_guard = state

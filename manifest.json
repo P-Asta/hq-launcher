@@ -125,7 +125,7 @@
       "dev": "Zaggy1024",
       "enabled": true,
       "low_cap": null,
-      "high_cap": null,
+      "high_cap": 73,
       "version_config": {
         "40": "1.0.1",
         "49": "1.2.2",
@@ -238,7 +238,7 @@
       "dev": "Zaggy1024",
       "enabled": true,
       "low_cap": 62,
-      "high_cap": null,
+      "high_cap": 73,
       "version_config": {
         "62": "0.0.14",
         "64": "2.3.2",

@@ -11,7 +11,7 @@ mod variable;
 mod zip_utils;
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -419,6 +419,164 @@ fn shared_config_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, Strin
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?
         .join("config")
         .join("shared"))
+}
+
+fn collect_installed_mod_pairs(
+    root: &std::path::Path,
+    seen: &mut HashSet<String>,
+    out: &mut Vec<(String, String)>,
+) -> Result<(), String> {
+    if !root.exists() {
+        return Ok(());
+    }
+
+    for e in std::fs::read_dir(root).map_err(|e| e.to_string())? {
+        let e = e.map_err(|e| e.to_string())?;
+        let path = e.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let folder = e.file_name().to_string_lossy().to_string();
+        let Some((dev, name)) = folder.split_once('-') else {
+            continue;
+        };
+
+        let key = normalize_mod_key(dev, name);
+        if seen.insert(key) {
+            out.push((dev.to_string(), name.to_string()));
+        }
+    }
+
+    Ok(())
+}
+
+fn remote_mod_has_active_cap(spec: &mod_config::ModEntry, active_tags: &[String]) -> bool {
+    if spec.tags.is_empty() {
+        return spec.low_cap.is_some() || spec.high_cap.is_some();
+    }
+
+    active_tags.iter().any(|active_tag| {
+        if !spec
+            .tags
+            .iter()
+            .any(|tag| tag.eq_ignore_ascii_case(active_tag))
+        {
+            return false;
+        }
+
+        let constraint = spec
+            .tag_constraints
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(active_tag))
+            .map(|(_, value)| value);
+        let low_cap = constraint.and_then(|rule| rule.low_cap).or(spec.low_cap);
+        let high_cap = constraint.and_then(|rule| rule.high_cap).or(spec.high_cap);
+        low_cap.is_some() || high_cap.is_some()
+    })
+}
+
+async fn purge_capped_incompatible_installed_mods(
+    app: &tauri::AppHandle,
+    version: u32,
+    run_mode: Option<&str>,
+) -> Result<u64, String> {
+    let plugins = plugins_dir(app, version)?;
+    let patchers = patchers_dir(app, version)?;
+
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut installed: Vec<(String, String)> = vec![];
+    collect_installed_mod_pairs(&plugins, &mut seen, &mut installed)?;
+    collect_installed_mod_pairs(&patchers, &mut seen, &mut installed)?;
+    if installed.is_empty() {
+        return Ok(0);
+    }
+
+    let client = reqwest::Client::new();
+    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests) =
+        ModsConfig::fetch_manifest(&client).await?;
+    let active_tags = run_mode
+        .map(|mode| {
+            let (preset, _practice) = preset_and_practice_for_run_mode(mode);
+            preset_tags_for_name(&preset)
+        })
+        .unwrap_or_default();
+
+    let mut capped_incompatible: HashMap<String, mod_config::ModEntry> = HashMap::new();
+    for spec in mods_cfg.mods {
+        if !spec.enabled {
+            continue;
+        }
+
+        let is_incompatible = if spec.tags.is_empty() {
+            !spec.is_compatible(version)
+        } else {
+            if run_mode.is_none() {
+                continue;
+            }
+
+            active_tags.iter().any(|active_tag| {
+                spec.tags
+                    .iter()
+                    .any(|tag| tag.eq_ignore_ascii_case(active_tag))
+            }) && !spec.is_compatible_for_tags(version, &active_tags)
+        };
+
+        if !is_incompatible || !remote_mod_has_active_cap(&spec, &active_tags) {
+            continue;
+        }
+
+        capped_incompatible.insert(normalize_mod_key(&spec.dev, &spec.name), spec);
+    }
+
+    if capped_incompatible.is_empty() {
+        return Ok(0);
+    }
+
+    let mut purged: u64 = 0;
+
+    for (installed_dev, installed_name) in installed {
+        let key = normalize_mod_key(&installed_dev, &installed_name);
+        let Some(spec) = capped_incompatible.get(&key) else {
+            continue;
+        };
+
+        let mut removed_any = false;
+
+        if let Some(dir) = mod_dir_for(&plugins, &spec.dev, &spec.name) {
+            std::fs::remove_dir_all(&dir).map_err(|e| {
+                format!(
+                    "failed to remove incompatible capped mod {} ({}): {e}",
+                    mod_folder_name(&spec.dev, &spec.name),
+                    dir.to_string_lossy()
+                )
+            })?;
+            removed_any = true;
+        }
+
+        if let Some(dir) = mod_dir_for(&patchers, &spec.dev, &spec.name) {
+            std::fs::remove_dir_all(&dir).map_err(|e| {
+                format!(
+                    "failed to remove incompatible capped patcher {} ({}): {e}",
+                    mod_folder_name(&spec.dev, &spec.name),
+                    dir.to_string_lossy()
+                )
+            })?;
+            removed_any = true;
+        }
+
+        if !removed_any {
+            continue;
+        }
+
+        purged = purged.saturating_add(1);
+        let mod_label = mod_folder_name(&spec.dev, &spec.name);
+        log::info!(
+            "Purged incompatible capped mod {mod_label} from v{version} while checking installed mods"
+        );
+    }
+
+    Ok(purged)
 }
 
 fn is_safe_rel_path(rel: &std::path::Path) -> bool {
@@ -2516,6 +2674,7 @@ async fn check_mod_updates(
     run_mode: Option<String>,
 ) -> Result<bool, String> {
     let client = reqwest::Client::new();
+    let run_mode_name = run_mode.as_deref().unwrap_or("hq");
 
     let dir = app
         .path()
@@ -2526,7 +2685,7 @@ async fn check_mod_updates(
     let mods_cfg = effective_mods_config_for_run_mode(
         &client,
         version,
-        run_mode.as_deref().unwrap_or("hq"),
+        run_mode_name,
         false,
         false,
     )
@@ -2571,6 +2730,21 @@ async fn check_mod_updates(
         return Err(e);
     }
 
+    match purge_capped_incompatible_installed_mods(&app, version, Some(run_mode_name)).await {
+        Ok(purged) => {
+            if purged > 0 {
+                log::info!(
+                    "Purged {purged} incompatible capped mods after checking updates for v{version}"
+                );
+            }
+        }
+        Err(e) => {
+            log::warn!(
+                "Failed to purge incompatible capped mods after checking updates for v{version}: {e}"
+            );
+        }
+    }
+
     progress::emit_updatable_finished(
         &app,
         TaskFinishedPayload {
@@ -2589,6 +2763,7 @@ async fn apply_mod_updates(
 ) -> Result<bool, String> {
     let res: Result<(), String> = async {
         let client = reqwest::Client::new();
+        let run_mode_name = run_mode.as_deref().unwrap_or("hq");
 
         let dir = app
             .path()
@@ -2606,7 +2781,7 @@ async fn apply_mod_updates(
         let mods_cfg = effective_mods_config_for_run_mode(
             &client,
             version,
-            run_mode.as_deref().unwrap_or("hq"),
+            run_mode_name,
             false,
             false,
         )
@@ -2666,6 +2841,21 @@ async fn apply_mod_updates(
             },
         )
         .await?;
+
+        match purge_capped_incompatible_installed_mods(&app, version, Some(run_mode_name)).await {
+            Ok(purged) => {
+                if purged > 0 {
+                    log::info!(
+                        "Purged {purged} incompatible capped mods during update check for v{version}"
+                    );
+                }
+            }
+            Err(e) => {
+                log::warn!(
+                    "Failed to purge incompatible capped mods during update check for v{version}: {e}"
+                );
+            }
+        }
 
         if updatable.is_empty() {
             progress::emit_progress(
@@ -3526,10 +3716,25 @@ async fn set_mod_enabled(
 }
 
 #[tauri::command]
-fn list_installed_mod_versions(
+async fn list_installed_mod_versions(
     app: tauri::AppHandle,
     version: u32,
 ) -> Result<Vec<InstalledModVersion>, String> {
+    match purge_capped_incompatible_installed_mods(&app, version, None).await {
+        Ok(purged) => {
+            if purged > 0 {
+                log::info!(
+                    "Purged {purged} incompatible capped mods before listing installed mods for v{version}"
+                );
+            }
+        }
+        Err(e) => {
+            log::warn!(
+                "Failed to purge incompatible capped mods before listing installed mods for v{version}: {e}"
+            );
+        }
+    }
+
     let plugins = plugins_dir(&app, version)?;
     if !plugins.exists() {
         return Ok(vec![]);
