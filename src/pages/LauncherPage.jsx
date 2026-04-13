@@ -125,6 +125,55 @@ function isModCompatibleWithVersion(mod, version) {
   return true;
 }
 
+function getRunModePresetTags(mode) {
+  if (mode === "brutal" || mode === "brutal_practice") return ["Brutal"];
+  if (mode === "c_moons" || mode === "c_moons_practice" || mode === "c_moons_smhq")
+    return ["C.Moons"];
+  if (mode === "wesley" || mode === "wesley_practice" || mode === "wesley_smhq")
+    return ["Wesley"];
+  return [];
+}
+
+function getManifestPresetConstraint(manifest, tag) {
+  const entries = Object.entries(manifest?.preset_tag_constraints ?? {});
+  const match = entries.find(([key]) => String(key).toLowerCase() === String(tag).toLowerCase());
+  return match?.[1] ?? null;
+}
+
+function getPresetVersionRange(manifest, mode) {
+  const tags = getRunModePresetTags(mode);
+  let low = null;
+  let high = null;
+
+  for (const tag of tags) {
+    const rule = getManifestPresetConstraint(manifest, tag);
+    if (!rule) continue;
+    const lowCap = toOptionalNumber(rule?.low_cap);
+    const highCap = toOptionalNumber(rule?.high_cap);
+    if (lowCap != null) low = low == null ? lowCap : Math.max(low, lowCap);
+    if (highCap != null) high = high == null ? highCap : Math.min(high, highCap);
+  }
+
+  if (low == null && high == null) return null;
+  return { low, high };
+}
+
+function isVersionWithinRange(version, range) {
+  const v = Number(version);
+  if (!Number.isFinite(v) || !range) return true;
+  if (range.low != null && v < range.low) return false;
+  if (range.high != null && v > range.high) return false;
+  return true;
+}
+
+function clampVersionToRange(version, range) {
+  const v = Number(version);
+  if (!Number.isFinite(v) || !range) return v;
+  if (range.low != null && v < range.low) return range.low;
+  if (range.high != null && v > range.high) return range.high;
+  return v;
+}
+
 const PRACTICE_LOCKED_MOD_KEYS = new Set([
   "hqhqteam::vlog",
 ]);
@@ -1307,7 +1356,9 @@ export default function LauncherPage({
         const mf = await manifestPromise;
         if (cancelled) return;
 
-        setManifest(mf ?? { version: null, mods: [], manifests: {} });
+        setManifest(
+          mf ?? { version: null, mods: [], manifests: {}, preset_tag_constraints: {} }
+        );
 
         const remoteV =
           mf?.manifests && typeof mf.manifests === "object"
@@ -2310,38 +2361,16 @@ export default function LauncherPage({
     return toggleModEnabledForMod(selectedMod, nextEnabled);
   }
 
-  const minRequiredVersion = useMemo(() => {
-    // Gate versions shown in the version selector depending on the selected run mode.
-    // Brutal: v49+, C.Moons: v56+, Wesley: v69+
-    if (runMode === "brutal" || runMode === "brutal_practice") return 49;
-    if (
-      runMode === "c_moons" ||
-      runMode === "c_moons_practice" ||
-      runMode === "c_moons_smhq"
-    )
-      return 56;
-    if (
-      runMode === "wesley" ||
-      runMode === "wesley_practice" ||
-      runMode === "wesley_smhq"
-    )
-      return 69;
-    return null;
-  }, [runMode]);
-
-  function minRequiredForRunMode(mode) {
-    if (mode === "brutal" || mode === "brutal_practice") return 49;
-    if (mode === "c_moons" || mode === "c_moons_practice" || mode === "c_moons_smhq")
-      return 56;
-    if (mode === "wesley" || mode === "wesley_practice" || mode === "wesley_smhq")
-      return 69;
-    return null;
-  }
+  const selectedRunModeRange = useMemo(
+    () => getPresetVersionRange(manifest, runMode),
+    [manifest, runMode]
+  );
 
   const versionOptions = useMemo(() => {
     const set = new Set(installedVersions);
     set.add(selectedVersion);
-    if (typeof minRequiredVersion === "number") set.add(minRequiredVersion);
+    if (selectedRunModeRange?.low != null) set.add(selectedRunModeRange.low);
+    if (selectedRunModeRange?.high != null) set.add(selectedRunModeRange.high);
     // show versions provided by remote manifest (version -> download_manifest)
     const remoteV =
       manifest?.manifests && typeof manifest.manifests === "object"
@@ -2351,19 +2380,16 @@ export default function LauncherPage({
         : [];
     remoteV.forEach((v) => set.add(v));
     let list = Array.from(set).sort((a, b) => b - a);
-    if (typeof minRequiredVersion === "number") {
-      list = list.filter((v) => v >= minRequiredVersion);
-    }
+    list = list.filter((v) => isVersionWithinRange(v, selectedRunModeRange));
     return list;
-  }, [installedVersions, selectedVersion, manifest, minRequiredVersion]);
+  }, [installedVersions, selectedVersion, manifest, selectedRunModeRange]);
 
-  // If the selected version is below the minimum for this run mode, bump it up.
+  // If the selected version is outside the allowed range for this run mode, bump it back in range.
   useEffect(() => {
-    if (typeof minRequiredVersion !== "number") return;
     if (!Number.isFinite(Number(selectedVersion))) return;
-    if (selectedVersion >= minRequiredVersion) return;
+    if (isVersionWithinRange(selectedVersion, selectedRunModeRange)) return;
 
-    const nextV = minRequiredVersion;
+    const nextV = clampVersionToRange(selectedVersion, selectedRunModeRange);
     const shouldRunSideEffects = didFinishBootstrap;
     setSelectedVersion(nextV);
     if (!shouldRunSideEffects) return;
@@ -2377,7 +2403,7 @@ export default function LauncherPage({
     } else {
       openDownloadPrompt(nextV);
     }
-  }, [didFinishBootstrap, minRequiredVersion, selectedVersion, installedVersions, runMode]);
+  }, [didFinishBootstrap, selectedRunModeRange, selectedVersion, installedVersions, runMode]);
 
   const selectedInstalled = isInstalled(selectedVersion);
   const selectedVersionLabel = Number.isFinite(Number(selectedVersion))
@@ -2930,7 +2956,7 @@ export default function LauncherPage({
 
     const version = Number(selectedVersion);
     if (!Number.isFinite(version)) return;
-    if (typeof minRequiredVersion === "number" && version < minRequiredVersion) {
+    if (!isVersionWithinRange(version, selectedRunModeRange)) {
       return;
     }
     if (!isInstalled(version)) return;
@@ -2944,7 +2970,7 @@ export default function LauncherPage({
     didFinishBootstrap,
     gameStatus.running,
     isInstalled,
-    minRequiredVersion,
+    selectedRunModeRange,
     runMode,
     selectedVersion,
   ]);
@@ -3008,11 +3034,8 @@ export default function LauncherPage({
   async function handleRunModeSelect(nextRunMode) {
     const prevRun = runMode;
     const prevVer = selectedVersion;
-    const minV = minRequiredForRunMode(nextRunMode);
-    const effectiveV =
-      typeof minV === "number"
-        ? Math.max(Number(selectedVersion), minV)
-        : selectedVersion;
+    const range = getPresetVersionRange(manifest, nextRunMode);
+    const effectiveV = clampVersionToRange(selectedVersion, range);
 
     setRunMode(nextRunMode);
     if (effectiveV !== selectedVersion) {

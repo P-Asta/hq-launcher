@@ -1,7 +1,7 @@
 ## Version (YYYY-MM-DD)
 - Content
 
-## 1.8.0 (2026-04-13)
+## 1.8.1 (2026-04-13)
 - Add the `C.Moons` run presets (`C.Moons Run`, `C.Moons Practice`, and `C.Moons SMHQ`) and gate them to supported versions starting from v56.
 - Improve the run mode and version pickers on smaller windows by keeping dropdown menus scrollable inside a fixed-height menu instead of letting them grow off-screen.
 

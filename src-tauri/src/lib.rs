@@ -120,11 +120,20 @@ async fn effective_mods_config_for_run_mode(
     include_ui_hidden: bool,
     include_practice_mods: bool,
 ) -> Result<ModsConfig, String> {
-    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests) =
+    let (
+        _remote_manifest_version,
+        mods_cfg,
+        _chain_config,
+        _manifests,
+        preset_tag_constraints,
+    ) =
         ModsConfig::fetch_manifest(client).await?;
     let (preset, practice) = preset_and_practice_for_run_mode(run_mode);
     let tags = preset_tags_for_name(&preset);
     let want: Vec<String> = tags.iter().map(|t| t.to_lowercase()).collect();
+    let preset_tags_supported = tags
+        .iter()
+        .all(|tag| preset_tag_supported_for_version(version, &preset_tag_constraints, tag));
 
     let mut base: Vec<mod_config::ModEntry> = vec![];
     let mut selected_tagged: Vec<mod_config::ModEntry> = vec![];
@@ -137,7 +146,7 @@ async fn effective_mods_config_for_run_mode(
             continue;
         }
 
-        if want.is_empty() {
+        if want.is_empty() || !preset_tags_supported {
             continue;
         }
 
@@ -194,8 +203,13 @@ async fn find_mod_entry_for_install(
     }
 
     let client = reqwest::Client::new();
-    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests) =
-        ModsConfig::fetch_manifest(&client).await?;
+    let (
+        _remote_manifest_version,
+        mods_cfg,
+        _chain_config,
+        _manifests,
+        _preset_tag_constraints,
+    ) = ModsConfig::fetch_manifest(&client).await?;
 
     Ok(mods_cfg.mods.into_iter().find(|m| {
         m.enabled
@@ -223,35 +237,16 @@ async fn prepare_tagged_mods_for_version(
         ));
     }
 
-    // Tag-level minimum supported versions (hard rule, avoids accidentally offering presets on too-old game versions).
-    let mut min_required: Option<u32> = None;
-    for t in tags {
-        let tl = t.to_lowercase();
-        let req = if tl == "brutal" {
-            Some(49)
-        } else if tl == "wesley" || tl == "wesley's" {
-            Some(69)
-        } else {
-            None
-        };
-        if let Some(r) = req {
-            min_required = Some(min_required.map(|m| m.max(r)).unwrap_or(r));
-        }
-    }
-    if let Some(min) = min_required {
-        if version < min {
-            return Err(format!(
-                "{} preset requires game version >= v{} (current: v{})",
-                tags.join(", "),
-                min,
-                version
-            ));
-        }
-    }
-
     let client = reqwest::Client::new();
-    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests) =
+    let (
+        _remote_manifest_version,
+        mods_cfg,
+        _chain_config,
+        _manifests,
+        preset_tag_constraints,
+    ) =
         ModsConfig::fetch_manifest_with_cancel(&client, cancel.as_ref()).await?;
+    validate_preset_tags_for_version(version, tags, &preset_tag_constraints)?;
 
     let want: Vec<String> = tags.iter().map(|t| t.to_lowercase()).collect();
     let mut tagged: Vec<mod_config::ModEntry> = vec![];
@@ -349,7 +344,13 @@ async fn run_mode_tagged_mod_ids(
     cancel: Option<&Arc<AtomicBool>>,
 ) -> Result<Vec<(String, String)>, String> {
     let client = reqwest::Client::new();
-    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests) =
+    let (
+        _remote_manifest_version,
+        mods_cfg,
+        _chain_config,
+        _manifests,
+        _preset_tag_constraints,
+    ) =
         ModsConfig::fetch_manifest_with_cancel(&client, cancel).await?;
 
     let mut seen: HashSet<String> = HashSet::new();
@@ -418,6 +419,58 @@ struct ManifestDto {
     chain_config: Vec<Vec<String>>,
     mods: Vec<mod_config::ModEntry>,
     manifests: BTreeMap<u32, String>,
+    preset_tag_constraints: BTreeMap<String, mod_config::TagConstraint>,
+}
+
+fn preset_tag_constraint_for_name<'a>(
+    constraints: &'a BTreeMap<String, mod_config::TagConstraint>,
+    tag: &str,
+) -> Option<&'a mod_config::TagConstraint> {
+    constraints
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(tag))
+        .map(|(_, value)| value)
+}
+
+fn preset_tag_supported_for_version(
+    version: u32,
+    constraints: &BTreeMap<String, mod_config::TagConstraint>,
+    tag: &str,
+) -> bool {
+    preset_tag_constraint_for_name(constraints, tag).is_none_or(|rule| {
+        mod_config::ModEntry::matches_caps(version, rule.low_cap, rule.high_cap)
+    })
+}
+
+fn preset_range_text(rule: &mod_config::TagConstraint) -> String {
+    match (rule.low_cap, rule.high_cap) {
+        (Some(low), Some(high)) => format!("v{low}-v{high}"),
+        (Some(low), None) => format!("v{low}+"),
+        (None, Some(high)) => format!("up to v{high}"),
+        (None, None) => "all versions".to_string(),
+    }
+}
+
+fn validate_preset_tags_for_version(
+    version: u32,
+    tags: &[String],
+    constraints: &BTreeMap<String, mod_config::TagConstraint>,
+) -> Result<(), String> {
+    for tag in tags {
+        let Some(rule) = preset_tag_constraint_for_name(constraints, tag) else {
+            continue;
+        };
+        if mod_config::ModEntry::matches_caps(version, rule.low_cap, rule.high_cap) {
+            continue;
+        }
+        return Err(format!(
+            "{} preset supports {} (current: v{})",
+            tag,
+            preset_range_text(rule),
+            version
+        ));
+    }
+    Ok(())
 }
 
 fn shared_config_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -501,8 +554,13 @@ async fn purge_capped_incompatible_installed_mods(
     }
 
     let client = reqwest::Client::new();
-    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests) =
-        ModsConfig::fetch_manifest(&client).await?;
+    let (
+        _remote_manifest_version,
+        mods_cfg,
+        _chain_config,
+        _manifests,
+        _preset_tag_constraints,
+    ) = ModsConfig::fetch_manifest(&client).await?;
     let active_tags = run_mode
         .map(|mode| {
             let (preset, _practice) = preset_and_practice_for_run_mode(mode);
@@ -799,7 +857,7 @@ pub(crate) fn ensure_reverb_trigger_fix_cfg(
     std::fs::create_dir_all(&cfg_dir).map_err(|e| e.to_string())?;
 
     let cfg_path = cfg_dir.join("JacobG5.ReverbTriggerFix.cfg");
-    let baseline = "## Settings file was created by plugin ReverbTriggerFix v0.3.0\n## Plugin GUID: JacobG5.ReverbTriggerFix\n\n[Core]\n\n## Disables all reverb trigger modifications.\n## Requires a lobby restart to apply.\n## Game restart *not* required.\n# Setting type: Boolean\n# Default value: false\ndisableMod = false\n\n[Debug]\n\n## Logs more info to the console when enabled.\n## \n## *THIS WILL SPAM YOUR CONSOLE DEPENDING ON YOUR OTHER SETTINGS*\n# Setting type: Boolean\n# Default value: false\nextendedLogging = false\n\n[Experimental]\n\n## I'm not sure why reverb triggers run their calculations every frame when as far as I can tell they only need to run their changes when something enters their collider.\n## I'm leaving this as an experimental toggle because it seems to be very buggy atm.\n## \n## Feel free to try it if you wish. If you're experiencing problems then turn it back off.\n# Setting type: Boolean\n# Default value: false\ntriggerOnEnter = true\n";
+    let baseline = "## Settings file was created by plugin ReverbTriggerFix v0.3.0\n## Plugin GUID: JacobG5.ReverbTriggerFix\n\n[Core]\n\n## Disables all reverb trigger modifications.\n## Requires a lobby restart to apply.\n## Game restart *not* required.\n# Setting type: Boolean\n# Default value: false\ndisableMod = false\n\n[Debug]\n\n## Logs more info to the console when enabled.\n## \n## *THIS WILL SPAM YOUR CONSOLE DEPENDING ON YOUR OTHER SETTINGS*\n# Setting type: Boolean\n# Default value: false\nextendedLogging = false\n\n[Experimental]\n\n## I'm not sure why reverb triggers run their calculations every frame when as far as I can tell they only need to run their changes when something enters their collider.\n## I'm leaving this as an experimental toggle because it seems to be very buggy atm.\n## \n## Feel free to try it if you wish. If you're experiencing problems then turn it back off.\n# Setting type: Boolean\n# Default value: false\nTriggerOnEnter = true\n";
 
     if !cfg_path.exists() {
         std::fs::write(&cfg_path, baseline).map_err(|e| e.to_string())?;
@@ -838,9 +896,9 @@ pub(crate) fn ensure_reverb_trigger_fix_cfg(
                     None => (right_all, ""),
                 };
 
-                if !right.trim().eq_ignore_ascii_case("true") {
+                if !left.trim().eq("TriggerOnEnter") || !right.trim().eq_ignore_ascii_case("true") {
                     out.push_str(indent);
-                    out.push_str("triggerOnEnter = true");
+                    out.push_str("TriggerOnEnter = true");
                     out.push_str(comment);
                     out.push_str(nl);
                     changed = true;
@@ -864,7 +922,7 @@ pub(crate) fn ensure_reverb_trigger_fix_cfg(
         out.push_str("## Feel free to try it if you wish. If you're experiencing problems then turn it back off.\n");
         out.push_str("# Setting type: Boolean\n");
         out.push_str("# Default value: false\n");
-        out.push_str("triggerOnEnter = true\n");
+        out.push_str("TriggerOnEnter = true\n");
         changed = true;
     }
 
@@ -3414,11 +3472,15 @@ async fn prepare_preset_for_version(
         return Err("Cancelled".to_string());
     }
 
-    // Wesley preset: ensure companion configs exist during prepare.
+    // Wesley and Classic Moons presets: ensure companion configs exist during prepare.
     if tags.iter().any(|t| t.eq_ignore_ascii_case("wesley")) {
         let _ = ensure_weather_registry_cfg(app, version);
         let lock_moons = !practice && !tags.iter().any(|t| t.eq_ignore_ascii_case("smhq"));
         let _ = ensure_wesley_moonscripts_cfg(app, version, lock_moons);
+    }
+    if tags.iter().any(|t| t.eq_ignore_ascii_case("wesley") || t.eq_ignore_ascii_case("c.moons"))
+    {
+        let _ = ensure_reverb_trigger_fix_cfg(app, version);
     }
 
     let practice_ids = if practice {
@@ -3809,13 +3871,14 @@ async fn list_installed_mod_versions(
 #[tauri::command]
 async fn get_manifest() -> Result<ManifestDto, String> {
     let client = reqwest::Client::new();
-    let (version, cfg, chain_config, manifests) =
+    let (version, cfg, chain_config, manifests, preset_tag_constraints) =
         mod_config::ModsConfig::fetch_manifest(&client).await?;
     Ok(ManifestDto {
         version,
         chain_config,
         mods: cfg.mods,
         manifests,
+        preset_tag_constraints,
     })
 }
 

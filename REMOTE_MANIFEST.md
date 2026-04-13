@@ -8,6 +8,7 @@ It is used for:
 
 - **Game download targets** (Steam depot manifest id per game version)
 - **Mod list** (Thunderstore packages to install)
+- **Preset version gates** (e.g. Brutal / C.Moons / Wesley supported ranges)
 - **Per-game-version mod pinning** (optional)
 - **Config-chain behavior** for config editor UI (`chainConfig`)
 
@@ -24,7 +25,17 @@ The Rust schema lives in `src-tauri/src/mod_config.rs` (`RemoteManifest`, `ModEn
     "40": "8596342981027780916",
     "49": "7525563530173177311"
   },
-  "chainConfig": [
+  "preset_tag_constraints": {
+    "Brutal": {
+      "low_cap": 49,
+      "high_cap": null
+    },
+    "C.Moons": {
+      "low_cap": 56,
+      "high_cap": null
+    }
+  },
+  "chain_config": [
     ["BepInEx/config/A.cfg", "BepInEx/config/B.cfg"]
   ],
   "mods": [
@@ -72,6 +83,32 @@ How it’s used:
 `chainConfig` is a list of “linked config files”. Each inner array is a group of paths that should be treated as a chain.
 
 Used by the config editor UI: when editing one config file that belongs to a chain group, changes may be applied to the other path(s) in the same group.
+
+### `preset_tag_constraints` (optional object)
+
+Optional top-level compatibility rules for preset tags such as `Brutal`, `C.Moons`, and `Wesley`.
+
+Example:
+
+```json
+{
+  "preset_tag_constraints": {
+    "Wesley": { "low_cap": 69 },
+    "C.Moons": { "low_cap": 56, "high_cap": 81 }
+  }
+}
+```
+
+Each value uses the same shape as a tag constraint on a mod:
+
+- `low_cap`: minimum supported game version for that preset tag
+- `high_cap`: maximum supported game version for that preset tag
+
+How it’s used:
+
+- The frontend filters version choices for preset run modes using this range
+- Backend preset install/prepare rejects versions outside the configured range
+- Existing installed preset mods are not forcibly disabled by this field alone; it only gates preset applicability/install flow
 
 ### `mods` (array of `ModEntry`)
 

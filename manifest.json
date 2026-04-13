@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "version": 8,
   "chain_config": [
     [
       "OreoM.ShipLootCruiser.cfg",
@@ -22,6 +22,20 @@
     "72": "4861510547912001926",
     "73": "1749099131234587692",
     "81": "7738331233766615287"
+  },
+  "preset_tag_constraints": {
+    "Brutal": {
+      "low_cap": 49,
+      "high_cap": 73
+    },
+    "C.Moons": {
+      "low_cap": 56,
+      "high_cap": 73
+    },
+    "Wesley": {
+      "low_cap": 69,
+      "high_cap": 73
+    }
   },
   "mods": [
     {

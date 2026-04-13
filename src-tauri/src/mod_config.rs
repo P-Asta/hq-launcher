@@ -103,6 +103,8 @@ pub struct RemoteManifest {
     pub version: u32,
     #[serde(default, deserialize_with = "deserialize_u32_string_map")]
     pub manifests: BTreeMap<u32, String>,
+    #[serde(default)]
+    pub preset_tag_constraints: BTreeMap<String, TagConstraint>,
     pub chain_config: Vec<Vec<String>>,
     pub mods: Vec<ModEntry>,
 }
@@ -130,17 +132,35 @@ impl ModsConfig {
     }
 
     /// you can check json in https://f.asta.rs/hq-launcher/manifest.json
-    /// output: (manifest_version, cfg, chain_config, manifests)
+    /// output: (manifest_version, cfg, chain_config, manifests, preset_tag_constraints)
     pub async fn fetch_manifest(
         client: &reqwest::Client,
-    ) -> Result<(u32, Self, Vec<Vec<String>>, BTreeMap<u32, String>), String> {
+    ) -> Result<
+        (
+            u32,
+            Self,
+            Vec<Vec<String>>,
+            BTreeMap<u32, String>,
+            BTreeMap<String, TagConstraint>,
+        ),
+        String,
+    > {
         Self::fetch_manifest_with_cancel(client, None).await
     }
 
     pub async fn fetch_manifest_with_cancel(
         client: &reqwest::Client,
         cancel: Option<&Arc<AtomicBool>>,
-    ) -> Result<(u32, Self, Vec<Vec<String>>, BTreeMap<u32, String>), String> {
+    ) -> Result<
+        (
+            u32,
+            Self,
+            Vec<Vec<String>>,
+            BTreeMap<u32, String>,
+            BTreeMap<String, TagConstraint>,
+        ),
+        String,
+    > {
         // Test mode: if a local `manifest.json` exists next to the repo/current folder,
         // prefer it over the remote manifest. This enables rapid iteration without publishing.
         fn try_read_local_manifest() -> Option<(std::path::PathBuf, RemoteManifest)> {
@@ -196,11 +216,18 @@ impl ModsConfig {
         };
 
         let manifests = manifest.manifests.clone();
+        let preset_tag_constraints = manifest.preset_tag_constraints.clone();
         let mut cfg = ModsConfig {
             mods: manifest.mods,
         };
         let _ = normalize_aliases(&mut cfg);
-        Ok((manifest.version, cfg, manifest.chain_config, manifests))
+        Ok((
+            manifest.version,
+            cfg,
+            manifest.chain_config,
+            manifests,
+            preset_tag_constraints,
+        ))
     }
 }
 
@@ -217,7 +244,11 @@ fn normalize_aliases(cfg: &mut ModsConfig) -> bool {
 }
 
 impl ModEntry {
-    fn matches_caps(game_version: u32, low_cap: Option<u32>, high_cap: Option<u32>) -> bool {
+    pub(crate) fn matches_caps(
+        game_version: u32,
+        low_cap: Option<u32>,
+        high_cap: Option<u32>,
+    ) -> bool {
         if let Some(min) = low_cap {
             if game_version < min {
                 return false;

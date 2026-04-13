@@ -545,7 +545,8 @@ pub async fn purge_remote_disabled_mods_on_startup(app: tauri::AppHandle) -> Res
             return Ok(());
         }
     };
-    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests) = remote;
+    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests, _preset_tag_constraints) =
+        remote;
 
     // Only purge "truly disabled" base mods.
     //
@@ -1052,7 +1053,8 @@ pub async fn sync_latest_install_from_manifest(app: tauri::AppHandle) -> Result<
 
     let client = reqwest::Client::new();
     let remote = ModsConfig::fetch_manifest(&client).await?;
-    let (remote_manifest_version, mods_cfg, _chain_config, _manifests) = remote;
+    let (remote_manifest_version, mods_cfg, _chain_config, _manifests, _preset_tag_constraints) =
+        remote;
 
     let local_state = read_manifest_state(&app)?;
     if local_state.manifest_version == remote_manifest_version {
@@ -1249,7 +1251,7 @@ pub async fn download_and_setup(
         );
 
         // Fetch remote manifest data (mods + per-game-version depots manifest ids).
-        let (remote_manifest_version, mods_cfg, _chain_config, manifests) =
+        let (remote_manifest_version, mods_cfg, _chain_config, manifests, _preset_tag_constraints) =
             ModsConfig::fetch_manifest(&client).await?;
 
         // Step 2: Lethal Company 다운로드
