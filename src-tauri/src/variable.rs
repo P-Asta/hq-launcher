@@ -82,8 +82,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
             high_cap: None,
             tag_constraints: BTreeMap::new(),
             version_config: BTreeMap::from([
-                (50, "0.1.1".to_string()),
-                (80, "0.0.0".to_string()),
+                (50, "0.2.0".to_string())
             ]),
         },
         ModEntry {

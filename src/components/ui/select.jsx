@@ -34,19 +34,31 @@ export function SelectValue({ placeholder }) {
   return <SelectPrimitive.Value placeholder={placeholder} />;
 }
 
-export function SelectContent({ className, children, ...props }) {
+export function SelectContent({
+  className,
+  viewportClassName,
+  children,
+  ...props
+}) {
   return (
     <SelectPrimitive.Portal>
       <SelectPrimitive.Content
         position="popper"
         sideOffset={8}
         className={cn(
-          "z-50 min-w-40 overflow-hidden rounded-2xl border border-panel-outline bg-[#0f1116] shadow-2xl shadow-black/40",
+          "z-50 min-w-40 rounded-2xl border border-panel-outline bg-[#0f1116] shadow-2xl shadow-black/40",
           className,
         )}
         {...props}
       >
-        <SelectPrimitive.Viewport className="p-1">{children}</SelectPrimitive.Viewport>
+        <SelectPrimitive.Viewport
+          className={cn(
+            "menu-scroll-area max-h-[min(20rem,var(--radix-select-content-available-height))] overflow-y-auto rounded-2xl p-1",
+            viewportClassName,
+          )}
+        >
+          {children}
+        </SelectPrimitive.Viewport>
       </SelectPrimitive.Content>
     </SelectPrimitive.Portal>
   );

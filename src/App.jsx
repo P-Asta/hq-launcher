@@ -773,7 +773,7 @@ export default function App() {
                 </div>
                 {/* <SelectValue /> */}
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent className="max-h-[min(20rem,calc(100vh-8rem))]">
                 {versionOptions.map((v) => (
                   <SelectItem
                     key={v}

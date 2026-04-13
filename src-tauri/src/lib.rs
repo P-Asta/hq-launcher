@@ -30,6 +30,10 @@ fn preset_tags_for_name(preset: &str) -> Vec<String> {
         "brutal" | "bc" => vec!["Brutal".to_string()],
         "wesley" | "wesley's" | "wesleys" => vec!["Wesley".to_string()],
         "smhq" => vec!["SMHQ".to_string()],
+        "c_moons" | "cmoons" | "c.moons" => vec!["C.Moons".to_string()],
+        "c_moons_smhq" | "cmoons_smhq" | "c.moons_smhq" | "c-moons-smhq" => {
+            vec!["C.Moons".to_string(), "SMHQ".to_string()]
+        }
         "wesley_smhq" | "wesleys_smhq" | "wesley-smhq" | "wesleys-smhq" => {
             vec!["Wesley".to_string(), "SMHQ".to_string()]
         }
@@ -47,6 +51,9 @@ fn preset_and_practice_for_run_mode(run_mode: &str) -> (String, bool) {
         "wesley_practice" => ("wesley".to_string(), true),
         "wesley_smhq" => ("wesley_smhq".to_string(), false),
         "smhq" => ("smhq".to_string(), false),
+        "c_moons" => ("c_moons".to_string(), false),
+        "c_moons_practice" => ("c_moons".to_string(), true),
+        "c_moons_smhq" => ("c_moons_smhq".to_string(), false),
         _ => ("hq".to_string(), false),
     }
 }
@@ -55,6 +62,7 @@ fn is_run_mode_tag(tag: &str) -> bool {
     tag.eq_ignore_ascii_case("brutal")
         || tag.eq_ignore_ascii_case("wesley")
         || tag.eq_ignore_ascii_case("smhq")
+        || tag.eq_ignore_ascii_case("c.moons")
 }
 
 fn is_wesley_base_run(tags: &[String], practice: bool) -> bool {
@@ -2687,7 +2695,7 @@ async fn check_mod_updates(
         version,
         run_mode_name,
         false,
-        false,
+        true,
     )
     .await?;
 
@@ -2783,7 +2791,7 @@ async fn apply_mod_updates(
             version,
             run_mode_name,
             false,
-            false,
+            true,
         )
         .await?;
 

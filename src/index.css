@@ -20,6 +20,15 @@ body {
 ::-webkit-scrollbar {
   display: none;
 }
+
+.dropdown-scroll-area {
+  scrollbar-width: none;
+}
+
+.dropdown-scroll-area::-webkit-scrollbar {
+  display: none !important;
+}
+
 * {
   user-select: none;
   -webkit-user-select: none;

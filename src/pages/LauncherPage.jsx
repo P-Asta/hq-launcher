@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
@@ -158,6 +158,9 @@ function isAuthError(e) {
 const RUN_MODE_VALUES = [
   "hq",
   "smhq",
+  "c_moons",
+  "c_moons_smhq",
+  "c_moons_practice",
   "practice",
   "brutal",
   "brutal_practice",
@@ -214,6 +217,24 @@ function getLaunchRequestForRunMode(mode, version) {
     return {
       command: "launch_game_preset",
       args: { version, preset: "smhq", practice: false },
+    };
+  }
+  if (mode === "c_moons") {
+    return {
+      command: "launch_game_preset",
+      args: { version, preset: "c_moons", practice: false },
+    };
+  }
+  if (mode === "c_moons_practice") {
+    return {
+      command: "launch_game_preset",
+      args: { version, preset: "c_moons", practice: true },
+    };
+  }
+  if (mode === "c_moons_smhq") {
+    return {
+      command: "launch_game_preset",
+      args: { version, preset: "c_moons_smhq", practice: false },
     };
   }
   return {
@@ -303,7 +324,39 @@ function getPresetSummarySpec(mode) {
     };
   }
 
+  if (mode === "c_moons" || mode === "c_moons_practice") {
+    return {
+      summary_id: "preset::c_moons",
+      name: "C.Moons Mods",
+      subtitle: "",
+      activeTags: ["C.Moons"],
+      iconKey: "willowpillows::5_tandraus",
+    };
+  }
+
+  if (mode === "c_moons_smhq") {
+    return {
+      summary_id: "preset::c_moons_smhq",
+      name: "C.Moons Mods",
+      subtitle: "",
+      activeTags: ["C.Moons", "SMHQ"],
+      iconKey: "willowpillows::5_tandraus",
+    };
+  }
+
   return null;
+}
+
+function getPresetModulePriority(mod, activeTags) {
+  if (String(mod?.dev ?? "").toLowerCase() !== "tomatobird") return 1;
+  const name = String(mod?.name ?? "").toLowerCase();
+  const tags = Array.isArray(activeTags) ? activeTags : [];
+
+  if (tags.includes("Brutal") && name === "bcmhqmodule") return 0;
+  if (tags.includes("Wesley") && name === "wesleysmoonshqmodule") return 0;
+  if (tags.includes("C.Moons") && name === "classicmoonshqmodule") return 0;
+
+  return 1;
 }
 
 function SkeletonBlock({ className }) {
@@ -314,6 +367,134 @@ function SkeletonBlock({ className }) {
         className
       )}
     />
+  );
+}
+
+function ScrollableDropdownContent({
+  className,
+  scrollAreaClassName,
+  children,
+  ...props
+}) {
+  const scrollRef = useRef(null);
+  const hideTimerRef = useRef(null);
+  const [scrollState, setScrollState] = useState({
+    visible: false,
+    scrollable: false,
+    thumbHeight: 0,
+    thumbOffset: 0,
+  });
+
+  const showScrollbar = useCallback(() => {
+    setScrollState((prev) => ({ ...prev, visible: true }));
+    if (hideTimerRef.current) {
+      window.clearTimeout(hideTimerRef.current);
+    }
+    hideTimerRef.current = window.setTimeout(() => {
+      setScrollState((prev) => ({ ...prev, visible: false }));
+      hideTimerRef.current = null;
+    }, 500);
+  }, []);
+
+  const syncScrollbar = useCallback((shouldFlash = false) => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const scrollable = el.scrollHeight > el.clientHeight + 1;
+    if (!scrollable) {
+      setScrollState({
+        visible: false,
+        scrollable: false,
+        thumbHeight: 0,
+        thumbOffset: 0,
+      });
+      return;
+    }
+
+    const trackInset = 4;
+    const trackHeight = Math.max(0, el.clientHeight - trackInset * 2);
+    const thumbHeight = Math.max(
+      24,
+      Math.round((el.clientHeight / el.scrollHeight) * trackHeight),
+    );
+    const maxScroll = Math.max(1, el.scrollHeight - el.clientHeight);
+    const maxOffset = Math.max(0, trackHeight - thumbHeight);
+    const thumbOffset =
+      trackInset + Math.round((el.scrollTop / maxScroll) * maxOffset);
+
+    setScrollState((prev) => ({
+      visible: shouldFlash ? true : prev.visible,
+      scrollable: true,
+      thumbHeight,
+      thumbOffset,
+    }));
+
+    if (shouldFlash) {
+      showScrollbar();
+    }
+  }, [showScrollbar]);
+
+  useEffect(() => {
+    syncScrollbar(true);
+    const el = scrollRef.current;
+    if (!el || typeof ResizeObserver === "undefined") {
+      return () => {
+        if (hideTimerRef.current) {
+          window.clearTimeout(hideTimerRef.current);
+          hideTimerRef.current = null;
+        }
+      };
+    }
+
+    const observer = new ResizeObserver(() => {
+      syncScrollbar(false);
+    });
+    observer.observe(el);
+
+    return () => {
+      observer.disconnect();
+      if (hideTimerRef.current) {
+        window.clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
+    };
+  }, [syncScrollbar]);
+
+  return (
+    <DropdownMenu.Content
+      className={cn(
+        "relative overflow-hidden",
+        className,
+      )}
+      {...props}
+    >
+      <div
+        ref={scrollRef}
+        onScroll={() => syncScrollbar(true)}
+        className={cn(
+          "dropdown-scroll-area overflow-y-auto",
+          scrollAreaClassName,
+        )}
+      >
+        {children}
+      </div>
+      {scrollState.scrollable ? (
+        <div
+          className={cn(
+            "pointer-events-none absolute bottom-1 right-1 top-1 w-1 transition-opacity duration-150",
+            scrollState.visible ? "opacity-100" : "opacity-0",
+          )}
+        >
+          <div
+            className="absolute right-0 w-1 rounded-full bg-white/35"
+            style={{
+              height: `${scrollState.thumbHeight}px`,
+              transform: `translateY(${scrollState.thumbOffset}px)`,
+            }}
+          />
+        </div>
+      ) : null}
+    </DropdownMenu.Content>
   );
 }
 
@@ -715,11 +896,18 @@ export default function LauncherPage({
     const spec = getPresetSummarySpec(runMode);
     if (!spec) return null;
 
-    const taggedMods = (Array.isArray(manifest.mods) ? manifest.mods : []).filter(
-      (mod) =>
-        !isUiHiddenMod(mod) &&
-        isModCompatibleWithTags(mod, selectedVersion, spec.activeTags)
-    );
+    const taggedMods = (Array.isArray(manifest.mods) ? manifest.mods : [])
+      .filter(
+        (mod) =>
+          !isUiHiddenMod(mod) &&
+          isModCompatibleWithTags(mod, selectedVersion, spec.activeTags)
+      )
+      .sort((a, b) => {
+        return (
+          getPresetModulePriority(a, spec.activeTags) -
+          getPresetModulePriority(b, spec.activeTags)
+        );
+      });
 
     const installedCount = taggedMods.filter(
       (mod) => !!installedModVersions[modKeyLower(mod)]
@@ -2124,8 +2312,14 @@ export default function LauncherPage({
 
   const minRequiredVersion = useMemo(() => {
     // Gate versions shown in the version selector depending on the selected run mode.
-    // Brutal: v49+, Wesley: v69+
+    // Brutal: v49+, C.Moons: v56+, Wesley: v69+
     if (runMode === "brutal" || runMode === "brutal_practice") return 49;
+    if (
+      runMode === "c_moons" ||
+      runMode === "c_moons_practice" ||
+      runMode === "c_moons_smhq"
+    )
+      return 56;
     if (
       runMode === "wesley" ||
       runMode === "wesley_practice" ||
@@ -2137,6 +2331,8 @@ export default function LauncherPage({
 
   function minRequiredForRunMode(mode) {
     if (mode === "brutal" || mode === "brutal_practice") return 49;
+    if (mode === "c_moons" || mode === "c_moons_practice" || mode === "c_moons_smhq")
+      return 56;
     if (mode === "wesley" || mode === "wesley_practice" || mode === "wesley_smhq")
       return 69;
     return null;
@@ -2433,6 +2629,31 @@ export default function LauncherPage({
         title:
           "Wesley preset: installs Wesley-tagged mods + practice mods (v69+)",
       },
+      {
+        type: "separator",
+        key: "run-group-cmoons",
+      },
+      {
+        value: "c_moons",
+        label: "C.Moons Run",
+        preset: "c_moons",
+        practice: false,
+        title: "C.Moons preset: installs C.Moons-tagged mods",
+      },
+      {
+        value: "c_moons_smhq",
+        label: "C.Moons SMHQ",
+        preset: "c_moons_smhq",
+        practice: false,
+        title: "C.Moons + SMHQ preset: installs C.Moons-tagged and SMHQ-tagged mods",
+      },
+      {
+        value: "c_moons_practice",
+        label: "C.Moons Practice",
+        preset: "c_moons",
+        practice: true,
+        title: "C.Moons preset: installs C.Moons-tagged mods + practice mods",
+      },
     ],
     [],
   );
@@ -2446,9 +2667,13 @@ export default function LauncherPage({
   }, [RUN_OPTIONS, runMode]);
 
   const discordRunLabel = useMemo(() => {
-    if (!selectedRunOption) return "High Quota Run";
-    if (selectedRunOption.value === "hq") return "High Quota Run";
-    if (selectedRunOption.value === "practice") return "High Quota Practice";
+    const value = selectedRunOption?.value;
+    if (!value) return "High Quota Run";
+    if (value === "hq") return "High Quota Run";
+    if (value === "practice") return "High Quota Practice";
+    if (value === "c_moons") return "Classic Moons Run";
+    if (value === "c_moons_smhq") return "Classic Moons SMHQ";
+    if (value === "c_moons_practice") return "Classic Moons Practice";
     return selectedRunOption.label;
   }, [selectedRunOption]);
 
@@ -2456,8 +2681,18 @@ export default function LauncherPage({
     if (!selectedRunOption?.value) return null;
     if (selectedRunOption.value.startsWith("brutal")) return "brutal";
     if (selectedRunOption.value.startsWith("wesley")) return "wesleys";
+    if (selectedRunOption.value.startsWith("c_moons")) return "cmoons";
     return null;
   }, [selectedRunOption]);
+
+  const discordSmallText = useMemo(() => {
+    const value = selectedRunOption?.value;
+    if (!value) return discordRunLabel;
+    if (value === "c_moons") return "Classic Moons Run";
+    if (value === "c_moons_smhq") return "Classic Moons SMHQ";
+    if (value === "c_moons_practice") return "Classic Moons Practice";
+    return discordRunLabel;
+  }, [discordRunLabel, selectedRunOption]);
 
   const discordPresence = useMemo(() => {
     if (gameStatus.running) {
@@ -2466,7 +2701,7 @@ export default function LauncherPage({
         large_image: "orange",
         large_text: `${selectedRunOption.value.indexOf("practice") == -1? "grinding": "practicing"} v${selectedVersion}`,
         small_image: discordSmallImage,
-        small_text: discordRunLabel,
+        small_text: discordSmallText,
         button_label: "Download",
         button_url: DISCORD_DOWNLOAD_URL,
         use_stream_overlays: true,
@@ -2478,7 +2713,7 @@ export default function LauncherPage({
       large_image: "black",
       large_text: "HQ Launcher",
       small_image: discordSmallImage,
-      small_text: discordRunLabel,
+      small_text: discordSmallText,
       // state: selectedVersion? `v${selectedVersion}`: "",
       button_label: "Download",
       button_url: DISCORD_DOWNLOAD_URL,
@@ -2486,6 +2721,7 @@ export default function LauncherPage({
     };
   }, [
     discordSmallImage,
+    discordSmallText,
     discordRunLabel,
     gameStatus.running,
     selectedVersion,
@@ -2769,6 +3005,33 @@ export default function LauncherPage({
     }
   }, [runMode]);
 
+  async function handleRunModeSelect(nextRunMode) {
+    const prevRun = runMode;
+    const prevVer = selectedVersion;
+    const minV = minRequiredForRunMode(nextRunMode);
+    const effectiveV =
+      typeof minV === "number"
+        ? Math.max(Number(selectedVersion), minV)
+        : selectedVersion;
+
+    setRunMode(nextRunMode);
+    if (effectiveV !== selectedVersion) {
+      setSelectedVersion(effectiveV);
+      if (isInstalled(effectiveV)) {
+        try {
+          await invoke("apply_disabled_mods", { version: effectiveV });
+        } catch {}
+      } else {
+        openDownloadPrompt(effectiveV);
+        return;
+      }
+    }
+    await prepareRunMode(nextRunMode, effectiveV, {
+      prevRunMode: prevRun,
+      prevVersion: prevVer,
+    });
+  }
+
   const showBootstrapSkeleton = !didFinishBootstrap;
   const hasSelectedVersionUpdates =
     checkUpdateTask.status === "done" &&
@@ -2821,58 +3084,54 @@ export default function LauncherPage({
                   "Start Run"}
               </button>
 
-              <Select
-                value={runMode}
-                disabled={launchBusy}
-                onValueChange={async (v) => {
-                  const prevRun = runMode;
-                  const prevVer = selectedVersion;
-                  const minV = minRequiredForRunMode(v);
-                  const effectiveV =
-                    typeof minV === "number"
-                      ? Math.max(Number(selectedVersion), minV)
-                      : selectedVersion;
-
-                  setRunMode(v);
-                  if (effectiveV !== selectedVersion) {
-                    setSelectedVersion(effectiveV);
-                    if (isInstalled(effectiveV)) {
-                      try {
-                        await invoke("apply_disabled_mods", { version: effectiveV });
-                      } catch {}
-                    } else {
-                      openDownloadPrompt(effectiveV);
-                      return;
-                    }
-                  }
-                  await prepareRunMode(v, effectiveV, {
-                    prevRunMode: prevRun,
-                    prevVersion: prevVer,
-                  });
-                }}
-              >
-                <SelectTrigger
-                  showIcon={false}
-                  className="h-full w-10 shrink-0 rounded-none border-0 border-l border-black/10 bg-transparent px-0 text-black hover:bg-black/[0.04] focus:ring-0"
-                  aria-label="Select run mode"
-                >
-                  <div className="flex h-full w-full items-center justify-center">
+              <DropdownMenu.Root modal={false}>
+                <DropdownMenu.Trigger asChild>
+                  <button
+                    type="button"
+                    disabled={launchBusy}
+                    className="flex h-full w-10 shrink-0 items-center justify-center rounded-none border-0 border-l border-black/10 bg-transparent px-0 text-black transition-colors hover:bg-black/[0.04] focus:outline-none focus:ring-0 disabled:cursor-not-allowed disabled:opacity-70"
+                    aria-label="Select run mode"
+                  >
                     <ChevronDown className="h-4 w-4 text-black/70" />
                     <span className="sr-only">Select run mode</span>
-                  </div>
-                </SelectTrigger>
-                <SelectContent className="min-w-48 border-white/10" align="start">
-                  {RUN_OPTIONS.map((opt) =>
-                    opt.type === "separator" ? (
-                      <SelectSeparator key={opt.key} className="bg-white/20" />
-                    ) : (
-                      <SelectItem key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </SelectItem>
-                    ),
-                  )}
-                </SelectContent>
-              </Select>
+                  </button>
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Portal>
+                  <ScrollableDropdownContent
+                    sideOffset={8}
+                    align="start"
+                    className="z-50 min-w-48 rounded-[18px] border border-white/10 bg-[#12141a] p-1 shadow-2xl shadow-black/45"
+                    scrollAreaClassName="max-h-64"
+                  >
+                    {RUN_OPTIONS.map((opt) =>
+                      opt.type === "separator" ? (
+                        <DropdownMenu.Separator
+                          key={opt.key}
+                          className="mx-2 my-1 h-px bg-white/20"
+                        />
+                      ) : (
+                        <DropdownMenu.Item
+                          key={opt.value}
+                          onSelect={() => {
+                            handleRunModeSelect(opt.value).catch(console.error);
+                          }}
+                          className={cn(
+                            "flex cursor-pointer select-none items-center gap-2 rounded-xl px-3 py-2 text-[14px] font-medium tracking-[-0.012em] text-white/85 outline-none transition focus:bg-white/10",
+                            runMode === opt.value ? "bg-white/10" : "",
+                          )}
+                        >
+                          <span className="inline-flex w-5 items-center justify-center">
+                            {runMode === opt.value ? (
+                              <Check className="h-4 w-4 text-emerald-300" />
+                            ) : null}
+                          </span>
+                          <span className="min-w-0 flex-1">{opt.label}</span>
+                        </DropdownMenu.Item>
+                      ),
+                    )}
+                  </ScrollableDropdownContent>
+                </DropdownMenu.Portal>
+              </DropdownMenu.Root>
             </div>
           )}
 
@@ -2907,10 +3166,11 @@ export default function LauncherPage({
               </DropdownMenu.Trigger>
 
               <DropdownMenu.Portal>
-                <DropdownMenu.Content
+                <ScrollableDropdownContent
                   sideOffset={8}
                   align="start"
-                  className="z-50 min-w-[170px] overflow-hidden rounded-[18px] border border-panel-outline bg-[#12141a] p-1 shadow-2xl shadow-black/45"
+                  className="z-50 min-w-[170px] rounded-[18px] border border-panel-outline bg-[#12141a] p-1 shadow-2xl shadow-black/45"
+                  scrollAreaClassName="max-h-[min(20rem,calc(100vh-8rem))]"
                 >
                   {versionOptions.map((v) => {
                     const installed = isInstalled(v);
@@ -2965,7 +3225,7 @@ export default function LauncherPage({
                       </DropdownMenu.Item>
                     );
                   })}
-                </DropdownMenu.Content>
+                </ScrollableDropdownContent>
               </DropdownMenu.Portal>
             </DropdownMenu.Root>
           </div>
