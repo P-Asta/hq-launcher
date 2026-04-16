@@ -1,6 +1,11 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.8.2 (2026-04-16)
+- The issue where the “Update” button did not appear when the installed mod was a higher version than the one in the settings has been resolved.
+- “FreeeeeeMoooooons” is now visible when SMHQ is selected. (It was not visible before, but it still worked.)
+- You can now right-click on mods in the “Preset Mods” section to open their folders.
+
 ## 1.8.1 (2026-04-13)
 - Add the `C.Moons` run presets (`C.Moons Run`, `C.Moons Practice`, and `C.Moons SMHQ`) and gate them to supported versions starting from v56.
 - Improve the run mode and version pickers on smaller windows by keeping dropdown menus scrollable inside a fixed-height menu instead of letting them grow off-screen.

@@ -99,6 +99,10 @@ function isPracticeRunMode(mode) {
   return String(mode ?? "").toLowerCase().includes("practice");
 }
 
+function isSmhqRunMode(mode) {
+  return String(mode ?? "").toLowerCase().includes("smhq");
+}
+
 function isUiHiddenMod(mod) {
   return Array.isArray(mod?.tags)
     ? mod.tags.some((tag) => String(tag).toLowerCase() === "ui_hidden")
@@ -176,6 +180,10 @@ function clampVersionToRange(version, range) {
 
 const PRACTICE_LOCKED_MOD_KEYS = new Set([
   "hqhqteam::vlog",
+]);
+
+const SMHQ_FORCED_MOD_KEYS = new Set([
+  "slushyrh::freeeeeemoooooons",
 ]);
 
 function valueLabel(v) {
@@ -949,6 +957,7 @@ export default function LauncherPage({
       .filter(
         (mod) =>
           !isUiHiddenMod(mod) &&
+          !SMHQ_FORCED_MOD_KEYS.has(modKeyLower(mod)) &&
           isModCompatibleWithTags(mod, selectedVersion, spec.activeTags)
       )
       .sort((a, b) => {
@@ -994,6 +1003,20 @@ export default function LauncherPage({
     );
   }, [practiceMods, selectedVersion]);
 
+  const smhqReferenceMods = useMemo(() => {
+    if (!isSmhqRunMode(runMode)) return [];
+    const mods = Array.isArray(manifest.mods) ? manifest.mods : [];
+    return mods.filter((m) => {
+      const key = modKeyLower(m);
+      return (
+        SMHQ_FORCED_MOD_KEYS.has(key) &&
+        m?.enabled !== false &&
+        !isUiHiddenMod(m) &&
+        isModCompatibleWithVersion(m, selectedVersion)
+      );
+    });
+  }, [manifest.mods, runMode, selectedVersion]);
+
   const modsForList = useMemo(() => {
     const regularMods = (Array.isArray(manifest.mods) ? manifest.mods : []).filter(
       (m) =>
@@ -1001,9 +1024,13 @@ export default function LauncherPage({
         m?.enabled !== false &&
         isModCompatibleWithVersion(m, selectedVersion)
     );
-    if (!isPracticeRunMode(runMode)) return regularMods;
+    const merged = [
+      ...(isPracticeRunMode(runMode) ? practiceReferenceMods : []),
+      ...smhqReferenceMods,
+      ...regularMods,
+    ];
+    if (!isPracticeRunMode(runMode) && !isSmhqRunMode(runMode)) return regularMods;
 
-    const merged = [...practiceReferenceMods, ...regularMods];
     const seen = new Set();
     return merged.filter((m) => {
       const key = modKeyLower(m);
@@ -1011,7 +1038,7 @@ export default function LauncherPage({
       seen.add(key);
       return true;
     });
-  }, [manifest.mods, practiceReferenceMods, runMode, selectedVersion]);
+  }, [manifest.mods, practiceReferenceMods, runMode, selectedVersion, smhqReferenceMods]);
 
   const availableModKeys = useMemo(
     () => new Set(modsForList.map((m) => modKeyLower(m))),
@@ -1027,6 +1054,11 @@ export default function LauncherPage({
     if (!isPracticeRunMode(runMode)) return new Set();
     return PRACTICE_LOCKED_MOD_KEYS;
   }, [runMode]);
+
+  const smhqForcedModKeys = useMemo(() => {
+    if (!isSmhqRunMode(runMode)) return new Set();
+    return new Set(smhqReferenceMods.map((m) => modKeyLower(m)));
+  }, [runMode, smhqReferenceMods]);
 
   useEffect(() => {
     if (!isPracticeRunMode(runMode)) return;
@@ -1204,10 +1236,6 @@ export default function LauncherPage({
       if (!presetSummaryEntry || selectedMod.summary_id !== presetSummaryEntry.summary_id) {
         setSelectedMod(null);
       }
-      return;
-    }
-    if (Array.isArray(selectedMod?.tags) && selectedMod.tags.length > 0) {
-      setSelectedMod(null);
       return;
     }
     if (!availableModKeys.has(modKeyLower(selectedMod))) {
@@ -2037,7 +2065,7 @@ export default function LauncherPage({
         status: "done",
         version: v,
         overall_percent: 100,
-        detail: "Up to date",
+        detail: "All mod versions are synced",
         updatable_mods: [],
         checked: 0,
         total: 0,
@@ -2277,6 +2305,9 @@ export default function LauncherPage({
       mod.name
     ).toLowerCase()}`;
     if (isPracticeRunMode(runMode) && nextEnabled && practiceLockedModKeys.has(baseKey)) {
+      return;
+    }
+    if (isSmhqRunMode(runMode) && !nextEnabled && smhqForcedModKeys.has(baseKey)) {
       return;
     }
 
@@ -3376,8 +3407,11 @@ export default function LauncherPage({
                   const description = presetSummary
                     ? m.description
                     : installedModDescriptions[keyLower] || "Click to edit config";
+                  const smhqEnableLocked =
+                    isSmhqRunMode(runMode) && smhqForcedModKeys.has(keyLower);
                   const enabled =
-                    !disabledSet.has(keyLower) && !practiceLockedModKeys.has(keyLower);
+                    smhqEnableLocked ||
+                    (!disabledSet.has(keyLower) && !practiceLockedModKeys.has(keyLower));
                   const installedVer = installedModVersions[keyLower];
                   const busy = modToggleBusyKeys.has(keyLower);
                   const isPracticeMod =
@@ -3427,6 +3461,11 @@ export default function LauncherPage({
                               Practice
                             </div>
                           ) : null}
+                          {smhqEnableLocked ? (
+                            <div className="rounded-full border border-sky-400/30 bg-sky-400/10 px-2 py-0.5 text-[11px] font-medium text-sky-200">
+                              SMHQ
+                            </div>
+                          ) : null}
                         </div>
                         <div
                           className="mt-1 overflow-hidden whitespace-nowrap text-sm text-white/50"
@@ -3454,7 +3493,7 @@ export default function LauncherPage({
                           >
                             <Switch
                               checked={enabled}
-                              disabled={busy || practiceEnableLocked}
+                              disabled={busy || practiceEnableLocked || smhqEnableLocked}
                               onCheckedChange={(v) =>
                                 toggleModEnabledForMod(m, !!v)
                               }
@@ -3621,6 +3660,7 @@ export default function LauncherPage({
                                 <div
                                   key={modKey(mod)}
                                   className="flex items-center gap-3 rounded-2xl border border-panel-outline bg-white/5 px-3 py-3"
+                                  onContextMenu={(e) => openModContextMenu(e, mod)}
                                 >
                                   <ModCover
                                     src={iconSrc}
@@ -4353,7 +4393,7 @@ export default function LauncherPage({
                 <div className="text-lg font-semibold">
                   {checkUpdateTask.status === "done"
                     ? `${checkUpdateTask.updatable_mods.length} mods can be updated`
-                    : "Checking for updates..."}
+                    : "Checking mod versions..."}
                 </div>
               </div>
             </div>
@@ -4454,7 +4494,7 @@ export default function LauncherPage({
                     : "Updating..."}
                 </div>
                 <div className="mt-1 text-sm text-white/55">
-                  Based on the remote manifest, config/mods is reflected in the latest installed version.
+                  Based on the remote manifest, installed mod versions are being synced to the desired state.
                 </div>
               </div>
             </div>

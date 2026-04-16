@@ -636,7 +636,7 @@ where
                 }
                 Ordering::Greater => {
                     log::info!(
-                        "{} is newer than desired ({} > {})",
+                        "{} version mismatch (installed {} > desired {})",
                         mod_label.clone(),
                         manifest.version_number,
                         desired_version
@@ -644,8 +644,8 @@ where
                     on_progress(
                         idx,
                         total_mods,
-                        Some(format!("{} is newer than desired", mod_label.clone())),
-                        None,
+                        Some(format!("{} version mismatch - can fix", mod_label.clone())),
+                        Some(mod_label.clone()),
                     );
                 }
             }
