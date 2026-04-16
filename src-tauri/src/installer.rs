@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -362,7 +363,67 @@ pub fn get_current_proton_dir(app: tauri::AppHandle) -> Result<Option<String>, S
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ManifestState {
+    #[serde(default)]
     manifest_version: u32,
+    #[serde(default)]
+    depot_manifests: BTreeMap<u32, String>,
+}
+
+fn default_depot_manifest_id(version: u32) -> Option<&'static str> {
+    match version {
+        40 => Some("8596342981027780916"),
+        45 => Some("7637156099460715726"),
+        49 => Some("7525563530173177311"),
+        50 => Some("2961956797830002840"),
+        56 => Some("6648293528411358330"),
+        62 => Some("2681997312468718444"),
+        64 => Some("8158077314512521071"),
+        69 => Some("1367019593609280205"),
+        72 => Some("4861510547912001926"),
+        73 => Some("1749099131234587692"),
+        81 => Some("7738331233766615287"),
+        _ => None,
+    }
+}
+
+fn resolve_local_depot_manifest_id(state: &ManifestState, version: u32) -> Option<String> {
+    state
+        .depot_manifests
+        .get(&version)
+        .cloned()
+        .or_else(|| default_depot_manifest_id(version).map(str::to_string))
+}
+
+fn backfill_manifest_state_depots(
+    app: &tauri::AppHandle,
+    state: &mut ManifestState,
+) -> Result<bool, String> {
+    let mut changed = false;
+    for (version, _) in installed_version_dirs(app)? {
+        if state.depot_manifests.contains_key(&version) {
+            continue;
+        }
+        let Some(default_manifest) = default_depot_manifest_id(version) else {
+            continue;
+        };
+        state
+            .depot_manifests
+            .insert(version, default_manifest.to_string());
+        changed = true;
+    }
+    Ok(changed)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ManifestUpdateCheck {
+    pub available: bool,
+    pub version: Option<u32>,
+    pub needs_mod_sync: bool,
+    pub needs_depot_sync: bool,
+    pub local_manifest_version: u32,
+    pub remote_manifest_version: u32,
+    pub local_depot_manifest: Option<String>,
+    pub remote_depot_manifest: Option<String>,
 }
 
 fn manifest_state_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -376,13 +437,21 @@ fn manifest_state_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, Str
 
 fn read_manifest_state(app: &tauri::AppHandle) -> Result<ManifestState, String> {
     let path = manifest_state_path(app)?;
-    if !path.exists() {
-        return Ok(ManifestState {
+    let mut state = if !path.exists() {
+        ManifestState {
             manifest_version: 0,
-        });
+            depot_manifests: BTreeMap::new(),
+        }
+    } else {
+        let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&text).map_err(|e| e.to_string())?
+    };
+
+    if backfill_manifest_state_depots(app, &mut state)? {
+        write_manifest_state(app, &state)?;
     }
-    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&text).map_err(|e| e.to_string())
+
+    Ok(state)
 }
 
 fn write_manifest_state(app: &tauri::AppHandle, state: &ManifestState) -> Result<(), String> {
@@ -1050,105 +1119,196 @@ pub async fn sync_latest_install_from_manifest(app: tauri::AppHandle) -> Result<
     let Some((game_version, game_root)) = latest_installed_version_dir(&app)? else {
         return Ok(());
     };
+    sync_install_from_manifest_for_version(&app, game_version, game_root).await
+}
+
+pub async fn sync_install_from_manifest_for_version(
+    app: &tauri::AppHandle,
+    game_version: u32,
+    game_root: std::path::PathBuf,
+) -> Result<(), String> {
+    if !game_root.exists() {
+        return Ok(());
+    }
 
     let client = reqwest::Client::new();
     let remote = ModsConfig::fetch_manifest(&client).await?;
-    let (remote_manifest_version, mods_cfg, _chain_config, _manifests, _preset_tag_constraints) =
+    let (remote_manifest_version, mods_cfg, _chain_config, manifests, _preset_tag_constraints) =
         remote;
 
-    let local_state = read_manifest_state(&app)?;
-    if local_state.manifest_version == remote_manifest_version {
-        log::info!("Manifest up-to-date: {}", remote_manifest_version);
+    let mut local_state = read_manifest_state(&app)?;
+    let needs_mod_sync = local_state.manifest_version != remote_manifest_version;
+    let remote_depot_manifest = manifests.get(&game_version).cloned();
+    let local_depot_manifest = resolve_local_depot_manifest_id(&local_state, game_version);
+    let needs_depot_sync = match (local_depot_manifest.as_deref(), remote_depot_manifest.as_deref()) {
+        (Some(local), Some(remote)) => local != remote,
+        (None, Some(_)) => true,
+        _ => false,
+    };
+
+    if !needs_mod_sync && !needs_depot_sync {
+        log::info!(
+            "Manifest up-to-date: manifest_version={} depot_manifest={}",
+            remote_manifest_version,
+            remote_depot_manifest.as_deref().unwrap_or("<none>")
+        );
         return Ok(());
     }
 
     log::info!(
-        "Manifest changed: local={} remote={} -> applying additive updates",
+        "Sync required for v{}: mods_changed={} local_manifest_version={} remote_manifest_version={} local_depot_manifest={} remote_depot_manifest={}",
+        game_version,
+        needs_mod_sync,
         local_state.manifest_version,
-        remote_manifest_version
+        remote_manifest_version,
+        local_depot_manifest.as_deref().unwrap_or("<none>"),
+        remote_depot_manifest.as_deref().unwrap_or("<none>")
     );
 
-    // One-step sync: mods only (config is handled separately on app startup).
-    const STEPS_TOTAL: u32 = 1;
+    let steps_total = (if needs_depot_sync { 1 } else { 0 }) + (if needs_mod_sync { 1 } else { 0 });
     let sync_res: Result<(), String> = async {
-        // Step 1: mods
-        progress::emit_progress(
-            &app,
-            TaskProgressPayload {
-                version: game_version,
-                steps_total: STEPS_TOTAL,
-                step: 1,
-                step_name: "Sync Mods".to_string(),
-                step_progress: 0.0,
-                overall_percent: overall_from_step(1, 0.0, STEPS_TOTAL),
-                detail: Some("Applying manifest...".to_string()),
-                downloaded_bytes: None,
-                total_bytes: None,
-                extracted_files: Some(0),
-                total_files: Some(mods_cfg.mods.len() as u64),
-            },
-        );
+        let mut current_step = 0;
 
-        mods::install_mods_with_progress(
-            &app,
-            &game_root,
-            game_version,
-            &mods_cfg,
-            &[],
-            None,
-            |done, total, progress_info| {
-                let step_progress = if total == 0 {
-                    1.0
-                } else {
-                    (done as f64 / total as f64).clamp(0.0, 1.0)
-                };
+        if needs_depot_sync {
+            let remote_depot_manifest = remote_depot_manifest.clone().ok_or_else(|| {
+                format!("No depot manifest id for installed game version {game_version} in remote manifest.")
+            })?;
 
-                progress::emit_progress(
-                    &app,
-                    TaskProgressPayload {
+            let downloader = downloader::DepotDownloader::new(&app)?;
+            let login_state = downloader.get_login_state();
+            if !login_state.is_logged_in {
+                return Err("Not logged in to Steam. Please login first.".to_string());
+            }
+
+            current_step += 1;
+            progress::emit_progress(
+                &app,
+                TaskProgressPayload {
+                    version: game_version,
+                    steps_total,
+                    step: current_step,
+                    step_name: "Sync Game".to_string(),
+                    step_progress: 0.0,
+                    overall_percent: overall_from_step(current_step, 0.0, steps_total),
+                    detail: Some("Updating Lethal Company depot...".to_string()),
+                    downloaded_bytes: Some(0),
+                    total_bytes: None,
+                    extracted_files: None,
+                    total_files: None,
+                },
+            );
+
+            downloader
+                .download_depot(
+                    Some(remote_depot_manifest.clone()),
+                    game_root.clone(),
+                    Some(downloader::DownloadTaskContext {
                         version: game_version,
-                        steps_total: STEPS_TOTAL,
-                        step: 1,
-                        step_name: "Sync Mods".to_string(),
-                        step_progress,
-                        overall_percent: overall_from_step(1, step_progress, STEPS_TOTAL),
-                        detail: progress_info.detail,
-                        downloaded_bytes: progress_info.downloaded_bytes,
-                        total_bytes: progress_info.total_bytes,
-                        extracted_files: progress_info.extracted_files.or(Some(done)),
-                        total_files: progress_info.total_files.or(Some(total)),
-                    },
-                );
-            },
-        )
-        .await?;
+                        steps_total,
+                        step: current_step,
+                        step_name: "Sync Game".to_string(),
+                    }),
+                    None,
+                )
+                .await?;
 
-        crate::ensure_reverb_trigger_fix_cfg(&app, game_version)?;
+            progress::emit_progress(
+                &app,
+                TaskProgressPayload {
+                    version: game_version,
+                    steps_total,
+                    step: current_step,
+                    step_name: "Sync Game".to_string(),
+                    step_progress: 1.0,
+                    overall_percent: overall_from_step(current_step, 1.0, steps_total),
+                    detail: Some("Game files updated".to_string()),
+                    downloaded_bytes: None,
+                    total_bytes: None,
+                    extracted_files: None,
+                    total_files: None,
+                },
+            );
 
-        // Mark sync as complete for the UI.
-        progress::emit_progress(
-            &app,
-            TaskProgressPayload {
-                version: game_version,
-                steps_total: STEPS_TOTAL,
-                step: 1,
-                step_name: "Sync Mods".to_string(),
-                step_progress: 1.0,
-                overall_percent: 100.0,
-                detail: Some("Sync complete".to_string()),
-                downloaded_bytes: None,
-                total_bytes: None,
-                extracted_files: None,
-                total_files: None,
-            },
-        );
+            local_state
+                .depot_manifests
+                .insert(game_version, remote_depot_manifest);
+        }
 
-        write_manifest_state(
-            &app,
-            &ManifestState {
-                manifest_version: remote_manifest_version,
-            },
-        )?;
+        if needs_mod_sync {
+            current_step += 1;
+            progress::emit_progress(
+                &app,
+                TaskProgressPayload {
+                    version: game_version,
+                    steps_total,
+                    step: current_step,
+                    step_name: "Sync Mods".to_string(),
+                    step_progress: 0.0,
+                    overall_percent: overall_from_step(current_step, 0.0, steps_total),
+                    detail: Some("Applying manifest...".to_string()),
+                    downloaded_bytes: None,
+                    total_bytes: None,
+                    extracted_files: Some(0),
+                    total_files: Some(mods_cfg.mods.len() as u64),
+                },
+            );
+
+            mods::install_mods_with_progress(
+                &app,
+                &game_root,
+                game_version,
+                &mods_cfg,
+                &[],
+                None,
+                |done, total, progress_info| {
+                    let step_progress = if total == 0 {
+                        1.0
+                    } else {
+                        (done as f64 / total as f64).clamp(0.0, 1.0)
+                    };
+
+                    progress::emit_progress(
+                        &app,
+                        TaskProgressPayload {
+                            version: game_version,
+                            steps_total,
+                            step: current_step,
+                            step_name: "Sync Mods".to_string(),
+                            step_progress,
+                            overall_percent: overall_from_step(current_step, step_progress, steps_total),
+                            detail: progress_info.detail,
+                            downloaded_bytes: progress_info.downloaded_bytes,
+                            total_bytes: progress_info.total_bytes,
+                            extracted_files: progress_info.extracted_files.or(Some(done)),
+                            total_files: progress_info.total_files.or(Some(total)),
+                        },
+                    );
+                },
+            )
+            .await?;
+
+            crate::ensure_reverb_trigger_fix_cfg(&app, game_version)?;
+
+            progress::emit_progress(
+                &app,
+                TaskProgressPayload {
+                    version: game_version,
+                    steps_total,
+                    step: current_step,
+                    step_name: "Sync Mods".to_string(),
+                    step_progress: 1.0,
+                    overall_percent: overall_from_step(current_step, 1.0, steps_total),
+                    detail: Some("Mods synced".to_string()),
+                    downloaded_bytes: None,
+                    total_bytes: None,
+                    extracted_files: None,
+                    total_files: None,
+                },
+            );
+        }
+
+        local_state.manifest_version = remote_manifest_version;
+        write_manifest_state(&app, &local_state)?;
 
         Ok(())
     }
@@ -1157,7 +1317,7 @@ pub async fn sync_latest_install_from_manifest(app: tauri::AppHandle) -> Result<
     match sync_res {
         Ok(()) => {
             progress::emit_finished(
-                &app,
+                app,
                 progress::TaskFinishedPayload {
                     version: game_version,
                     path: game_root.to_string_lossy().to_string(),
@@ -1167,7 +1327,7 @@ pub async fn sync_latest_install_from_manifest(app: tauri::AppHandle) -> Result<
         }
         Err(e) => {
             progress::emit_error(
-                &app,
+                app,
                 progress::TaskErrorPayload {
                     version: game_version,
                     message: e.clone(),
@@ -1176,6 +1336,79 @@ pub async fn sync_latest_install_from_manifest(app: tauri::AppHandle) -> Result<
             Err(e)
         }
     }
+}
+
+pub async fn check_latest_install_manifest_update(
+    app: &tauri::AppHandle,
+) -> Result<ManifestUpdateCheck, String> {
+    let Some((game_version, _game_root)) = latest_installed_version_dir(app)? else {
+        return Ok(ManifestUpdateCheck {
+            available: false,
+            version: None,
+            needs_mod_sync: false,
+            needs_depot_sync: false,
+            local_manifest_version: 0,
+            remote_manifest_version: 0,
+            local_depot_manifest: None,
+            remote_depot_manifest: None,
+        });
+    };
+
+    check_manifest_update_for_version(app, game_version).await
+}
+
+pub async fn check_manifest_update_for_version(
+    app: &tauri::AppHandle,
+    game_version: u32,
+) -> Result<ManifestUpdateCheck, String> {
+    let game_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
+        .join("versions")
+        .join(format!("v{game_version}"));
+
+    if !game_root.exists() {
+        return Ok(ManifestUpdateCheck {
+            available: false,
+            version: Some(game_version),
+            needs_mod_sync: false,
+            needs_depot_sync: false,
+            local_manifest_version: 0,
+            remote_manifest_version: 0,
+            local_depot_manifest: None,
+            remote_depot_manifest: None,
+        });
+    }
+
+    let client = reqwest::Client::new();
+    let remote = ModsConfig::fetch_manifest(&client).await?;
+    let (remote_manifest_version, _mods_cfg, _chain_config, manifests, _preset_tag_constraints) =
+        remote;
+
+    let local_state = read_manifest_state(app)?;
+    let needs_mod_sync = local_state.manifest_version != remote_manifest_version;
+    let remote_depot_manifest = manifests.get(&game_version).cloned();
+    let local_depot_manifest = resolve_local_depot_manifest_id(&local_state, game_version);
+    let needs_depot_sync = match (
+        local_depot_manifest.as_deref(),
+        remote_depot_manifest.as_deref(),
+    ) {
+        (Some(local), Some(remote)) => local != remote,
+        (None, Some(_)) => true,
+        _ => false,
+    };
+
+    Ok(ManifestUpdateCheck {
+        available: needs_mod_sync || needs_depot_sync,
+        version: Some(game_version),
+        needs_mod_sync,
+        needs_depot_sync,
+        local_manifest_version: local_state.manifest_version,
+        remote_manifest_version,
+        local_depot_manifest,
+        remote_depot_manifest,
+    })
 }
 
 pub async fn download_and_setup(
@@ -1290,7 +1523,7 @@ pub async fn download_and_setup(
         // 게임 다운로드
         downloader
             .download_depot(
-                Some(manifest_id),
+                Some(manifest_id.clone()),
                 extract_dir.clone(),
                 Some(downloader::DownloadTaskContext {
                     version,
@@ -1587,12 +1820,10 @@ pub async fn download_and_setup(
         .await?;
 
         crate::ensure_reverb_trigger_fix_cfg(&app, version)?;
-        write_manifest_state(
-            &app,
-            &ManifestState {
-                manifest_version: remote_manifest_version,
-            },
-        )?;
+        let mut manifest_state = read_manifest_state(&app)?;
+        manifest_state.manifest_version = remote_manifest_version;
+        manifest_state.depot_manifests.insert(version, manifest_id);
+        write_manifest_state(&app, &manifest_state)?;
 
         emit_progress(
             &app,

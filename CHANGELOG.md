@@ -1,6 +1,11 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.8.3 (2026-04-16)
+- Added support for updating the launcher’s displayed game version during minor updates, such as v81.5 to v81.6.
+Sorry for all the updates today...
+
+
 ## 1.8.2 (2026-04-16)
 - The issue where the “Update” button did not appear when the installed mod was a higher version than the one in the settings has been resolved.
 - “FreeeeeeMoooooons” is now visible when SMHQ is selected. (It was not visible before, but it still worked.)

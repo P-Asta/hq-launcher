@@ -669,6 +669,7 @@ export default function LauncherPage({
   });
 
   const [updatePrompt, setUpdatePrompt] = useState({ open: false });
+  const [manifestUpdateInfo, setManifestUpdateInfo] = useState(null);
   const [practicePrompt, setPracticePrompt] = useState({ open: false });
   const [practiceTask, setPracticeTask] = useState(null); // last Practice Mods progress payload
   const [practiceCancelBusy, setPracticeCancelBusy] = useState(false);
@@ -735,6 +736,7 @@ export default function LauncherPage({
   });
   const [isResizingPanels, setIsResizingPanels] = useState(false);
   const lastAutoCheckedContextRef = useRef("");
+  const startupManifestSyncRef = useRef("");
   const [preparedUpdateContext, setPreparedUpdateContext] = useState("");
   const [didFinishBootstrap, setDidFinishBootstrap] = useState(false);
   const [bootstrapStatus, setBootstrapStatus] = useState(
@@ -1502,6 +1504,52 @@ export default function LauncherPage({
     if (!didFinishBootstrap) return;
     const version = Number(selectedVersion);
     if (!Number.isFinite(version)) return;
+    if (!isInstalled(version)) {
+      setManifestUpdateInfo(null);
+      return;
+    }
+    const checkKey = `manifest:${version}`;
+    if (startupManifestSyncRef.current === checkKey) return;
+
+    startupManifestSyncRef.current = checkKey;
+
+    (async () => {
+      try {
+        const info = await invoke("check_latest_install_manifest_update", { version });
+        if (info?.available) {
+          setTask((t) => ({
+            ...t,
+            status: "idle",
+            version,
+            step_name: null,
+            steps_total: null,
+            step: null,
+            overall_percent: null,
+            detail: null,
+            downloaded_bytes: null,
+            total_bytes: null,
+            error: null,
+          }));
+          setManifestUpdateInfo(info);
+          setUpdatePrompt({ open: true });
+        } else if (manifestUpdateInfo?.version === version) {
+          setManifestUpdateInfo(null);
+        }
+      } catch (e) {
+        setUpdatePrompt({ open: true });
+        setTask((t) => ({
+          ...t,
+          status: "error",
+          error: e?.message ?? String(e),
+        }));
+      }
+    })();
+  }, [didFinishBootstrap, installedVersions, isInstalled, selectedVersion]);
+
+  useEffect(() => {
+    if (!didFinishBootstrap) return;
+    const version = Number(selectedVersion);
+    if (!Number.isFinite(version)) return;
     if (!isInstalled(version)) return;
     const contextKey = `${runMode}:${version}`;
     if (preparedUpdateContext !== contextKey) return;
@@ -1583,6 +1631,8 @@ export default function LauncherPage({
         const isEnableModStep = stepName === "Enable Mod";
         const isModFilesStep = stepName === "Mod Files";
         const isDeleteStep = stepName === "Delete Version";
+        const isManifestSyncStep =
+          stepName === "Sync Mods" || stepName === "Sync Game";
         const isSetupStep =
           isEnableModStep ||
           stepName === "Practice Mods" ||
@@ -1659,6 +1709,15 @@ export default function LauncherPage({
           );
         }
         if (isEnableModStep) {
+          setUpdatePrompt({ open: true });
+          setTask((t) => ({
+            ...t,
+            status: didFinish ? "done" : "working",
+            ...p,
+            error: null,
+          }));
+        }
+        if (isManifestSyncStep) {
           setUpdatePrompt({ open: true });
           setTask((t) => ({
             ...t,
@@ -2050,6 +2109,7 @@ export default function LauncherPage({
 
   async function runModUpdate(v) {
     setUpdatePrompt({ open: true });
+    setManifestUpdateInfo(null);
     setTask((t) => ({
       ...t,
       status: "working",
@@ -4487,17 +4547,37 @@ export default function LauncherPage({
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-lg font-semibold">
-                  {updateIsDone
+                  {manifestUpdateInfo && !updateIsWorking && !updateIsDone && !updateIsError
+                    ? "Update available"
+                    : updateIsDone
                     ? "Update complete"
                     : updateIsError
                     ? "Update failed"
                     : "Updating..."}
                 </div>
                 <div className="mt-1 text-sm text-white/55">
-                  Based on the remote manifest, installed mod versions are being synced to the desired state.
+                  {manifestUpdateInfo && !updateIsWorking && !updateIsDone && !updateIsError
+                    ? `v${manifestUpdateInfo.version ?? selectedVersion} version's allowed manifest has changed.`
+                    : "Based on the remote manifest, installed game and mod files are being synced to the desired state."}
                 </div>
               </div>
             </div>
+
+            {manifestUpdateInfo && !updateIsWorking && !updateIsDone && !updateIsError && (
+              <div className="mt-4 rounded-2xl border border-panel-outline bg-white/5 p-3 text-sm text-white/70">
+                <div>
+                  Installed version: v{manifestUpdateInfo.version ?? selectedVersion}
+                </div>
+                <div>
+                  Previous manifest:{" "}
+                  {manifestUpdateInfo.local_depot_manifest ?? "unknown"}
+                </div>
+                <div>
+                  Current manifest:{" "}
+                  {manifestUpdateInfo.remote_depot_manifest ?? "unknown"}
+                </div>
+              </div>
+            )}
 
             {(updateIsWorking || updateIsDone || updateIsError) && (
               <div className="mt-4 rounded-2xl border border-panel-outline bg-white/5 p-3">
@@ -4556,11 +4636,78 @@ export default function LauncherPage({
                 >
                   Updating...
                 </Button>
+              ) : manifestUpdateInfo && !updateIsDone && !updateIsError ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    className="h-10 min-w-[120px]"
+                    onClick={() => {
+                      setUpdatePrompt({ open: false });
+                      setManifestUpdateInfo(null);
+                    }}
+                  >
+                    Later
+                  </Button>
+                  <Button
+                    variant="default"
+                    className="h-10 min-w-[120px]"
+                    onClick={async () => {
+                      const v =
+                        Number(manifestUpdateInfo.version ?? selectedVersion) || selectedVersion;
+                      setManifestUpdateInfo(null);
+                      setTask((t) => ({
+                        ...t,
+                        status: "working",
+                        version: v,
+                        overall_percent: 0,
+                        error: null,
+                      }));
+                      try {
+                        await invoke("sync_latest_install_from_manifest", {
+                          version: v,
+                        });
+                      } catch (e) {
+                        if (
+                          typeof onRequireLogin === "function" &&
+                          isAuthError(e)
+                        ) {
+                          try {
+                            const didLogin = await onRequireLogin();
+                            if (!didLogin) {
+                              setTask((t) => ({
+                                ...t,
+                                status: "error",
+                                error: e?.message ?? String(e),
+                              }));
+                              return;
+                            }
+                            await invoke("sync_latest_install_from_manifest", {
+                              version: v,
+                            });
+                            return;
+                          } catch {}
+                        }
+                        setTask((t) => ({
+                          ...t,
+                          status: "error",
+                          error: e?.message ?? String(e),
+                        }));
+                      }
+                    }}
+                  >
+                    Update
+                  </Button>
+                </>
               ) : (
                 <Button
                   variant="secondary"
                   className="h-10 min-w-[120px]"
-                  onClick={() => setUpdatePrompt({ open: false })}
+                  onClick={() => {
+                    setUpdatePrompt({ open: false });
+                    if (!updateIsWorking) {
+                      setManifestUpdateInfo(null);
+                    }
+                  }}
                 >
                   Close
                 </Button>

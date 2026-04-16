@@ -2541,9 +2541,34 @@ fn cancel_download(
 }
 
 #[tauri::command]
-async fn sync_latest_install_from_manifest(app: tauri::AppHandle) -> Result<bool, String> {
-    installer::sync_latest_install_from_manifest(app).await?;
+async fn sync_latest_install_from_manifest(
+    app: tauri::AppHandle,
+    version: Option<u32>,
+) -> Result<bool, String> {
+    if let Some(version) = version {
+        let game_root = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("failed to resolve app data dir: {e}"))?
+            .join("versions")
+            .join(format!("v{version}"));
+        installer::sync_install_from_manifest_for_version(&app, version, game_root).await?;
+    } else {
+        installer::sync_latest_install_from_manifest(app).await?;
+    }
     Ok(true)
+}
+
+#[tauri::command]
+async fn check_latest_install_manifest_update(
+    app: tauri::AppHandle,
+    version: Option<u32>,
+) -> Result<installer::ManifestUpdateCheck, String> {
+    if let Some(version) = version {
+        installer::check_manifest_update_for_version(&app, version).await
+    } else {
+        installer::check_latest_install_manifest_update(&app).await
+    }
 }
 
 #[tauri::command]
@@ -4547,6 +4572,7 @@ pub fn run() {
             prepare_preset,
             cancel_prepare,
             sync_latest_install_from_manifest,
+            check_latest_install_manifest_update,
             check_mod_updates,
             apply_mod_updates,
             launch_game,
