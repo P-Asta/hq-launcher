@@ -27,6 +27,7 @@ Practice is no longer a single extra plugin toggle. The launcher now provides pr
 - `Normal Practice`: HQ preset + practice mods
 - `Brutal Practice`: Brutal preset + practice mods (`v49+`)
 - `Wesley's Practice`: Wesley preset + practice mods (`v69+`)
+- `Classic Moons Practice`: Wesley preset + practice mods (`v69+`)
 
 When a practice run is selected, HQ Launcher prepares the compatible practice setup for the selected game version and installs missing pieces automatically for that run.
 
