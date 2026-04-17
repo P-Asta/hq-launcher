@@ -12,10 +12,27 @@ mod zip_utils;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::{Manager, State};
+
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::Memory::{
+    MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAllocEx, VirtualFreeEx,
+};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::Threading::{
+    CreateRemoteThread, INFINITE, OpenProcess, PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION,
+    PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE, WaitForSingleObject,
+};
 
 use crate::bepinex_cfg::read_manifest;
 use crate::progress::{TaskErrorPayload, TaskProgressPayload};
@@ -93,6 +110,133 @@ const WESLEY_HQOL_DONT_STORE_ITEMS: [&str; 18] = [
     "Gratar videotape",
     "Gloom videotape",
 ];
+
+#[cfg(target_os = "windows")]
+fn inject_dll_into_process(pid: u32, dll_path: &std::path::Path) -> Result<(), String> {
+    use std::ptr::{null, null_mut};
+
+    let dll_path = dll_path
+        .to_str()
+        .ok_or_else(|| format!("dll path contains non-utf8 characters: {}", dll_path.display()))?;
+    let dll_path_cstr =
+        CString::new(dll_path).map_err(|_| format!("dll path contains interior NUL: {dll_path}"))?;
+    let process = unsafe {
+        OpenProcess(
+            PROCESS_CREATE_THREAD
+                | PROCESS_QUERY_INFORMATION
+                | PROCESS_VM_OPERATION
+                | PROCESS_VM_WRITE
+                | PROCESS_VM_READ,
+            0,
+            pid,
+        )
+    };
+    if process.is_null() {
+        return Err(format!(
+            "failed to open process {pid} for injection (Win32 error {})",
+            unsafe { GetLastError() }
+        ));
+    }
+
+    let result = (|| {
+        let alloc_size = dll_path_cstr.as_bytes_with_nul().len();
+        let remote_memory = unsafe {
+            VirtualAllocEx(
+                process,
+                null_mut(),
+                alloc_size,
+                MEM_COMMIT | MEM_RESERVE,
+                PAGE_READWRITE,
+            )
+        };
+        if remote_memory.is_null() {
+            return Err(format!(
+                "failed to allocate remote memory for injection (Win32 error {})",
+                unsafe { GetLastError() }
+            ));
+        }
+
+        let write_ok = unsafe {
+            WriteProcessMemory(
+                process,
+                remote_memory,
+                dll_path_cstr.as_ptr().cast(),
+                alloc_size,
+                null_mut(),
+            )
+        };
+        if write_ok == 0 {
+            unsafe {
+                VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
+            }
+            return Err(format!(
+                "failed to write DLL path into target process (Win32 error {})",
+                unsafe { GetLastError() }
+            ));
+        }
+
+        let kernel32 = unsafe { GetModuleHandleA(c"kernel32.dll".as_ptr().cast()) };
+        if kernel32.is_null() {
+            unsafe {
+                VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
+            }
+            return Err(format!(
+                "failed to resolve kernel32.dll handle (Win32 error {})",
+                unsafe { GetLastError() }
+            ));
+        }
+
+        let Some(load_library) =
+            (unsafe { GetProcAddress(kernel32, c"LoadLibraryA".as_ptr().cast()) })
+        else {
+            unsafe {
+                VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
+            }
+            return Err(format!(
+                "failed to resolve LoadLibraryA (Win32 error {})",
+                unsafe { GetLastError() }
+            ));
+        };
+
+        let remote_thread = unsafe {
+            CreateRemoteThread(
+                process,
+                null(),
+                0,
+                Some(std::mem::transmute(load_library)),
+                remote_memory,
+                0,
+                null_mut(),
+            )
+        };
+        if remote_thread.is_null() {
+            unsafe {
+                VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
+            }
+            return Err(format!(
+                "failed to create remote thread for injection (Win32 error {})",
+                unsafe { GetLastError() }
+            ));
+        }
+
+        unsafe {
+            WaitForSingleObject(remote_thread, INFINITE);
+            CloseHandle(remote_thread);
+            VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
+        }
+        Ok(())
+    })();
+
+    unsafe {
+        CloseHandle(process);
+    }
+    result
+}
+
+#[cfg(not(target_os = "windows"))]
+fn inject_dll_into_process(_pid: u32, _dll_path: &std::path::Path) -> Result<(), String> {
+    Err("DLL injection is only supported on Windows".to_string())
+}
 
 fn merge_mod_entries_prefer_later(
     base: Vec<mod_config::ModEntry>,
@@ -3067,15 +3211,18 @@ fn get_steam_client_path(launcher_root: &std::path::Path) -> std::path::PathBuf 
     launcher_root.to_path_buf()
 }
 
-#[tauri::command]
-async fn launch_game(
-    app: tauri::AppHandle,
+fn resolve_game_launch_paths(
+    app: &tauri::AppHandle,
     version: u32,
-    state: State<'_, GameState>,
-    prepare_state: State<'_, PrepareState>,
-) -> Result<u32, String> {
-    wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
-    let dir = version_dir(&app, version)?;
+) -> Result<
+    (
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ),
+    String,
+> {
+    let dir = version_dir(app, version)?;
     if !dir.exists() {
         return Err(format!(
             "version folder not found: {}",
@@ -3083,10 +3230,6 @@ async fn launch_game(
         ));
     }
 
-    let _app_path = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("app path not found: {e}"))?;
     let exe_name = "Lethal Company.exe";
     let exe_path = dir.join(exe_name);
     let exe_path = if exe_path.exists() {
@@ -3098,21 +3241,150 @@ async fn launch_game(
 
     let exe_dir = exe_path
         .parent()
-        .ok_or_else(|| "invalid exe path".to_string())?;
+        .ok_or_else(|| "invalid exe path".to_string())?
+        .to_path_buf();
 
-    // If already running, return an error.
-    {
-        let mut guard = state
-            .child
-            .lock()
-            .map_err(|_| "game state lock poisoned".to_string())?;
-        if let Some(child) = guard.as_mut() {
-            if child.try_wait().map_err(|e| e.to_string())?.is_none() {
-                return Err("game is already running".to_string());
-            }
+    Ok((dir, exe_path, exe_dir))
+}
+
+fn ensure_game_not_running(state: &State<'_, GameState>) -> Result<(), String> {
+    let mut guard = state
+        .child
+        .lock()
+        .map_err(|_| "game state lock poisoned".to_string())?;
+    if let Some(child) = guard.as_mut() {
+        if child.try_wait().map_err(|e| e.to_string())?.is_none() {
+            return Err("game is already running".to_string());
         }
-        *guard = None;
     }
+    *guard = None;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn inject_launch_dlls(pid: u32, version_dir: &std::path::Path) -> Result<(), String> {
+    let steam_dlls = [
+        "C:\\Program Files (x86)\\Steam\\tier0_s64.dll",
+        "C:\\Program Files (x86)\\Steam\\vstdlib_s64.dll",
+        "C:\\Program Files (x86)\\Steam\\Steam.dll",
+        "C:\\Program Files (x86)\\Steam\\Steam2.dll",
+        "C:\\Program Files (x86)\\Steam\\steamclient64.dll",
+        "C:\\Program Files (x86)\\Steam\\steam_api64.dll",
+        "C:\\Program Files (x86)\\Steam\\steamwebrtc64.dll",
+        "C:\\Program Files (x86)\\Steam\\video64.dll",
+        "C:\\Program Files (x86)\\Steam\\VkLayer_steam_fossilize64.dll",
+        "C:\\Program Files (x86)\\Steam\\d3dcompiler_46_64.dll",
+        "C:\\Program Files (x86)\\Steam\\CSERHelper.dll",
+        "C:\\Program Files (x86)\\Steam\\crashhandler64.dll",
+        // "C:\\Program Files (x86)\\Steam\\aom.dll",
+        // "C:\\Program Files (x86)\\Steam\\dav1d.dll",
+        "C:\\Program Files (x86)\\Steam\\GfnRuntimeSdk.dll",
+        "C:\\Program Files (x86)\\Steam\\libavfilter-11.dll",
+        "C:\\Program Files (x86)\\Steam\\libavformat-62.dll",
+        // "C:\\Program Files (x86)\\Steam\\libavif-16.dll",
+        "C:\\Program Files (x86)\\Steam\\libavutil-60.dll",
+        "C:\\Program Files (x86)\\Steam\\libswscale-9.dll",
+        "C:\\Program Files (x86)\\Steam\\libusb-1.0.dll",
+        "C:\\Program Files (x86)\\Steam\\libswresample-6.dll",
+        "C:\\Program Files (x86)\\Steam\\libx264-142.dll",
+        "C:\\Program Files (x86)\\Steam\\openvr_api.dll",
+        "C:\\Program Files (x86)\\Steam\\SDL3.dll",
+        "C:\\Program Files (x86)\\Steam\\SDL3_image.dll",
+        "C:\\Program Files (x86)\\Steam\\SDL3_ttf.dll",
+        "C:\\Program Files (x86)\\Steam\\SteamUI.dll",
+
+        "C:\\Program Files (x86)\\Steam\\win64\\gameoverlayui.dll",
+        "C:\\Program Files (x86)\\Steam\\win64\\filesystem_stdio.dll",
+        "C:\\Program Files (x86)\\Steam\\win64\\dav1d.dll",
+        "C:\\Program Files (x86)\\Steam\\win64\\chromehtml.dll",
+        "C:\\Program Files (x86)\\Steam\\win64\\aom.dll",
+        "C:\\Program Files (x86)\\Steam\\win64\\vgui2_s.dll",
+        "C:\\Program Files (x86)\\Steam\\win64\\libavif-16.dll",
+
+        "C:\\Program Files (x86)\\Steam\\GameOverlayRenderer64.dll",
+    ];
+
+    for dll in steam_dlls {
+        inject_dll_into_process(pid, std::path::Path::new(dll))?;
+    }
+
+    let dll_path = version_dir.join("winhttp.dll");
+    if !dll_path.exists() {
+        return Err(format!(
+            "winhttp.dll not found: {}",
+            dll_path.to_string_lossy()
+        ));
+    }
+    inject_dll_into_process(pid, &dll_path)?;
+    Ok(())
+}
+
+fn spawn_game_process(
+    _app: &tauri::AppHandle,
+    version_dir: &std::path::Path,
+    exe_path: &std::path::Path,
+    exe_dir: &std::path::Path,
+) -> Result<std::process::Child, String> {
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new(exe_path);
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg("-a");
+        cmd.arg(exe_path);
+        cmd
+    };
+
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let app_path = _app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("app path not found: {e}"))?;
+        let proton_env_path = installer::proton_env_dir(_app)
+            .map_err(|e| format!("proton_env path not found: {e}"))?;
+        let proton_bin_path = installer::get_current_proton_dir_impl(_app)
+            .map_err(|e| format!("proton path not found: {e}"))?
+            .ok_or("found proton path but is None")?;
+        let compat_pre_path = proton_env_path.join("wine_prefix");
+        if !compat_pre_path.exists() {
+            std::fs::create_dir(&compat_pre_path)
+                .map_err(|e| format!("could not make prefix: {e}"))?;
+        }
+        let steam_path = get_steam_client_path(&app_path);
+
+        let mut cmd = std::process::Command::new(proton_bin_path.join("proton"));
+        cmd.arg("run");
+        cmd.arg(exe_path);
+        cmd.env("STEAM_COMPAT_DATA_PATH", &compat_pre_path);
+        cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_path);
+        cmd.env("WINEDLLOVERRIDES", "winhttp=n,b");
+        cmd.env_remove("PYTHONPATH");
+        cmd.env_remove("PYTHONHOME");
+        cmd
+    };
+
+    let child = command
+        .current_dir(exe_dir)
+        .spawn()
+        .map_err(|e| format!("failed to launch: {e}"))?;
+
+    #[cfg(target_os = "windows")]
+    inject_launch_dlls(child.id(), version_dir)?;
+
+    Ok(child)
+}
+
+#[tauri::command]
+async fn launch_game(
+    app: tauri::AppHandle,
+    version: u32,
+    state: State<'_, GameState>,
+    prepare_state: State<'_, PrepareState>,
+) -> Result<u32, String> {
+    wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
+    let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
 
     let mut forced_disabled_ids = practice_mode_mod_ids();
     forced_disabled_ids.extend(run_mode_tagged_mod_ids(None).await?);
@@ -3126,51 +3398,13 @@ async fn launch_game(
     let _ = ensure_reverb_trigger_fix_cfg(&app, version);
     wait_for_mod_file_renames_to_settle();
 
-    #[cfg(target_os = "windows")]
-    let mut command = std::process::Command::new(&exe_path);
+    let _launch_guard = state
+        .launch_lock
+        .lock()
+        .map_err(|_| "game launch lock poisoned".to_string())?;
+    ensure_game_not_running(&state)?;
 
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut cmd = std::process::Command::new("open");
-        cmd.arg("-a");
-        cmd.arg(&exe_path);
-        cmd
-    };
-
-    #[cfg(target_os = "linux")]
-    let (proton_binary, compat_data_path) = {
-        let proton_env_path = installer::proton_env_dir(&app)
-            .map_err(|e| format!("proton_env path not found: {e}"))?;
-        let proton_bin_path = installer::get_current_proton_dir_impl(&app)
-            .map_err(|e| format!("proton path not found: {e}"))?
-            .ok_or("found proton path but is None")?;
-        let compat_pre_path = proton_env_path.join("wine_prefix");
-        if !compat_pre_path.exists() {
-            std::fs::create_dir(&compat_pre_path)
-                .map_err(|e| format!("could not make prefix: {e}"))?;
-        }
-        (proton_bin_path.join("proton"), compat_pre_path)
-    };
-
-    #[cfg(target_os = "linux")]
-    let mut command = {
-        let steam_path = get_steam_client_path(&_app_path);
-        let mut cmd = std::process::Command::new(&proton_binary);
-        cmd.arg("run");
-        cmd.arg(&exe_path);
-        cmd.env("STEAM_COMPAT_DATA_PATH", &compat_data_path);
-        cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_path);
-        cmd.env("WINEDLLOVERRIDES", "winhttp=n,b");
-        cmd.env_remove("PYTHONPATH");
-        cmd.env_remove("PYTHONHOME");
-        cmd
-    };
-
-    let child = command
-        .current_dir(exe_dir)
-        .spawn()
-        .map_err(|e| format!("failed to launch: {e}"))?;
-
+    let child = spawn_game_process(&app, &dir, &exe_path, &exe_dir)?;
     let pid = child.id();
     let mut guard = state
         .child
@@ -3188,30 +3422,7 @@ async fn launch_game_practice(
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
     wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
-    let dir = version_dir(&app, version)?;
-    if !dir.exists() {
-        return Err(format!(
-            "version folder not found: {}",
-            dir.to_string_lossy()
-        ));
-    }
-
-    let _app_path = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("app path not found: {e}"))?;
-    let exe_name = "Lethal Company.exe";
-    let exe_path = dir.join(exe_name);
-    let exe_path = if exe_path.exists() {
-        exe_path
-    } else {
-        find_file_named(&dir, exe_name, 3)
-            .ok_or_else(|| format!("{exe_name} not found under {}", dir.to_string_lossy()))?
-    };
-
-    let exe_dir = exe_path
-        .parent()
-        .ok_or_else(|| "invalid exe path".to_string())?;
+    let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
 
     // Practice run: install + enable practice mods (compatible with this game version).
     let practice_ids = prepare_practice_mods_for_version(&app, version, None).await?;
@@ -3235,67 +3446,9 @@ async fn launch_game_practice(
         .launch_lock
         .lock()
         .map_err(|_| "game launch lock poisoned".to_string())?;
+    ensure_game_not_running(&state)?;
 
-    // If already running, return an error.
-    {
-        let mut guard = state
-            .child
-            .lock()
-            .map_err(|_| "game state lock poisoned".to_string())?;
-        if let Some(child) = guard.as_mut() {
-            if child.try_wait().map_err(|e| e.to_string())?.is_none() {
-                return Err("game is already running".to_string());
-            }
-        }
-        *guard = None;
-    }
-
-    #[cfg(target_os = "windows")]
-    let mut command = std::process::Command::new(&exe_path);
-
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut cmd = std::process::Command::new("open");
-        cmd.arg("-a");
-        cmd.arg(&exe_path);
-        cmd
-    };
-
-    #[cfg(target_os = "linux")]
-    let (proton_binary, compat_data_path) = {
-        let proton_env_path = installer::proton_env_dir(&app)
-            .map_err(|e| format!("proton_env path not found: {e}"))?;
-        let proton_bin_path = installer::get_current_proton_dir_impl(&app)
-            .map_err(|e| format!("proton path not found: {e}"))?
-            .ok_or("found proton path but is None")?;
-        let compat_pre_path = proton_env_path.join("wine_prefix");
-        if !compat_pre_path.exists() {
-            std::fs::create_dir(&compat_pre_path)
-                .map_err(|e| format!("could not make prefix: {e}"))?;
-        }
-        (proton_bin_path.join("proton"), compat_pre_path)
-    };
-
-    #[cfg(target_os = "linux")]
-    let mut command = {
-        let steam_path = get_steam_client_path(&_app_path);
-        let mut cmd = std::process::Command::new(&proton_binary);
-        cmd.arg("run");
-        cmd.arg(&exe_path);
-        cmd.env("STEAM_COMPAT_DATA_PATH", &compat_data_path);
-        cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_path);
-        cmd.env("WINEDLLOVERRIDES", "winhttp=n,b");
-        cmd.env_remove("PYTHONPATH");
-        cmd.env_remove("PYTHONHOME");
-        println!("{:?}", cmd);
-        cmd
-    };
-
-    let child = command
-        .current_dir(exe_dir)
-        .spawn()
-        .map_err(|e| format!("failed to launch: {e}"))?;
-
+    let child = spawn_game_process(&app, &dir, &exe_path, &exe_dir)?;
     let pid = child.id();
     let mut guard = state
         .child
@@ -3337,27 +3490,7 @@ async fn launch_game_preset(
         let _ = force_enable_mods_for_version(&app, version, &preset_ids);
     }
 
-    // Reuse normal launch path (includes "force-disable practice mods" for non-practice runs).
-    // We inline the logic here to avoid refactoring large chunks right now.
-    let dir = version_dir(&app, version)?;
-    if !dir.exists() {
-        return Err(format!(
-            "version folder not found: {}",
-            dir.to_string_lossy()
-        ));
-    }
-
-    let exe_name = "Lethal Company.exe";
-    let exe_path = dir.join(exe_name);
-    let exe_path = if exe_path.exists() {
-        exe_path
-    } else {
-        find_file_named(&dir, exe_name, 3)
-            .ok_or_else(|| format!("{exe_name} not found under {}", dir.to_string_lossy()))?
-    };
-    let exe_dir = exe_path
-        .parent()
-        .ok_or_else(|| "invalid exe path".to_string())?;
+    let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
 
     if !practice {
         // Non-practice run: force-disable practice mods.
@@ -3411,70 +3544,9 @@ async fn launch_game_preset(
         .launch_lock
         .lock()
         .map_err(|_| "game launch lock poisoned".to_string())?;
+    ensure_game_not_running(&state)?;
 
-    // If already running, return an error.
-    {
-        let mut guard = state
-            .child
-            .lock()
-            .map_err(|_| "game state lock poisoned".to_string())?;
-        if let Some(child) = guard.as_mut() {
-            if child.try_wait().map_err(|e| e.to_string())?.is_none() {
-                return Err("game is already running".to_string());
-            }
-        }
-        *guard = None;
-    }
-
-    #[cfg(target_os = "windows")]
-    let mut command = std::process::Command::new(&exe_path);
-
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut cmd = std::process::Command::new("open");
-        cmd.arg("-a");
-        cmd.arg(&exe_path);
-        cmd
-    };
-
-    #[cfg(target_os = "linux")]
-    let (proton_binary, compat_data_path) = {
-        let proton_env_path = installer::proton_env_dir(&app)
-            .map_err(|e| format!("proton_env path not found: {e}"))?;
-        let proton_bin_path = installer::get_current_proton_dir_impl(&app)
-            .map_err(|e| format!("proton path not found: {e}"))?
-            .ok_or("found proton path but is None")?;
-        let compat_pre_path = proton_env_path.join("wine_prefix");
-        if !compat_pre_path.exists() {
-            std::fs::create_dir(&compat_pre_path)
-                .map_err(|e| format!("could not make prefix: {e}"))?;
-        }
-        (proton_bin_path.join("proton"), compat_pre_path)
-    };
-
-    #[cfg(target_os = "linux")]
-    let mut command = {
-        let app_path = app
-            .path()
-            .app_data_dir()
-            .map_err(|e| format!("app path not found: {e}"))?;
-        let steam_path = get_steam_client_path(&app_path);
-        let mut cmd = std::process::Command::new(&proton_binary);
-        cmd.arg("run");
-        cmd.arg(&exe_path);
-        cmd.env("STEAM_COMPAT_DATA_PATH", &compat_data_path);
-        cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_path);
-        cmd.env("WINEDLLOVERRIDES", "winhttp=n,b");
-        cmd.env_remove("PYTHONPATH");
-        cmd.env_remove("PYTHONHOME");
-        cmd
-    };
-
-    let child = command
-        .current_dir(exe_dir)
-        .spawn()
-        .map_err(|e| format!("failed to launch: {e}"))?;
-
+    let child = spawn_game_process(&app, &dir, &exe_path, &exe_dir)?;
     let pid = child.id();
     let mut guard = state
         .child
