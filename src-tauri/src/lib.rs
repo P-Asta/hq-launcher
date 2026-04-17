@@ -299,7 +299,7 @@ fn steam_overlay_dlls(steam_path: &std::path::Path) -> Vec<std::path::PathBuf> {
         steam_path.join("tier0_s64.dll"),
         steam_path.join("vstdlib_s64.dll"),
         steam_path.join("steamclient64.dll"),
-        steam_path.join("win64").join("gameoverlayui.dll"),
+        // steam_path.join("win64").join("gameoverlayui.dll"),
         steam_path.join("GameOverlayRenderer64.dll"),
     ]
 }
