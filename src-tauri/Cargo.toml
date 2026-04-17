@@ -40,6 +40,7 @@ opener = "0.8.3"
 dirs = "6.0.0"
 discord-rich-presence = "0.2"
 tungstenite = { version = "0.24", default-features = false, features = ["handshake", "native-tls"] }
+rfd = "0.15"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-global-shortcut = "2"
@@ -50,7 +51,9 @@ tauri-plugin-updater = "2"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Threading",
 ] }
+winreg = "0.55.0"

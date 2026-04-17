@@ -23,6 +23,10 @@ use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory;
 #[cfg(target_os = "windows")]
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+};
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Memory::{
@@ -30,9 +34,14 @@ use windows_sys::Win32::System::Memory::{
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Threading::{
-    CreateRemoteThread, INFINITE, OpenProcess, PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION,
-    PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE, WaitForSingleObject,
+    CreateRemoteThread, OpenProcess, OpenThread, ResumeThread, INFINITE,
+    PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_READ,
+    PROCESS_VM_WRITE, THREAD_SUSPEND_RESUME, WaitForSingleObject,
 };
+#[cfg(target_os = "windows")]
+use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY};
+#[cfg(target_os = "windows")]
+use winreg::RegKey;
 
 use crate::bepinex_cfg::read_manifest;
 use crate::progress::{TaskErrorPayload, TaskProgressPayload};
@@ -110,6 +119,8 @@ const WESLEY_HQOL_DONT_STORE_ITEMS: [&str; 18] = [
     "Gratar videotape",
     "Gloom videotape",
 ];
+
+const LETHAL_COMPANY_STEAM_APP_ID: &str = "1966720";
 
 #[cfg(target_os = "windows")]
 fn inject_dll_into_process(pid: u32, dll_path: &std::path::Path) -> Result<(), String> {
@@ -236,6 +247,115 @@ fn inject_dll_into_process(pid: u32, dll_path: &std::path::Path) -> Result<(), S
 #[cfg(not(target_os = "windows"))]
 fn inject_dll_into_process(_pid: u32, _dll_path: &std::path::Path) -> Result<(), String> {
     Err("DLL injection is only supported on Windows".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn get_windows_steam_install_path(configured_path: Option<&str>) -> Option<std::path::PathBuf> {
+    if let Some(configured) = configured_path.map(str::trim).filter(|value| !value.is_empty()) {
+        let candidate = std::path::PathBuf::from(configured);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let subkeys = [
+        ("SOFTWARE\\Valve\\Steam", KEY_READ | KEY_WOW64_64KEY),
+        ("SOFTWARE\\WOW6432Node\\Valve\\Steam", KEY_READ | KEY_WOW64_64KEY),
+        ("SOFTWARE\\Valve\\Steam", KEY_READ | KEY_WOW64_32KEY),
+        ("SOFTWARE\\WOW6432Node\\Valve\\Steam", KEY_READ | KEY_WOW64_32KEY),
+    ];
+
+    for (subkey, flags) in subkeys {
+        let Ok(key) = hklm.open_subkey_with_flags(subkey, flags) else {
+            continue;
+        };
+        let Ok(path) = key.get_value::<String, _>("InstallPath") else {
+            continue;
+        };
+        let candidate = std::path::PathBuf::from(path);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    [
+        std::env::var_os("ProgramFiles(x86)")
+            .map(std::path::PathBuf::from)
+            .map(|base| base.join("Steam")),
+        std::env::var_os("ProgramFiles")
+            .map(std::path::PathBuf::from)
+            .map(|base| base.join("Steam")),
+        Some(std::path::PathBuf::from(r"C:\Program Files (x86)\Steam")),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|path| path.exists())
+}
+
+#[cfg(target_os = "windows")]
+fn steam_overlay_dlls(steam_path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    vec![
+        steam_path.join("tier0_s64.dll"),
+        steam_path.join("vstdlib_s64.dll"),
+        steam_path.join("steamclient64.dll"),
+        steam_path.join("win64").join("gameoverlayui.dll"),
+        steam_path.join("GameOverlayRenderer64.dll"),
+    ]
+}
+
+#[cfg(target_os = "windows")]
+fn resume_main_thread(pid: u32) -> Result<(), String> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return Err(format!(
+            "failed to enumerate process threads (Win32 error {})",
+            unsafe { GetLastError() }
+        ));
+    }
+
+    let result = (|| {
+        let mut entry = THREADENTRY32 {
+            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+
+        let mut has_entry = unsafe { Thread32First(snapshot, &mut entry) } != 0;
+        while has_entry {
+            if entry.th32OwnerProcessID == pid {
+                let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+                if thread.is_null() {
+                    return Err(format!(
+                        "failed to open suspended main thread (Win32 error {})",
+                        unsafe { GetLastError() }
+                    ));
+                }
+
+                let resume_result = unsafe { ResumeThread(thread) };
+                unsafe {
+                    CloseHandle(thread);
+                }
+                if resume_result == u32::MAX {
+                    return Err(format!(
+                        "failed to resume suspended process thread (Win32 error {})",
+                        unsafe { GetLastError() }
+                    ));
+                }
+
+                return Ok(());
+            }
+
+            has_entry = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+        }
+
+        Err(format!("no thread found for suspended process {pid}"))
+    })();
+
+    unsafe {
+        CloseHandle(snapshot);
+    }
+
+    result
 }
 
 fn merge_mod_entries_prefer_later(
@@ -2027,6 +2147,44 @@ struct DisableModFile {
     mods: Vec<DisabledMod>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SteamOverlayConfig {
+    enabled: bool,
+    steam_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SteamOverlayConfigDto {
+    enabled: bool,
+    steam_path: Option<String>,
+    resolved_steam_path: Option<String>,
+}
+
+impl Default for SteamOverlayConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            steam_path: None,
+        }
+    }
+}
+
+impl SteamOverlayConfig {
+    fn into_dto(self) -> SteamOverlayConfigDto {
+        #[cfg(target_os = "windows")]
+        let resolved_steam_path = get_windows_steam_install_path(self.steam_path.as_deref())
+            .map(|path| path.to_string_lossy().to_string());
+        #[cfg(not(target_os = "windows"))]
+        let resolved_steam_path = None;
+
+        SteamOverlayConfigDto {
+            enabled: self.enabled,
+            steam_path: self.steam_path,
+            resolved_steam_path,
+        }
+    }
+}
+
 fn disablemod_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(app
         .path()
@@ -2034,6 +2192,15 @@ fn disablemod_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String>
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?
         .join("config")
         .join("disablemod.json"))
+}
+
+fn steam_overlay_config_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
+        .join("config")
+        .join("steam_overlay.json"))
 }
 
 pub(crate) fn thunderstore_cache_path(
@@ -2094,6 +2261,38 @@ fn write_disablemod(app: &tauri::AppHandle, f: &DisableModFile) -> Result<(), St
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let json = serde_json::to_string_pretty(f).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+fn read_steam_overlay_config(app: &tauri::AppHandle) -> Result<SteamOverlayConfig, String> {
+    let path = steam_overlay_config_path(app)?;
+    if !path.exists() {
+        let cfg = SteamOverlayConfig::default();
+        let _ = write_steam_overlay_config(app, &cfg);
+        return Ok(cfg);
+    }
+
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    match serde_json::from_str::<SteamOverlayConfig>(&text) {
+        Ok(cfg) => Ok(cfg),
+        Err(e) => {
+            log::warn!("Failed to parse steam_overlay.json, resetting: {e}");
+            let cfg = SteamOverlayConfig::default();
+            let _ = write_steam_overlay_config(app, &cfg);
+            Ok(cfg)
+        }
+    }
+}
+
+fn write_steam_overlay_config(
+    app: &tauri::AppHandle,
+    cfg: &SteamOverlayConfig,
+) -> Result<(), String> {
+    let path = steam_overlay_config_path(app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| e.to_string())
 }
 
@@ -3192,7 +3391,17 @@ async fn apply_mod_updates(
 }
 
 #[cfg(target_os = "linux")]
-fn get_steam_client_path(launcher_root: &std::path::Path) -> std::path::PathBuf {
+fn get_steam_client_path(
+    launcher_root: &std::path::Path,
+    configured_path: Option<&str>,
+) -> std::path::PathBuf {
+    if let Some(configured) = configured_path.map(str::trim).filter(|value| !value.is_empty()) {
+        let candidate = std::path::PathBuf::from(configured);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
     if let Some(home_dir) = dirs::home_dir() {
         let steam_paths = [
             home_dir.join(".steam/steam"),
@@ -3209,6 +3418,26 @@ fn get_steam_client_path(launcher_root: &std::path::Path) -> std::path::PathBuf 
 
     println!("Steam not found. Mocking client path.");
     launcher_root.to_path_buf()
+}
+
+#[cfg(target_os = "linux")]
+fn linux_overlay_preload_value(steam_path: &std::path::Path) -> Option<String> {
+    let mut libs: Vec<String> = vec![];
+    for rel in [
+        std::path::Path::new("ubuntu12_32").join("gameoverlayrenderer.so"),
+        std::path::Path::new("ubuntu12_64").join("gameoverlayrenderer.so"),
+    ] {
+        let candidate = steam_path.join(rel);
+        if candidate.exists() {
+            libs.push(candidate.to_string_lossy().to_string());
+        }
+    }
+
+    if libs.is_empty() {
+        None
+    } else {
+        Some(libs.join(":"))
+    }
 }
 
 fn resolve_game_launch_paths(
@@ -3262,50 +3491,18 @@ fn ensure_game_not_running(state: &State<'_, GameState>) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-fn inject_launch_dlls(pid: u32, version_dir: &std::path::Path) -> Result<(), String> {
-    let steam_dlls = [
-        "C:\\Program Files (x86)\\Steam\\tier0_s64.dll",
-        "C:\\Program Files (x86)\\Steam\\vstdlib_s64.dll",
-        "C:\\Program Files (x86)\\Steam\\Steam.dll",
-        "C:\\Program Files (x86)\\Steam\\Steam2.dll",
-        "C:\\Program Files (x86)\\Steam\\steamclient64.dll",
-        "C:\\Program Files (x86)\\Steam\\steam_api64.dll",
-        "C:\\Program Files (x86)\\Steam\\steamwebrtc64.dll",
-        "C:\\Program Files (x86)\\Steam\\video64.dll",
-        "C:\\Program Files (x86)\\Steam\\VkLayer_steam_fossilize64.dll",
-        "C:\\Program Files (x86)\\Steam\\d3dcompiler_46_64.dll",
-        "C:\\Program Files (x86)\\Steam\\CSERHelper.dll",
-        "C:\\Program Files (x86)\\Steam\\crashhandler64.dll",
-        // "C:\\Program Files (x86)\\Steam\\aom.dll",
-        // "C:\\Program Files (x86)\\Steam\\dav1d.dll",
-        "C:\\Program Files (x86)\\Steam\\GfnRuntimeSdk.dll",
-        "C:\\Program Files (x86)\\Steam\\libavfilter-11.dll",
-        "C:\\Program Files (x86)\\Steam\\libavformat-62.dll",
-        // "C:\\Program Files (x86)\\Steam\\libavif-16.dll",
-        "C:\\Program Files (x86)\\Steam\\libavutil-60.dll",
-        "C:\\Program Files (x86)\\Steam\\libswscale-9.dll",
-        "C:\\Program Files (x86)\\Steam\\libusb-1.0.dll",
-        "C:\\Program Files (x86)\\Steam\\libswresample-6.dll",
-        "C:\\Program Files (x86)\\Steam\\libx264-142.dll",
-        "C:\\Program Files (x86)\\Steam\\openvr_api.dll",
-        "C:\\Program Files (x86)\\Steam\\SDL3.dll",
-        "C:\\Program Files (x86)\\Steam\\SDL3_image.dll",
-        "C:\\Program Files (x86)\\Steam\\SDL3_ttf.dll",
-        "C:\\Program Files (x86)\\Steam\\SteamUI.dll",
-
-        "C:\\Program Files (x86)\\Steam\\win64\\gameoverlayui.dll",
-        "C:\\Program Files (x86)\\Steam\\win64\\filesystem_stdio.dll",
-        "C:\\Program Files (x86)\\Steam\\win64\\dav1d.dll",
-        "C:\\Program Files (x86)\\Steam\\win64\\chromehtml.dll",
-        "C:\\Program Files (x86)\\Steam\\win64\\aom.dll",
-        "C:\\Program Files (x86)\\Steam\\win64\\vgui2_s.dll",
-        "C:\\Program Files (x86)\\Steam\\win64\\libavif-16.dll",
-
-        "C:\\Program Files (x86)\\Steam\\GameOverlayRenderer64.dll",
-    ];
-
-    for dll in steam_dlls {
-        inject_dll_into_process(pid, std::path::Path::new(dll))?;
+fn inject_launch_dlls(
+    pid: u32,
+    version_dir: &std::path::Path,
+    steam_path_override: Option<&str>,
+) -> Result<(), String> {
+    let steam_path = get_windows_steam_install_path(steam_path_override)
+        .ok_or_else(|| "Steam install path not found".to_string())?;
+    for dll in steam_overlay_dlls(&steam_path) {
+        if !dll.exists() {
+            return Err(format!("required Steam DLL not found: {}", dll.to_string_lossy()));
+        }
+        inject_dll_into_process(pid, &dll)?;
     }
 
     let dll_path = version_dir.join("winhttp.dll");
@@ -3326,7 +3523,23 @@ fn spawn_game_process(
     exe_dir: &std::path::Path,
 ) -> Result<std::process::Child, String> {
     #[cfg(target_os = "windows")]
-    let mut command = std::process::Command::new(exe_path);
+    let overlay_config = read_steam_overlay_config(_app)?;
+    #[cfg(target_os = "linux")]
+    let overlay_config = read_steam_overlay_config(_app)?;
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+
+        let mut cmd = std::process::Command::new(exe_path);
+        if overlay_config.enabled {
+            cmd.creation_flags(CREATE_SUSPENDED);
+            cmd.env("SteamGameId", LETHAL_COMPANY_STEAM_APP_ID);
+            cmd.env("SteamAppId", LETHAL_COMPANY_STEAM_APP_ID);
+        }
+        cmd
+    };
 
     #[cfg(target_os = "macos")]
     let mut command = {
@@ -3352,7 +3565,7 @@ fn spawn_game_process(
             std::fs::create_dir(&compat_pre_path)
                 .map_err(|e| format!("could not make prefix: {e}"))?;
         }
-        let steam_path = get_steam_client_path(&app_path);
+        let steam_path = get_steam_client_path(&app_path, overlay_config.steam_path.as_deref());
 
         let mut cmd = std::process::Command::new(proton_bin_path.join("proton"));
         cmd.arg("run");
@@ -3360,20 +3573,106 @@ fn spawn_game_process(
         cmd.env("STEAM_COMPAT_DATA_PATH", &compat_pre_path);
         cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_path);
         cmd.env("WINEDLLOVERRIDES", "winhttp=n,b");
+        if overlay_config.enabled {
+            cmd.env("SteamGameId", LETHAL_COMPANY_STEAM_APP_ID);
+            cmd.env("SteamAppId", LETHAL_COMPANY_STEAM_APP_ID);
+            if let Some(overlay_preload) = linux_overlay_preload_value(&steam_path) {
+                let preload = std::env::var("LD_PRELOAD")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|existing| format!("{overlay_preload}:{existing}"))
+                    .unwrap_or(overlay_preload);
+                cmd.env("LD_PRELOAD", preload);
+            } else {
+                log::warn!(
+                    "Steam overlay enabled, but no Linux overlay renderer found under {}",
+                    steam_path.to_string_lossy()
+                );
+            }
+        }
         cmd.env_remove("PYTHONPATH");
         cmd.env_remove("PYTHONHOME");
         cmd
     };
 
-    let child = command
+    let mut child = command
         .current_dir(exe_dir)
         .spawn()
         .map_err(|e| format!("failed to launch: {e}"))?;
 
     #[cfg(target_os = "windows")]
-    inject_launch_dlls(child.id(), version_dir)?;
+    {
+        if overlay_config.enabled {
+            if let Err(e) = inject_launch_dlls(
+                child.id(),
+                version_dir,
+                overlay_config.steam_path.as_deref(),
+            ) {
+                log::error!("failed to inject launch DLLs into pid {}: {}", child.id(), e);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
+            if let Err(e) = resume_main_thread(child.id()) {
+                log::error!("failed to resume suspended game process {}: {}", child.id(), e);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
+        }
+    }
 
     Ok(child)
+}
+
+#[tauri::command]
+fn get_steam_overlay_config(app: tauri::AppHandle) -> Result<SteamOverlayConfigDto, String> {
+    Ok(read_steam_overlay_config(&app)?.into_dto())
+}
+
+#[tauri::command]
+fn set_steam_overlay_config(
+    app: tauri::AppHandle,
+    enabled: bool,
+    steam_path: Option<String>,
+) -> Result<SteamOverlayConfigDto, String> {
+    let normalized_path = steam_path
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(path) = normalized_path.as_deref() {
+        let candidate = std::path::Path::new(path);
+        if !candidate.exists() {
+            return Err(format!(
+                "Steam path does not exist: {}",
+                candidate.to_string_lossy()
+            ));
+        }
+    }
+
+    let cfg = SteamOverlayConfig {
+        enabled,
+        steam_path: normalized_path,
+    };
+    write_steam_overlay_config(&app, &cfg)?;
+    Ok(cfg.into_dto())
+}
+
+#[tauri::command]
+fn pick_steam_overlay_path(initial_path: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new();
+    if let Some(path) = initial_path
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        let candidate = std::path::PathBuf::from(&path);
+        if candidate.exists() {
+            dialog = dialog.set_directory(candidate);
+        }
+    }
+
+    Ok(dialog
+        .pick_folder()
+        .map(|path| path.to_string_lossy().to_string()))
 }
 
 #[tauri::command]
@@ -4675,6 +4974,9 @@ pub fn run() {
             set_bepinex_cfg_entry,
             set_bepinex_cfg_entry_for_version,
             write_config_file,
+            get_steam_overlay_config,
+            set_steam_overlay_config,
+            pick_steam_overlay_path,
             downloader::depot_login,
             downloader::depot_login_start,
             downloader::depot_login_submit_code,
