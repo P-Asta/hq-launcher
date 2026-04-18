@@ -1,6 +1,9 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.9.2 (2026-04-17)
+- HOTFIX: The issue preventing the game from launching due to the Steam overlay feature has been resolved.
+
 ## 1.9.1 (2026-04-17)
 - Now SUPPORT STEAM OVERLAY.
 - Since the HQLC update(no launcher restart), the likelihood of the mod failing to launch has decreased.

@@ -3496,21 +3496,26 @@ fn inject_launch_dlls(
     version_dir: &std::path::Path,
     steam_path_override: Option<&str>,
 ) -> Result<(), String> {
-    let steam_path = get_windows_steam_install_path(steam_path_override)
-        .ok_or_else(|| "Steam install path not found".to_string())?;
+    let Some(steam_path) = get_windows_steam_install_path(steam_path_override) else {
+        log::warn!("Steam install path not found; skipping Steam overlay DLL injection");
+        return Ok(());
+    };
+
     for dll in steam_overlay_dlls(&steam_path) {
         if !dll.exists() {
-            return Err(format!("required Steam DLL not found: {}", dll.to_string_lossy()));
+            log::warn!(
+                "Steam overlay DLL not found, skipping injection for {}",
+                dll.to_string_lossy()
+            );
+            continue;
         }
         inject_dll_into_process(pid, &dll)?;
     }
 
     let dll_path = version_dir.join("winhttp.dll");
     if !dll_path.exists() {
-        return Err(format!(
-            "winhttp.dll not found: {}",
-            dll_path.to_string_lossy()
-        ));
+        log::warn!("winhttp.dll not found: {}", dll_path.to_string_lossy());
+        return Ok(());
     }
     inject_dll_into_process(pid, &dll_path)?;
     Ok(())
