@@ -4872,7 +4872,8 @@ async fn install_app_update(app: tauri::AppHandle) -> Result<bool, String> {
         .await
         .map_err(|e| format!("Failed to download and install update: {e}"))?;
 
-    Ok(true)
+    log::info!("Update installed successfully; restarting launcher");
+    app.restart();
 }
 
 #[tauri::command]
