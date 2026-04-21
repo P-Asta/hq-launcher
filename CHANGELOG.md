@@ -1,7 +1,10 @@
 ## Version (YYYY-MM-DD)
 - Content
 
-## 1.9.4 (2026-04-17)
+## 1.9.5 (2026-04-21)
+- A bug that caused all mods to be installed during the first installation has been fixed.
+
+## 1.9.4 (2026-04-20)
 - The issue where mods would not update in modes other than HQ and SMHQ has been resolved.
 
 ## 1.9.2 (2026-04-17)

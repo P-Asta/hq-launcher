@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 use crate::downloader;
-use crate::mod_config::ModsConfig;
+use crate::mod_config::{ModEntry, ModsConfig};
 use crate::mods;
 use crate::progress::{self, TaskErrorPayload, TaskFinishedPayload, TaskProgressPayload};
 use crate::zip_utils;
@@ -36,6 +36,33 @@ fn overall_from_step(step: u32, step_progress: f64, steps_total: u32) -> f64 {
     let s = step.max(1).min(steps_total) as f64;
     let sp = step_progress.clamp(0.0, 1.0);
     (((s - 1.0) + sp) / (steps_total as f64)) * 100.0
+}
+
+fn is_run_mode_tag(tag: &str) -> bool {
+    tag.eq_ignore_ascii_case("brutal")
+        || tag.eq_ignore_ascii_case("wesley")
+        || tag.eq_ignore_ascii_case("smhq")
+        || tag.eq_ignore_ascii_case("c.moons")
+}
+
+fn mod_has_run_mode_affinity(spec: &ModEntry) -> bool {
+    spec.tags.iter().any(|tag| is_run_mode_tag(tag))
+        || spec
+            .tag_constraints
+            .keys()
+            .any(|tag| is_run_mode_tag(tag))
+}
+
+fn base_mods_config_for_version(mods_cfg: ModsConfig, game_version: u32) -> ModsConfig {
+    ModsConfig {
+        mods: mods_cfg
+            .mods
+            .into_iter()
+            .filter(|mod_entry| {
+                !mod_has_run_mode_affinity(mod_entry) && mod_entry.is_compatible(game_version)
+            })
+            .collect(),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1135,6 +1162,7 @@ pub async fn sync_install_from_manifest_for_version(
     let remote = ModsConfig::fetch_manifest(&client).await?;
     let (remote_manifest_version, mods_cfg, _chain_config, manifests, _preset_tag_constraints) =
         remote;
+    let mods_cfg = base_mods_config_for_version(mods_cfg, game_version);
 
     let mut local_state = read_manifest_state(&app)?;
     let needs_mod_sync = local_state.manifest_version != remote_manifest_version;
@@ -1488,6 +1516,7 @@ pub async fn download_and_setup(
         // Fetch remote manifest data (mods + per-game-version depots manifest ids).
         let (remote_manifest_version, mods_cfg, _chain_config, manifests, _preset_tag_constraints) =
             ModsConfig::fetch_manifest(&client).await?;
+        let mods_cfg = base_mods_config_for_version(mods_cfg, version);
 
         // Step 2: Lethal Company 다운로드
         emit_progress(
