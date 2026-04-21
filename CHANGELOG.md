@@ -1,6 +1,9 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.9.4 (2026-04-17)
+- The issue where mods would not update in modes other than HQ and SMHQ has been resolved.
+
 ## 1.9.2 (2026-04-17)
 - HOTFIX: The issue preventing the game from launching due to the Steam overlay feature has been resolved.
 
