@@ -91,6 +91,14 @@ fn is_run_mode_tag(tag: &str) -> bool {
         || tag.eq_ignore_ascii_case("c.moons")
 }
 
+fn mod_has_run_mode_affinity(spec: &mod_config::ModEntry) -> bool {
+    spec.tags.iter().any(|tag| is_run_mode_tag(tag))
+        || spec
+            .tag_constraints
+            .keys()
+            .any(|tag| is_run_mode_tag(tag))
+}
+
 fn is_wesley_base_run(tags: &[String], practice: bool) -> bool {
     !practice
         && tags.iter().any(|t| t.eq_ignore_ascii_case("wesley"))
@@ -403,19 +411,21 @@ async fn effective_mods_config_for_run_mode(
     let mut selected_tagged: Vec<mod_config::ModEntry> = vec![];
 
     for m in mods_cfg.mods {
-        if m.tags.is_empty() {
+        let has_run_mode_affinity = mod_has_run_mode_affinity(&m);
+        let applies_to_preset = !want.is_empty() && want.iter().any(|tag| m.applies_to_tag(tag));
+
+        if !has_run_mode_affinity {
             if m.is_compatible(version) {
                 base.push(m);
             }
             continue;
         }
 
-        if want.is_empty() || !preset_tags_supported {
+        if !applies_to_preset {
             continue;
         }
 
-        let has = m.tags.iter().any(|x| want.contains(&x.to_lowercase()));
-        if !has {
+        if !preset_tags_supported {
             continue;
         }
 
@@ -515,8 +525,7 @@ async fn prepare_tagged_mods_for_version(
     let want: Vec<String> = tags.iter().map(|t| t.to_lowercase()).collect();
     let mut tagged: Vec<mod_config::ModEntry> = vec![];
     for m in mods_cfg.mods {
-        // Match tags case-insensitively.
-        let has = m.tags.iter().any(|x| want.contains(&x.to_lowercase()));
+        let has = want.iter().any(|tag| m.applies_to_tag(tag));
         if !has {
             continue;
         }
@@ -620,7 +629,7 @@ async fn run_mode_tagged_mod_ids(
     let mut seen: HashSet<String> = HashSet::new();
     let mut tagged_ids: Vec<(String, String)> = vec![];
     for m in mods_cfg.mods {
-        if !m.tags.iter().any(|t| is_run_mode_tag(t)) {
+        if !mod_has_run_mode_affinity(&m) {
             continue;
         }
         let key = normalize_mod_key(&m.dev, &m.name);
@@ -777,24 +786,16 @@ fn collect_installed_mod_pairs(
 }
 
 fn remote_mod_has_active_cap(spec: &mod_config::ModEntry, active_tags: &[String]) -> bool {
-    if spec.tags.is_empty() {
+    if active_tags.is_empty() {
         return spec.low_cap.is_some() || spec.high_cap.is_some();
     }
 
     active_tags.iter().any(|active_tag| {
-        if !spec
-            .tags
-            .iter()
-            .any(|tag| tag.eq_ignore_ascii_case(active_tag))
-        {
+        if !spec.applies_to_tag(active_tag) {
             return false;
         }
 
-        let constraint = spec
-            .tag_constraints
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(active_tag))
-            .map(|(_, value)| value);
+        let constraint = spec.constraint_for_tag(active_tag);
         let low_cap = constraint.and_then(|rule| rule.low_cap).or(spec.low_cap);
         let high_cap = constraint.and_then(|rule| rule.high_cap).or(spec.high_cap);
         low_cap.is_some() || high_cap.is_some()
@@ -839,17 +840,18 @@ async fn purge_capped_incompatible_installed_mods(
         }
 
         let is_incompatible = if spec.tags.is_empty() {
-            !spec.is_compatible(version)
+            if active_tags.iter().any(|active_tag| spec.applies_to_tag(active_tag)) {
+                !spec.is_compatible_for_tags(version, &active_tags)
+            } else {
+                !spec.is_compatible(version)
+            }
         } else {
             if run_mode.is_none() {
                 continue;
             }
 
-            active_tags.iter().any(|active_tag| {
-                spec.tags
-                    .iter()
-                    .any(|tag| tag.eq_ignore_ascii_case(active_tag))
-            }) && !spec.is_compatible_for_tags(version, &active_tags)
+            active_tags.iter().any(|active_tag| spec.applies_to_tag(active_tag))
+                && !spec.is_compatible_for_tags(version, &active_tags)
         };
 
         if !is_incompatible || !remote_mod_has_active_cap(&spec, &active_tags) {
@@ -2708,6 +2710,7 @@ async fn prepare_practice_mods_for_version(
                 app,
                 TaskErrorPayload {
                     version,
+                    run_mode: None,
                     message: e.clone(),
                 },
             );
@@ -3143,6 +3146,7 @@ async fn check_mod_updates(
                 &app,
                 TaskUpdatableProgressPayload {
                     version,
+                    run_mode: Some(run_mode_name.to_string()),
                     total,
                     checked,
                     updatable_mods: updatable_mods.clone(),
@@ -3158,6 +3162,7 @@ async fn check_mod_updates(
             &app,
             TaskErrorPayload {
                 version,
+                run_mode: Some(run_mode_name.to_string()),
                 message: e.clone(),
             },
         );
@@ -3183,6 +3188,7 @@ async fn check_mod_updates(
         &app,
         TaskFinishedPayload {
             version,
+            run_mode: Some(run_mode_name.to_string()),
             path: extract_dir.to_string_lossy().to_string(),
         },
     );
@@ -3195,9 +3201,9 @@ async fn apply_mod_updates(
     version: u32,
     run_mode: Option<String>,
 ) -> Result<bool, String> {
+    let run_mode_name = run_mode.as_deref().unwrap_or("hq").to_string();
     let res: Result<(), String> = async {
         let client = reqwest::Client::new();
-        let run_mode_name = run_mode.as_deref().unwrap_or("hq");
 
         let dir = app
             .path()
@@ -3215,7 +3221,7 @@ async fn apply_mod_updates(
         let mods_cfg = effective_mods_config_for_run_mode(
             &client,
             version,
-            run_mode_name,
+            &run_mode_name,
             false,
             true,
         )
@@ -3276,7 +3282,7 @@ async fn apply_mod_updates(
         )
         .await?;
 
-        match purge_capped_incompatible_installed_mods(&app, version, Some(run_mode_name)).await {
+        match purge_capped_incompatible_installed_mods(&app, version, Some(&run_mode_name)).await {
             Ok(purged) => {
                 if purged > 0 {
                     log::info!(
@@ -3372,6 +3378,7 @@ async fn apply_mod_updates(
                 &app,
                 TaskFinishedPayload {
                     version,
+                    run_mode: Some(run_mode_name.clone()),
                     path: version_dir(&app, version)?.to_string_lossy().to_string(),
                 },
             );
@@ -3382,6 +3389,7 @@ async fn apply_mod_updates(
                 &app,
                 TaskErrorPayload {
                     version,
+                    run_mode: Some(run_mode_name.clone()),
                     message: e.clone(),
                 },
             );

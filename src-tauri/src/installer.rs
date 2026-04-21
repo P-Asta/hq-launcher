@@ -1320,6 +1320,7 @@ pub async fn sync_install_from_manifest_for_version(
                 app,
                 progress::TaskFinishedPayload {
                     version: game_version,
+                    run_mode: None,
                     path: game_root.to_string_lossy().to_string(),
                 },
             );
@@ -1330,6 +1331,7 @@ pub async fn sync_install_from_manifest_for_version(
                 app,
                 progress::TaskErrorPayload {
                     version: game_version,
+                    run_mode: None,
                     message: e.clone(),
                 },
             );
@@ -1846,6 +1848,7 @@ pub async fn download_and_setup(
             &app,
             TaskFinishedPayload {
                 version,
+                run_mode: None,
                 path: extract_dir.to_string_lossy().to_string(),
             },
         );
@@ -1863,6 +1866,7 @@ pub async fn download_and_setup(
             &app,
             TaskErrorPayload {
                 version,
+                run_mode: None,
                 message: message.clone(),
             },
         );

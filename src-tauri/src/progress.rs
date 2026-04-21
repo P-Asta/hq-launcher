@@ -26,6 +26,7 @@ pub struct TaskProgressPayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskUpdatableProgressPayload {
     pub version: u32,
+    pub run_mode: Option<String>,
     pub total: u64,
     pub checked: u64,
     pub updatable_mods: Vec<String>,
@@ -35,12 +36,14 @@ pub struct TaskUpdatableProgressPayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskFinishedPayload {
     pub version: u32,
+    pub run_mode: Option<String>,
     pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskErrorPayload {
     pub version: u32,
+    pub run_mode: Option<String>,
     pub message: String,
 }
 

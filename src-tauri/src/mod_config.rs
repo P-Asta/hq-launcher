@@ -262,11 +262,18 @@ impl ModEntry {
         true
     }
 
-    fn constraint_for_tag(&self, tag: &str) -> Option<&TagConstraint> {
+    pub(crate) fn constraint_for_tag(&self, tag: &str) -> Option<&TagConstraint> {
         self.tag_constraints
             .iter()
             .find(|(key, _)| key.eq_ignore_ascii_case(tag))
             .map(|(_, value)| value)
+    }
+
+    pub fn applies_to_tag(&self, tag: &str) -> bool {
+        self.tags
+            .iter()
+            .any(|entry| entry.eq_ignore_ascii_case(tag))
+            || self.constraint_for_tag(tag).is_some()
     }
 
     pub fn is_compatible(&self, game_version: u32) -> bool {
@@ -282,11 +289,7 @@ impl ModEntry {
         }
 
         for active_tag in active_tags {
-            if !self
-                .tags
-                .iter()
-                .any(|tag| tag.eq_ignore_ascii_case(active_tag))
-            {
+            if !self.applies_to_tag(active_tag) {
                 continue;
             }
 

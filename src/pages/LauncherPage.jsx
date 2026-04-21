@@ -330,15 +330,36 @@ function findTagConstraint(mod, activeTag) {
   return null;
 }
 
-function isModCompatibleWithTags(mod, version, activeTags) {
+function modAppliesToTag(mod, activeTag) {
   const modTags = Array.isArray(mod?.tags) ? mod.tags : [];
-  if (modTags.length === 0) return false;
+  const matchesTag = modTags.some(
+    (tag) => String(tag).toLowerCase() === String(activeTag).toLowerCase()
+  );
+  return matchesTag || findTagConstraint(mod, activeTag) != null;
+}
 
+function modHasRunModeAffinity(mod) {
+  const modTags = Array.isArray(mod?.tags) ? mod.tags : [];
+  if (
+    modTags.some((tag) => {
+      const value = String(tag).toLowerCase();
+      return value === "brutal" || value === "wesley" || value === "smhq" || value === "c.moons";
+    })
+  ) {
+    return true;
+  }
+
+  const constraints = mod?.tag_constraints;
+  if (!constraints || typeof constraints !== "object") return false;
+  return Object.keys(constraints).some((tag) => {
+    const value = String(tag).toLowerCase();
+    return value === "brutal" || value === "wesley" || value === "smhq" || value === "c.moons";
+  });
+}
+
+function isModCompatibleWithTags(mod, version, activeTags) {
   for (const activeTag of Array.isArray(activeTags) ? activeTags : []) {
-    const matchesTag = modTags.some(
-      (tag) => String(tag).toLowerCase() === String(activeTag).toLowerCase()
-    );
-    if (!matchesTag) continue;
+    if (!modAppliesToTag(mod, activeTag)) continue;
 
     const constraint = findTagConstraint(mod, activeTag);
     const lowCap = constraint?.low_cap ?? mod?.low_cap ?? null;
@@ -1054,7 +1075,7 @@ export default function LauncherPage({
   const modsForList = useMemo(() => {
     const regularMods = (Array.isArray(manifest.mods) ? manifest.mods : []).filter(
       (m) =>
-        !(Array.isArray(m?.tags) && m.tags.length > 0) &&
+        !modHasRunModeAffinity(m) &&
         m?.enabled !== false &&
         isModCompatibleWithVersion(m, selectedVersion)
     );
@@ -1858,32 +1879,62 @@ export default function LauncherPage({
       unlistenCheckUpdateProgress = await listen(
         "updatable://progress",
         (event) => {
-          const total = Number(event.payload?.total ?? 0);
-          const checked = Number(event.payload?.checked ?? 0);
-          const overall_percent =
-            total > 0 && Number.isFinite(total) && Number.isFinite(checked)
-              ? (checked / total) * 100
-              : 0;
-          setCheckUpdateTask((t) => ({
-            ...t,
-            status: "working",
-            ...event.payload,
-            version: event.payload?.version ?? t.version,
-            run_mode: t.run_mode,
-            overall_percent: overall_percent,
-            error: null,
-          }));
+          setCheckUpdateTask((t) => {
+            const eventVersion = Number(event.payload?.version ?? t.version);
+            const eventRunMode =
+              typeof event.payload?.run_mode === "string" && event.payload.run_mode
+                ? event.payload.run_mode
+                : t.run_mode;
+            const taskVersion = Number(t.version);
+            if (
+              (Number.isFinite(taskVersion) && eventVersion !== taskVersion) ||
+              (t.run_mode && eventRunMode && eventRunMode !== t.run_mode)
+            ) {
+              return t;
+            }
+
+            const total = Number(event.payload?.total ?? 0);
+            const checked = Number(event.payload?.checked ?? 0);
+            const overall_percent =
+              total > 0 && Number.isFinite(total) && Number.isFinite(checked)
+                ? (checked / total) * 100
+                : 0;
+            return {
+              ...t,
+              status: "working",
+              ...event.payload,
+              version: event.payload?.version ?? t.version,
+              run_mode: eventRunMode,
+              overall_percent: overall_percent,
+              error: null,
+            };
+          });
         }
       );
       unlistenCheckUpdateFinished = await listen(
         "updatable://finished",
         (event) => {
-          setCheckUpdateTask((t) => ({
-            ...t,
-            status: "done",
-            ...event.payload,
-            run_mode: t.run_mode,
-          }));
+          setCheckUpdateTask((t) => {
+            const eventVersion = Number(event.payload?.version ?? t.version);
+            const eventRunMode =
+              typeof event.payload?.run_mode === "string" && event.payload.run_mode
+                ? event.payload.run_mode
+                : t.run_mode;
+            const taskVersion = Number(t.version);
+            if (
+              (Number.isFinite(taskVersion) && eventVersion !== taskVersion) ||
+              (t.run_mode && eventRunMode && eventRunMode !== t.run_mode)
+            ) {
+              return t;
+            }
+
+            return {
+              ...t,
+              status: "done",
+              ...event.payload,
+              run_mode: eventRunMode,
+            };
+          });
           // refresh installed versions list after install
           invoke("list_installed_versions")
             .then((v) => updateInstalledVersionsState(v))
@@ -1891,13 +1942,28 @@ export default function LauncherPage({
         }
       );
       unlistenCheckUpdateError = await listen("updatable://error", (event) => {
-        setCheckUpdateTask((t) => ({
-          ...t,
-          status: "error",
-          version: event.payload?.version ?? t.version,
-          run_mode: t.run_mode,
-          error: event.payload?.message ?? "Unknown error",
-        }));
+        setCheckUpdateTask((t) => {
+          const eventVersion = Number(event.payload?.version ?? t.version);
+          const eventRunMode =
+            typeof event.payload?.run_mode === "string" && event.payload.run_mode
+              ? event.payload.run_mode
+              : t.run_mode;
+          const taskVersion = Number(t.version);
+          if (
+            (Number.isFinite(taskVersion) && eventVersion !== taskVersion) ||
+            (t.run_mode && eventRunMode && eventRunMode !== t.run_mode)
+          ) {
+            return t;
+          }
+
+          return {
+            ...t,
+            status: "error",
+            version: event.payload?.version ?? t.version,
+            run_mode: eventRunMode,
+            error: event.payload?.message ?? "Unknown error",
+          };
+        });
       });
     })();
 
@@ -3220,11 +3286,18 @@ export default function LauncherPage({
   }
 
   const showBootstrapSkeleton = !didFinishBootstrap;
+  const checkUpdateMatchesSelectedRun =
+    Number(checkUpdateTask.version) === Number(selectedVersion) &&
+    checkUpdateTask.run_mode === runMode;
+  const selectedRunUpdatableMods = checkUpdateMatchesSelectedRun
+    ? Array.isArray(checkUpdateTask.updatable_mods)
+      ? checkUpdateTask.updatable_mods
+      : []
+    : [];
   const hasSelectedVersionUpdates =
     checkUpdateTask.status === "done" &&
-    Number(checkUpdateTask.version) === Number(selectedVersion) &&
-    checkUpdateTask.run_mode === runMode &&
-    (checkUpdateTask.updatable_mods?.length ?? 0) > 0;
+    checkUpdateMatchesSelectedRun &&
+    selectedRunUpdatableMods.length > 0;
 
   return (
     <div className="h-full text-white">
@@ -3442,9 +3515,7 @@ export default function LauncherPage({
             variant="secondary"
             className="h-11"
             onClick={() => {
-              const sameContext =
-                Number(checkUpdateTask.version) === Number(selectedVersion) &&
-                checkUpdateTask.run_mode === runMode;
+              const sameContext = checkUpdateMatchesSelectedRun;
               const alreadyChecked =
                 sameContext && checkUpdateTask.status === "done";
               const isChecking =
@@ -3462,10 +3533,10 @@ export default function LauncherPage({
             <span className="relative inline-flex">
               <Download className="h-4 w-4" />
               {checkUpdateTask.status === "done" &&
-              checkUpdateTask.version === selectedVersion &&
-              (checkUpdateTask.updatable_mods?.length ?? 0) > 0 ? (
+              checkUpdateMatchesSelectedRun &&
+              selectedRunUpdatableMods.length > 0 ? (
                 <span className="absolute -right-2 -top-2 rounded-full bg-amber-400 px-1.5 py-0.5 text-[10px] font-bold text-black">
-                  {checkUpdateTask.updatable_mods.length}
+                  {selectedRunUpdatableMods.length}
                 </span>
               ) : null}
             </span>
@@ -4540,7 +4611,7 @@ export default function LauncherPage({
               <div className="min-w-0">
                 <div className="text-lg font-semibold">
                   {checkUpdateTask.status === "done"
-                    ? `${checkUpdateTask.updatable_mods.length} mods can be updated`
+                    ? `${selectedRunUpdatableMods.length} mods can be updated`
                     : "Checking mod versions..."}
                 </div>
               </div>
@@ -4573,7 +4644,7 @@ export default function LauncherPage({
             )}
             {checkUpdateTask.status === "done" && (
               <div className="mt-4 text-sm text-white/50">
-                {checkUpdateTask.updatable_mods.map((mod, index) => (
+                {selectedRunUpdatableMods.map((mod, index) => (
                   <div key={index}>{mod}</div>
                 ))}
               </div>
@@ -4604,7 +4675,7 @@ export default function LauncherPage({
                     <Button
                       variant="default"
                       className="h-10 min-w-[120px]"
-                      disabled={(checkUpdateTask.updatable_mods?.length ?? 0) === 0}
+                      disabled={selectedRunUpdatableMods.length === 0}
                       onClick={() => {
                         setCheckUpdatePrompt({ open: false, mods: [] });
                         runModUpdate(checkUpdateTask.version ?? selectedVersion);
