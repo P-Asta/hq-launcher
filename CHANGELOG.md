@@ -1,6 +1,9 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.9.6 (2026-04-22)
+- We have added the ability to add launch options for those who want to optimize the game.
+
 ## 1.9.5 (2026-04-21)
 - A bug that caused all mods to be installed during the first installation has been fixed.
 

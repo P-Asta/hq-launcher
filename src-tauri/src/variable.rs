@@ -81,9 +81,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
             low_cap: Some(50),
             high_cap: None,
             tag_constraints: BTreeMap::new(),
-            version_config: BTreeMap::from([
-                (50, "0.2.0".to_string())
-            ]),
+            version_config: BTreeMap::from([(50, "0.2.0".to_string())]),
         },
         ModEntry {
             dev: "asta".to_string(),
@@ -118,10 +116,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
             low_cap: Some(50),
             high_cap: None,
             tag_constraints: BTreeMap::new(),
-            version_config: BTreeMap::from([
-                (50, "0.6.3".to_string()),
-                (80, "0.0.0".to_string())
-            ]),
+            version_config: BTreeMap::from([(50, "0.6.3".to_string()), (80, "0.0.0".to_string())]),
         },
         ModEntry {
             dev: "MonoDetour".to_string(),
@@ -131,10 +126,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
             low_cap: Some(50),
             high_cap: None,
             tag_constraints: BTreeMap::new(),
-            version_config: BTreeMap::from([
-                (50, "0.6.3".to_string()),
-                (80, "0.0.0".to_string())
-            ]),
+            version_config: BTreeMap::from([(50, "0.6.3".to_string()), (80, "0.0.0".to_string())]),
         },
         ModEntry {
             dev: "Evaisa".to_string(),
@@ -144,10 +136,7 @@ pub fn get_practice_mod_list() -> Vec<ModEntry> {
             low_cap: Some(50),
             high_cap: None,
             tag_constraints: BTreeMap::new(),
-            version_config: BTreeMap::from([
-                (50, "0.0.5".to_string()),
-                (80, "0.0.0".to_string())
-            ]),
+            version_config: BTreeMap::from([(50, "0.0.5".to_string()), (80, "0.0.0".to_string())]),
         },
         ModEntry {
             dev: "megumin".to_string(),

@@ -77,6 +77,7 @@ jobs:
         if: matrix.platform == 'ubuntu-latest'
         run: |
           sudo apt update
+          sudo apt install -y libfuse2t64 || sudo apt install -y libfuse2
           sudo apt install -y \
             libwebkit2gtk-4.1-dev \
             build-essential \
@@ -111,6 +112,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPIMAGE_EXTRACT_AND_RUN: ${{ matrix.platform == 'ubuntu-latest' && '1' || '' }}
+          NO_STRIP: ${{ matrix.platform == 'ubuntu-latest' && 'true' || '' }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "${{ env.APP_NAME }} v__VERSION__"

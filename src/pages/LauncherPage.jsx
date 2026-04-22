@@ -78,6 +78,7 @@ function makeDeleteVersionPromptState(overrides = {}) {
 }
 
 const MOD_PANEL_WIDTH_STORAGE_KEY = "launcherModPanelWidthPercent";
+const LAUNCH_OPTIONS_STORAGE_KEY = "launcherLaunchOptions";
 const DEFAULT_MOD_PANEL_WIDTH = 40;
 const MIN_MOD_PANEL_WIDTH = 260;
 const MIN_CONFIG_PANEL_WIDTH = 320;
@@ -232,6 +233,31 @@ const DISCORD_DOWNLOAD_URL = "https://asta.rs/hq-launcher/";
 function getInitialRunMode() {
   const savedRunMode = localStorage.getItem("selectedRunMode");
   return RUN_MODE_VALUES.includes(savedRunMode) ? savedRunMode : "hq";
+}
+
+function normalizeLaunchOptionsEntries(entries) {
+  if (!Array.isArray(entries)) return [];
+  return entries
+    .map((entry) => String(entry ?? "").trim())
+    .filter(Boolean);
+}
+
+function getInitialLaunchOptionsConfig() {
+  if (typeof window === "undefined") {
+    return { enabled: false, entries: [] };
+  }
+
+  try {
+    const raw = localStorage.getItem(LAUNCH_OPTIONS_STORAGE_KEY);
+    if (!raw) return { enabled: false, entries: [] };
+    const parsed = JSON.parse(raw);
+    return {
+      enabled: !!parsed?.enabled,
+      entries: normalizeLaunchOptionsEntries(parsed?.entries),
+    };
+  } catch {
+    return { enabled: false, entries: [] };
+  }
 }
 
 function getLaunchRequestForRunMode(mode, version) {
@@ -661,6 +687,7 @@ export default function LauncherPage({
   bootstrapError,
   onInstalledVersionsChange,
 }) {
+  const initialLaunchOptionsConfig = getInitialLaunchOptionsConfig();
   const [installedVersions, setInstalledVersions] = useState([]);
   const [selectedVersion, setSelectedVersion] = useState(null);
   const [manifest, setManifest] = useState({
@@ -704,10 +731,18 @@ export default function LauncherPage({
     mods: [],
   });
   const [steamOverlayDialogOpen, setSteamOverlayDialogOpen] = useState(false);
+  const [launchOptionsDialogOpen, setLaunchOptionsDialogOpen] = useState(false);
   const [steamOverlayConfig, setSteamOverlayConfig] = useState({
     enabled: false,
     steam_path: "",
   });
+  const [launchOptionsEnabled, setLaunchOptionsEnabled] = useState(
+    initialLaunchOptionsConfig.enabled
+  );
+  const [launchOptionsEntries, setLaunchOptionsEntries] = useState(
+    initialLaunchOptionsConfig.entries
+  );
+  const [newLaunchOptionEntry, setNewLaunchOptionEntry] = useState("");
   const [steamOverlayResolvedPath, setSteamOverlayResolvedPath] = useState("");
   const [steamOverlaySaveBusy, setSteamOverlaySaveBusy] = useState(false);
   const [steamOverlayError, setSteamOverlayError] = useState("");
@@ -835,6 +870,17 @@ export default function LauncherPage({
   }, [modPanelWidthPercent]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(
+      LAUNCH_OPTIONS_STORAGE_KEY,
+      JSON.stringify({
+        enabled: launchOptionsEnabled,
+        entries: normalizeLaunchOptionsEntries(launchOptionsEntries),
+      })
+    );
+  }, [launchOptionsEnabled, launchOptionsEntries]);
+
+  useEffect(() => {
     let cancelled = false;
     invoke("get_steam_overlay_config")
       .then((cfg) => {
@@ -853,6 +899,19 @@ export default function LauncherPage({
 
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let unlisten = null;
+    (async () => {
+      unlisten = await listen("ui://open-launch-options", () => {
+        setLaunchOptionsDialogOpen(true);
+      });
+    })();
+
+    return () => {
+      if (typeof unlisten === "function") unlisten();
     };
   }, []);
 
@@ -3098,6 +3157,30 @@ export default function LauncherPage({
     }
   }
 
+  function updateLaunchOptionEntry(index, value) {
+    setLaunchOptionsEntries((prev) => {
+      const next = [...prev];
+      next[index] = value;
+      return next;
+    });
+  }
+
+  function removeLaunchOptionEntry(index) {
+    setLaunchOptionsEntries((prev) => prev.filter((_, entryIndex) => entryIndex !== index));
+  }
+
+  function addLaunchOptionEntry() {
+    const nextEntry = String(newLaunchOptionEntry ?? "").trim();
+    if (!nextEntry) return;
+    setLaunchOptionsEntries((prev) => [...prev, nextEntry]);
+    setNewLaunchOptionEntry("");
+  }
+
+  function getActiveLaunchOptions() {
+    if (!launchOptionsEnabled) return [];
+    return normalizeLaunchOptionsEntries(launchOptionsEntries);
+  }
+
   async function saveSteamOverlaySettings() {
     setSteamOverlaySaveBusy(true);
     setSteamOverlayError("");
@@ -3161,7 +3244,10 @@ export default function LauncherPage({
     setLaunchBusy(true);
     try {
       const launchRequest = getLaunchRequestForRunMode(nextRunMode, nextVersion);
-      const pid = await invoke(launchRequest.command, launchRequest.args);
+      const pid = await invoke(launchRequest.command, {
+        ...launchRequest.args,
+        launchOptions: getActiveLaunchOptions(),
+      });
       setGameStatus({
         running: true,
         pid: typeof pid === "number" ? pid : null,
@@ -5103,6 +5189,115 @@ export default function LauncherPage({
           </div>
         </div>
       )}
+
+      <Dialog
+        open={launchOptionsDialogOpen}
+        onOpenChange={setLaunchOptionsDialogOpen}
+      >
+        <DialogContent className="max-h-[calc(100vh-4.5rem)] w-[min(720px,94vw)] overflow-hidden p-0">
+          <div className="flex max-h-[calc(100vh-4.5rem)] flex-col rounded-3xl border border-panel-outline bg-[#0f1116] text-white">
+            <div className="flex items-start justify-between gap-4">
+              <div className="p-6 pb-0">
+                <div className="text-lg font-semibold tracking-[-0.02em]">
+                  Launch
+                </div>
+                <div className="mt-1 text-sm text-white/55">
+                  Add custom launch options. Use one row per entry. <span className="font-mono">KEY=VALUE</span> becomes an environment variable; anything else is passed as a single argument.
+                </div>
+              </div>
+              <button
+                type="button"
+                className="m-6 mb-0 rounded-xl border border-panel-outline bg-white/5 p-2 text-white/70 transition hover:bg-white/10 hover:text-white"
+                onClick={() => {
+                  setLaunchOptionsDialogOpen(false);
+                }}
+                aria-label="Close launch options"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-6 flex-1 space-y-5 overflow-y-auto px-6 pb-6">
+              <div className="flex items-center justify-between gap-4 rounded-2xl border border-panel-outline bg-white/[0.04] px-4 py-3">
+                <div>
+                  <div className="text-sm font-medium text-white">
+                    Enable custom launch options
+                  </div>
+                  <div className="mt-1 text-xs text-white/50">
+                    Saved locally and applied to every run mode until you turn them off.
+                  </div>
+                </div>
+                <Switch
+                  checked={launchOptionsEnabled}
+                  onCheckedChange={setLaunchOptionsEnabled}
+                />
+              </div>
+
+              <div className="space-y-3">
+                {launchOptionsEntries.length > 0 ? (
+                  launchOptionsEntries.map((entry, index) => (
+                    <div
+                      key={`${index}:${entry}`}
+                      className="flex items-center gap-2"
+                    >
+                      <button
+                        type="button"
+                        className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-panel-outline bg-white/5 text-white/60 transition hover:bg-white/10 hover:text-white"
+                        onClick={() => {
+                          removeLaunchOptionEntry(index);
+                        }}
+                        aria-label={`Remove launch option ${index + 1}`}
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                      <Input
+                        value={entry}
+                        onChange={(event) => {
+                          updateLaunchOptionEntry(index, event.target.value);
+                        }}
+                        placeholder="DXVK_ASYNC=1"
+                        className="font-mono"
+                      />
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-white/15 bg-white/[0.03] px-4 py-5 text-sm text-white/45">
+                    No custom launch options yet.
+                  </div>
+                )}
+
+                <div>
+                  <Input
+                    value={newLaunchOptionEntry}
+                    onChange={(event) => {
+                      setNewLaunchOptionEntry(event.target.value);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter") return;
+                      event.preventDefault();
+                      addLaunchOptionEntry();
+                    }}
+                    placeholder="Enter new argument..."
+                    className="font-mono"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-panel-outline px-6 py-4">
+              <Button
+                variant="secondary"
+                className="h-10 min-w-[96px]"
+                onClick={() => {
+                  setLaunchOptionsDialogOpen(false);
+                }}
+              >
+                Close
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={steamOverlayDialogOpen}

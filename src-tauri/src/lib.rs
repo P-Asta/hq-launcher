@@ -30,13 +30,13 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Memory::{
-    MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAllocEx, VirtualFreeEx,
+    VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE,
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Threading::{
-    CreateRemoteThread, OpenProcess, OpenThread, ResumeThread, INFINITE,
+    CreateRemoteThread, OpenProcess, OpenThread, ResumeThread, WaitForSingleObject, INFINITE,
     PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_READ,
-    PROCESS_VM_WRITE, THREAD_SUSPEND_RESUME, WaitForSingleObject,
+    PROCESS_VM_WRITE, THREAD_SUSPEND_RESUME,
 };
 #[cfg(target_os = "windows")]
 use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY};
@@ -93,10 +93,7 @@ fn is_run_mode_tag(tag: &str) -> bool {
 
 fn mod_has_run_mode_affinity(spec: &mod_config::ModEntry) -> bool {
     spec.tags.iter().any(|tag| is_run_mode_tag(tag))
-        || spec
-            .tag_constraints
-            .keys()
-            .any(|tag| is_run_mode_tag(tag))
+        || spec.tag_constraints.keys().any(|tag| is_run_mode_tag(tag))
 }
 
 fn is_wesley_base_run(tags: &[String], practice: bool) -> bool {
@@ -134,11 +131,14 @@ const LETHAL_COMPANY_STEAM_APP_ID: &str = "1966720";
 fn inject_dll_into_process(pid: u32, dll_path: &std::path::Path) -> Result<(), String> {
     use std::ptr::{null, null_mut};
 
-    let dll_path = dll_path
-        .to_str()
-        .ok_or_else(|| format!("dll path contains non-utf8 characters: {}", dll_path.display()))?;
-    let dll_path_cstr =
-        CString::new(dll_path).map_err(|_| format!("dll path contains interior NUL: {dll_path}"))?;
+    let dll_path = dll_path.to_str().ok_or_else(|| {
+        format!(
+            "dll path contains non-utf8 characters: {}",
+            dll_path.display()
+        )
+    })?;
+    let dll_path_cstr = CString::new(dll_path)
+        .map_err(|_| format!("dll path contains interior NUL: {dll_path}"))?;
     let process = unsafe {
         OpenProcess(
             PROCESS_CREATE_THREAD
@@ -259,7 +259,10 @@ fn inject_dll_into_process(_pid: u32, _dll_path: &std::path::Path) -> Result<(),
 
 #[cfg(target_os = "windows")]
 fn get_windows_steam_install_path(configured_path: Option<&str>) -> Option<std::path::PathBuf> {
-    if let Some(configured) = configured_path.map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(configured) = configured_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         let candidate = std::path::PathBuf::from(configured);
         if candidate.exists() {
             return Some(candidate);
@@ -269,9 +272,15 @@ fn get_windows_steam_install_path(configured_path: Option<&str>) -> Option<std::
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let subkeys = [
         ("SOFTWARE\\Valve\\Steam", KEY_READ | KEY_WOW64_64KEY),
-        ("SOFTWARE\\WOW6432Node\\Valve\\Steam", KEY_READ | KEY_WOW64_64KEY),
+        (
+            "SOFTWARE\\WOW6432Node\\Valve\\Steam",
+            KEY_READ | KEY_WOW64_64KEY,
+        ),
         ("SOFTWARE\\Valve\\Steam", KEY_READ | KEY_WOW64_32KEY),
-        ("SOFTWARE\\WOW6432Node\\Valve\\Steam", KEY_READ | KEY_WOW64_32KEY),
+        (
+            "SOFTWARE\\WOW6432Node\\Valve\\Steam",
+            KEY_READ | KEY_WOW64_32KEY,
+        ),
     ];
 
     for (subkey, flags) in subkeys {
@@ -392,13 +401,7 @@ async fn effective_mods_config_for_run_mode(
     include_ui_hidden: bool,
     include_practice_mods: bool,
 ) -> Result<ModsConfig, String> {
-    let (
-        _remote_manifest_version,
-        mods_cfg,
-        _chain_config,
-        _manifests,
-        preset_tag_constraints,
-    ) =
+    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests, preset_tag_constraints) =
         ModsConfig::fetch_manifest(client).await?;
     let (preset, practice) = preset_and_practice_for_run_mode(run_mode);
     let tags = preset_tags_for_name(&preset);
@@ -477,13 +480,8 @@ async fn find_mod_entry_for_install(
     }
 
     let client = reqwest::Client::new();
-    let (
-        _remote_manifest_version,
-        mods_cfg,
-        _chain_config,
-        _manifests,
-        _preset_tag_constraints,
-    ) = ModsConfig::fetch_manifest(&client).await?;
+    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests, _preset_tag_constraints) =
+        ModsConfig::fetch_manifest(&client).await?;
 
     Ok(mods_cfg.mods.into_iter().find(|m| {
         m.enabled
@@ -512,13 +510,7 @@ async fn prepare_tagged_mods_for_version(
     }
 
     let client = reqwest::Client::new();
-    let (
-        _remote_manifest_version,
-        mods_cfg,
-        _chain_config,
-        _manifests,
-        preset_tag_constraints,
-    ) =
+    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests, preset_tag_constraints) =
         ModsConfig::fetch_manifest_with_cancel(&client, cancel.as_ref()).await?;
     validate_preset_tags_for_version(version, tags, &preset_tag_constraints)?;
 
@@ -617,13 +609,7 @@ async fn run_mode_tagged_mod_ids(
     cancel: Option<&Arc<AtomicBool>>,
 ) -> Result<Vec<(String, String)>, String> {
     let client = reqwest::Client::new();
-    let (
-        _remote_manifest_version,
-        mods_cfg,
-        _chain_config,
-        _manifests,
-        _preset_tag_constraints,
-    ) =
+    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests, _preset_tag_constraints) =
         ModsConfig::fetch_manifest_with_cancel(&client, cancel).await?;
 
     let mut seen: HashSet<String> = HashSet::new();
@@ -710,9 +696,8 @@ fn preset_tag_supported_for_version(
     constraints: &BTreeMap<String, mod_config::TagConstraint>,
     tag: &str,
 ) -> bool {
-    preset_tag_constraint_for_name(constraints, tag).is_none_or(|rule| {
-        mod_config::ModEntry::matches_caps(version, rule.low_cap, rule.high_cap)
-    })
+    preset_tag_constraint_for_name(constraints, tag)
+        .is_none_or(|rule| mod_config::ModEntry::matches_caps(version, rule.low_cap, rule.high_cap))
 }
 
 fn preset_range_text(rule: &mod_config::TagConstraint) -> String {
@@ -819,13 +804,8 @@ async fn purge_capped_incompatible_installed_mods(
     }
 
     let client = reqwest::Client::new();
-    let (
-        _remote_manifest_version,
-        mods_cfg,
-        _chain_config,
-        _manifests,
-        _preset_tag_constraints,
-    ) = ModsConfig::fetch_manifest(&client).await?;
+    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests, _preset_tag_constraints) =
+        ModsConfig::fetch_manifest(&client).await?;
     let active_tags = run_mode
         .map(|mode| {
             let (preset, _practice) = preset_and_practice_for_run_mode(mode);
@@ -840,7 +820,10 @@ async fn purge_capped_incompatible_installed_mods(
         }
 
         let is_incompatible = if spec.tags.is_empty() {
-            if active_tags.iter().any(|active_tag| spec.applies_to_tag(active_tag)) {
+            if active_tags
+                .iter()
+                .any(|active_tag| spec.applies_to_tag(active_tag))
+            {
                 !spec.is_compatible_for_tags(version, &active_tags)
             } else {
                 !spec.is_compatible(version)
@@ -850,7 +833,9 @@ async fn purge_capped_incompatible_installed_mods(
                 continue;
             }
 
-            active_tags.iter().any(|active_tag| spec.applies_to_tag(active_tag))
+            active_tags
+                .iter()
+                .any(|active_tag| spec.applies_to_tag(active_tag))
                 && !spec.is_compatible_for_tags(version, &active_tags)
         };
 
@@ -2323,7 +2308,9 @@ fn disabled_mod_keys(disabled_mods: &[DisabledMod]) -> HashSet<String> {
         .collect()
 }
 
-fn collect_mod_entries_recursive(root: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
+fn collect_mod_entries_recursive(
+    root: &std::path::Path,
+) -> Result<Vec<std::path::PathBuf>, String> {
     let mut out: Vec<std::path::PathBuf> = vec![];
     let mut stack: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -3119,14 +3106,8 @@ async fn check_mod_updates(
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?
         .join("versions");
     let extract_dir = dir.join(format!("v{version}"));
-    let mods_cfg = effective_mods_config_for_run_mode(
-        &client,
-        version,
-        run_mode_name,
-        false,
-        true,
-    )
-    .await?;
+    let mods_cfg =
+        effective_mods_config_for_run_mode(&client, version, run_mode_name, false, true).await?;
 
     let mut updatable_mods: Vec<String> = vec![];
 
@@ -3403,7 +3384,10 @@ fn get_steam_client_path(
     launcher_root: &std::path::Path,
     configured_path: Option<&str>,
 ) -> std::path::PathBuf {
-    if let Some(configured) = configured_path.map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(configured) = configured_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         let candidate = std::path::PathBuf::from(configured);
         if candidate.exists() {
             return candidate;
@@ -3451,14 +3435,7 @@ fn linux_overlay_preload_value(steam_path: &std::path::Path) -> Option<String> {
 fn resolve_game_launch_paths(
     app: &tauri::AppHandle,
     version: u32,
-) -> Result<
-    (
-        std::path::PathBuf,
-        std::path::PathBuf,
-        std::path::PathBuf,
-    ),
-    String,
-> {
+) -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf), String> {
     let dir = version_dir(app, version)?;
     if !dir.exists() {
         return Err(format!(
@@ -3529,11 +3506,46 @@ fn inject_launch_dlls(
     Ok(())
 }
 
+fn parse_launch_env_assignment(entry: &str) -> Option<(&str, &str)> {
+    let trimmed = entry.trim();
+    let (name, value) = trimmed.split_once('=')?;
+    if name.is_empty() {
+        return None;
+    }
+
+    let mut chars = name.chars();
+    let first = chars.next()?;
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return None;
+    }
+    if !chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric()) {
+        return None;
+    }
+
+    Some((name, value))
+}
+
+fn apply_custom_launch_options(command: &mut std::process::Command, launch_options: &[String]) {
+    for raw_entry in launch_options {
+        let entry = raw_entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+
+        if let Some((name, value)) = parse_launch_env_assignment(entry) {
+            command.env(name, value);
+        } else {
+            command.arg(entry);
+        }
+    }
+}
+
 fn spawn_game_process(
     _app: &tauri::AppHandle,
-    version_dir: &std::path::Path,
+    _version_dir: &std::path::Path,
     exe_path: &std::path::Path,
     exe_dir: &std::path::Path,
+    launch_options: &[String],
 ) -> Result<std::process::Child, String> {
     #[cfg(target_os = "windows")]
     let overlay_config = read_steam_overlay_config(_app)?;
@@ -3608,6 +3620,9 @@ fn spawn_game_process(
         cmd
     };
 
+    apply_custom_launch_options(&mut command, launch_options);
+
+    #[allow(unused_mut)]
     let mut child = command
         .current_dir(exe_dir)
         .spawn()
@@ -3618,16 +3633,24 @@ fn spawn_game_process(
         if overlay_config.enabled {
             if let Err(e) = inject_launch_dlls(
                 child.id(),
-                version_dir,
+                _version_dir,
                 overlay_config.steam_path.as_deref(),
             ) {
-                log::error!("failed to inject launch DLLs into pid {}: {}", child.id(), e);
+                log::error!(
+                    "failed to inject launch DLLs into pid {}: {}",
+                    child.id(),
+                    e
+                );
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(e);
             }
             if let Err(e) = resume_main_thread(child.id()) {
-                log::error!("failed to resume suspended game process {}: {}", child.id(), e);
+                log::error!(
+                    "failed to resume suspended game process {}: {}",
+                    child.id(),
+                    e
+                );
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(e);
@@ -3692,6 +3715,7 @@ fn pick_steam_overlay_path(initial_path: Option<String>) -> Result<Option<String
 async fn launch_game(
     app: tauri::AppHandle,
     version: u32,
+    launch_options: Option<Vec<String>>,
     state: State<'_, GameState>,
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
@@ -3716,7 +3740,8 @@ async fn launch_game(
         .map_err(|_| "game launch lock poisoned".to_string())?;
     ensure_game_not_running(&state)?;
 
-    let child = spawn_game_process(&app, &dir, &exe_path, &exe_dir)?;
+    let launch_options = launch_options.unwrap_or_default();
+    let child = spawn_game_process(&app, &dir, &exe_path, &exe_dir, &launch_options)?;
     let pid = child.id();
     let mut guard = state
         .child
@@ -3730,6 +3755,7 @@ async fn launch_game(
 async fn launch_game_practice(
     app: tauri::AppHandle,
     version: u32,
+    launch_options: Option<Vec<String>>,
     state: State<'_, GameState>,
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
@@ -3742,12 +3768,8 @@ async fn launch_game_practice(
     forced_disabled_ids.extend(run_mode_tagged_mod_ids(None).await?);
 
     // Practice mode state wins over the saved disabled list on launch.
-    let _ = apply_effective_mod_states_for_version(
-        &app,
-        version,
-        &forced_disabled_ids,
-        &practice_ids,
-    );
+    let _ =
+        apply_effective_mod_states_for_version(&app, version, &forced_disabled_ids, &practice_ids);
     if let Ok(plugins) = plugins_dir(&app, version) {
         let _ = sync_practice_locked_mods_for_version(&plugins);
     }
@@ -3760,7 +3782,8 @@ async fn launch_game_practice(
         .map_err(|_| "game launch lock poisoned".to_string())?;
     ensure_game_not_running(&state)?;
 
-    let child = spawn_game_process(&app, &dir, &exe_path, &exe_dir)?;
+    let launch_options = launch_options.unwrap_or_default();
+    let child = spawn_game_process(&app, &dir, &exe_path, &exe_dir, &launch_options)?;
     let pid = child.id();
     let mut guard = state
         .child
@@ -3776,6 +3799,7 @@ async fn launch_game_preset(
     version: u32,
     preset: String,
     practice: bool,
+    launch_options: Option<Vec<String>>,
     state: State<'_, GameState>,
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
@@ -3858,7 +3882,8 @@ async fn launch_game_preset(
         .map_err(|_| "game launch lock poisoned".to_string())?;
     ensure_game_not_running(&state)?;
 
-    let child = spawn_game_process(&app, &dir, &exe_path, &exe_dir)?;
+    let launch_options = launch_options.unwrap_or_default();
+    let child = spawn_game_process(&app, &dir, &exe_path, &exe_dir, &launch_options)?;
     let pid = child.id();
     let mut guard = state
         .child
@@ -3887,7 +3912,9 @@ async fn prepare_preset_for_version(
         let lock_moons = !practice && !tags.iter().any(|t| t.eq_ignore_ascii_case("smhq"));
         let _ = ensure_wesley_moonscripts_cfg(app, version, lock_moons);
     }
-    if tags.iter().any(|t| t.eq_ignore_ascii_case("wesley") || t.eq_ignore_ascii_case("c.moons"))
+    if tags
+        .iter()
+        .any(|t| t.eq_ignore_ascii_case("wesley") || t.eq_ignore_ascii_case("c.moons"))
     {
         let _ = ensure_reverb_trigger_fix_cfg(app, version);
     }

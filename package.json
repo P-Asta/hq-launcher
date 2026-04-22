@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "node ./scripts/tauri-wrapper.mjs",
+    "tauri:build": "tauri build",
+    "tauri:build:linux": "NO_STRIP=true tauri build",
+    "tauri:build:appimage": "NO_STRIP=true tauri build --bundles appimage"
   },
   "dependencies": {
     "@radix-ui/react-checkbox": "^1.3.3",

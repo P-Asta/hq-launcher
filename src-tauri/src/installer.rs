@@ -1,7 +1,7 @@
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -47,10 +47,7 @@ fn is_run_mode_tag(tag: &str) -> bool {
 
 fn mod_has_run_mode_affinity(spec: &ModEntry) -> bool {
     spec.tags.iter().any(|tag| is_run_mode_tag(tag))
-        || spec
-            .tag_constraints
-            .keys()
-            .any(|tag| is_run_mode_tag(tag))
+        || spec.tag_constraints.keys().any(|tag| is_run_mode_tag(tag))
 }
 
 fn base_mods_config_for_version(mods_cfg: ModsConfig, game_version: u32) -> ModsConfig {
@@ -1168,7 +1165,10 @@ pub async fn sync_install_from_manifest_for_version(
     let needs_mod_sync = local_state.manifest_version != remote_manifest_version;
     let remote_depot_manifest = manifests.get(&game_version).cloned();
     let local_depot_manifest = resolve_local_depot_manifest_id(&local_state, game_version);
-    let needs_depot_sync = match (local_depot_manifest.as_deref(), remote_depot_manifest.as_deref()) {
+    let needs_depot_sync = match (
+        local_depot_manifest.as_deref(),
+        remote_depot_manifest.as_deref(),
+    ) {
         (Some(local), Some(remote)) => local != remote,
         (None, Some(_)) => true,
         _ => false,

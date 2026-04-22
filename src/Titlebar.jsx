@@ -152,6 +152,7 @@ export default function Titlebar({ installedVersions, ...props }) {
     ]), []);
 
     const editMenuItems = useMemo(() => ([
+        { label: "Launch Options", shortcut: "", action: () => { emit('ui://open-launch-options'); } },
         { label: "Unlink Config", shortcut: "", disabled: unlinkDisabled, action: unlinkConfig },
         { label: "Link Config", shortcut: "", disabled: linkDisabled, action: linkConfig }
     ]), [linkDisabled, unlinkDisabled, configLinkState, configLinkBusy, selectedVersion]);
