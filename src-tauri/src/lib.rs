@@ -12,12 +12,15 @@ mod zip_utils;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::ffi::OsString;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::{Manager, State};
 
+#[cfg(target_os = "windows")]
+use std::ffi::CString;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
 #[cfg(target_os = "windows")]
@@ -54,9 +57,22 @@ fn preset_tags_for_name(preset: &str) -> Vec<String> {
     let p = preset.trim().to_lowercase();
     match p.as_str() {
         "brutal" | "bc" => vec!["Brutal".to_string()],
+        "brutal_smhq" | "bcsmhq" | "brutal-smhq" => {
+            vec!["Brutal".to_string(), "SMHQ".to_string()]
+        }
+        "brutal_eclipsed" | "brutal-eclipsed" => {
+            vec!["Brutal".to_string(), "Eclipsed".to_string()]
+        }
         "wesley" | "wesley's" | "wesleys" => vec!["Wesley".to_string()],
+        "wesley_eclipsed" | "wesleys_eclipsed" | "wesley-eclipsed" | "wesleys-eclipsed" => {
+            vec!["Wesley".to_string(), "Eclipsed".to_string()]
+        }
         "smhq" => vec!["SMHQ".to_string()],
+        "eclipsed" | "eclipsed_hq" | "eclipsed-hq" => vec!["Eclipsed".to_string()],
         "c_moons" | "cmoons" | "c.moons" => vec!["C.Moons".to_string()],
+        "c_moons_eclipsed" | "cmoons_eclipsed" | "c.moons_eclipsed" | "c-moons-eclipsed" => {
+            vec!["C.Moons".to_string(), "Eclipsed".to_string()]
+        }
         "c_moons_smhq" | "cmoons_smhq" | "c.moons_smhq" | "c-moons-smhq" => {
             vec!["C.Moons".to_string(), "SMHQ".to_string()]
         }
@@ -72,13 +88,18 @@ fn preset_and_practice_for_run_mode(run_mode: &str) -> (String, bool) {
     match mode.as_str() {
         "practice" => ("hq".to_string(), true),
         "brutal" => ("brutal".to_string(), false),
+        "brutal_smhq" => ("brutal_smhq".to_string(), false),
+        "brutal_eclipsed" => ("brutal_eclipsed".to_string(), false),
         "brutal_practice" => ("brutal".to_string(), true),
         "wesley" => ("wesley".to_string(), false),
         "wesley_practice" => ("wesley".to_string(), true),
         "wesley_smhq" => ("wesley_smhq".to_string(), false),
+        "wesley_eclipsed" => ("wesley_eclipsed".to_string(), false),
         "smhq" => ("smhq".to_string(), false),
+        "eclipsed_hq" => ("eclipsed_hq".to_string(), false),
         "c_moons" => ("c_moons".to_string(), false),
         "c_moons_practice" => ("c_moons".to_string(), true),
+        "c_moons_eclipsed" => ("c_moons_eclipsed".to_string(), false),
         "c_moons_smhq" => ("c_moons_smhq".to_string(), false),
         _ => ("hq".to_string(), false),
     }
@@ -88,6 +109,7 @@ fn is_run_mode_tag(tag: &str) -> bool {
     tag.eq_ignore_ascii_case("brutal")
         || tag.eq_ignore_ascii_case("wesley")
         || tag.eq_ignore_ascii_case("smhq")
+        || tag.eq_ignore_ascii_case("eclipsed")
         || tag.eq_ignore_ascii_case("c.moons")
 }
 
@@ -416,11 +438,14 @@ async fn effective_mods_config_for_run_mode(
     for m in mods_cfg.mods {
         let has_run_mode_affinity = mod_has_run_mode_affinity(&m);
         let applies_to_preset = !want.is_empty() && want.iter().any(|tag| m.applies_to_tag(tag));
+        let can_apply_as_base = !has_run_mode_affinity || m.tags.is_empty();
+
+        if can_apply_as_base && m.is_compatible(version) {
+            base.push(m);
+            continue;
+        }
 
         if !has_run_mode_affinity {
-            if m.is_compatible(version) {
-                base.push(m);
-            }
             continue;
         }
 
@@ -606,6 +631,7 @@ async fn prepare_tagged_mods_for_version(
 }
 
 async fn run_mode_tagged_mod_ids(
+    version: u32,
     cancel: Option<&Arc<AtomicBool>>,
 ) -> Result<Vec<(String, String)>, String> {
     let client = reqwest::Client::new();
@@ -616,6 +642,9 @@ async fn run_mode_tagged_mod_ids(
     let mut tagged_ids: Vec<(String, String)> = vec![];
     for m in mods_cfg.mods {
         if !mod_has_run_mode_affinity(&m) {
+            continue;
+        }
+        if m.tags.is_empty() && m.is_compatible(version) {
             continue;
         }
         let key = normalize_mod_key(&m.dev, &m.name);
@@ -816,6 +845,9 @@ async fn purge_capped_incompatible_installed_mods(
     let mut capped_incompatible: HashMap<String, mod_config::ModEntry> = HashMap::new();
     for spec in mods_cfg.mods {
         if !spec.enabled {
+            continue;
+        }
+        if active_tags.is_empty() && mod_has_run_mode_affinity(&spec) {
             continue;
         }
 
@@ -2203,12 +2235,16 @@ pub(crate) fn thunderstore_cache_path(
 
 fn read_disablemod(app: &tauri::AppHandle) -> Result<DisableModFile, String> {
     let path = disablemod_path(app)?;
-    let default_mod = normalize_mod_id("SlushyRH", "FreeeeeeMoooooons");
+    let mut default_mods = vec![
+        normalize_mod_id("SlushyRH", "FreeeeeeMoooooons"),
+        normalize_mod_id("stormytuna", "EclipseOnly"),
+    ];
+    default_mods.sort_by(|a, b| a.dev.cmp(&b.dev).then(a.name.cmp(&b.name)));
     if !path.exists() {
-        // v2 (migration): include default disabled mod entry.
+        // v3 (migration): include default disabled layer mods.
         let f = DisableModFile {
-            version: 2,
-            mods: vec![default_mod],
+            version: 3,
+            mods: default_mods,
         };
         // best-effort persist so frontend sees stable state
         let _ = write_disablemod(app, &f);
@@ -2221,8 +2257,8 @@ fn read_disablemod(app: &tauri::AppHandle) -> Result<DisableModFile, String> {
             // If the file is corrupted, recover with defaults rather than breaking the UI.
             log::warn!("Failed to parse disablemod.json, resetting: {e}");
             let f = DisableModFile {
-                version: 2,
-                mods: vec![default_mod],
+                version: 3,
+                mods: default_mods,
             };
             let _ = write_disablemod(app, &f);
             return Ok(f);
@@ -2232,7 +2268,15 @@ fn read_disablemod(app: &tauri::AppHandle) -> Result<DisableModFile, String> {
     // Migration: v1 -> v2
     if f.version == 1 {
         f.version = 2;
-        f.mods.push(default_mod);
+        f.mods.push(normalize_mod_id("SlushyRH", "FreeeeeeMoooooons"));
+        f.mods
+            .sort_by(|a, b| a.dev.cmp(&b.dev).then(a.name.cmp(&b.name)));
+        f.mods.dedup();
+        let _ = write_disablemod(app, &f);
+    }
+    if f.version < 3 {
+        f.version = 3;
+        f.mods.push(normalize_mod_id("stormytuna", "EclipseOnly"));
         f.mods
             .sort_by(|a, b| a.dev.cmp(&b.dev).then(a.name.cmp(&b.name)));
         f.mods.dedup();
@@ -2738,8 +2782,18 @@ async fn prepare_practice_mods_for_version(
 
 #[derive(Default)]
 struct GameState {
-    child: Mutex<Option<std::process::Child>>,
+    active: Mutex<Vec<ActiveGame>>,
+    next_id: AtomicU64,
     launch_lock: Mutex<()>,
+}
+
+struct ActiveGame {
+    id: u64,
+    child: std::process::Child,
+    version: u32,
+    mode_label: String,
+    launch_options: Vec<String>,
+    launch_command_template: Option<String>,
 }
 
 #[derive(Default)]
@@ -2798,6 +2852,17 @@ struct ActivePrepare {
 struct GameStatus {
     running: bool,
     pid: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RunningGameDto {
+    id: u64,
+    order: usize,
+    pid: Option<u32>,
+    version: u32,
+    mode_label: String,
+    launch_options: Vec<String>,
+    launch_command_template: Option<String>,
 }
 
 #[tauri::command]
@@ -2912,8 +2977,96 @@ async fn open_version_folder(app: tauri::AppHandle) -> Result<bool, String> {
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?
         .join("versions");
     std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create versions dir: {e}"))?;
-    let _ = opener::open(dir).map_err(|e| e.to_string())?;
+    open_folder_path(&dir)?;
     Ok(true)
+}
+
+fn open_folder_path(path: &Path) -> Result<(), String> {
+    open_path_with_fallbacks(path, true)
+}
+
+fn open_file_path(path: &Path) -> Result<(), String> {
+    open_path_with_fallbacks(path, false)
+}
+
+#[cfg(target_os = "linux")]
+fn command_status_ok(program: &str, args: &[&std::ffi::OsStr]) -> bool {
+    let mut command = std::process::Command::new(program);
+    for arg in args {
+        command.arg(arg);
+    }
+    command.status().is_ok_and(|status| status.success())
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_open_command(program: &str, path: &Path) -> bool {
+    std::process::Command::new(program).arg(path).spawn().is_ok()
+}
+
+#[cfg(target_os = "linux")]
+fn open_path_with_fallbacks(path: &Path, is_folder: bool) -> Result<(), String> {
+    if is_folder {
+        for program in [
+            "dolphin",
+            "nautilus",
+            "thunar",
+            "nemo",
+            "pcmanfm",
+            "pcmanfm-qt",
+            "caja",
+        ] {
+            if spawn_open_command(program, path) {
+                return Ok(());
+            }
+        }
+    }
+
+    if command_status_ok("xdg-open", &[path.as_os_str()])
+        || command_status_ok("gio", &[std::ffi::OsStr::new("open"), path.as_os_str()])
+    {
+        return Ok(());
+    }
+
+    if !is_folder {
+        if let Some(editor) = std::env::var_os("VISUAL")
+            .or_else(|| std::env::var_os("EDITOR"))
+            .and_then(|value| {
+                let value = value.to_string_lossy();
+                shlex::split(&value).and_then(|parts| parts.into_iter().next())
+            })
+        {
+            if std::process::Command::new(editor).arg(path).spawn().is_ok() {
+                return Ok(());
+            }
+        }
+
+        for program in [
+            "kate",
+            "kwrite",
+            "gedit",
+            "mousepad",
+            "xed",
+            "code",
+            "codium",
+        ] {
+            if spawn_open_command(program, path) {
+                return Ok(());
+            }
+        }
+
+        if let Some(parent) = path.parent() {
+            if open_folder_path(parent).is_ok() {
+                return Ok(());
+            }
+        }
+    }
+
+    opener::open(path).map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_path_with_fallbacks(path: &Path, _is_folder: bool) -> Result<(), String> {
+    opener::open(path).map_err(|e| e.to_string())
 }
 
 fn collect_delete_targets(
@@ -2961,15 +3114,20 @@ fn delete_installed_version(
 ) -> Result<bool, String> {
     {
         let mut guard = game_state
-            .child
+            .active
             .lock()
             .map_err(|_| "game state lock poisoned".to_string())?;
-        if let Some(child) = guard.as_mut() {
-            if child.try_wait().map_err(|e| e.to_string())?.is_none() {
+        for active in guard.iter_mut() {
+            if active.version == version
+                && active.child.try_wait().map_err(|e| e.to_string())?.is_none()
+            {
                 return Err("Cannot delete a version while the game is running.".to_string());
             }
-            *guard = None;
+            if active.version == version && linux_lingering_game_pid(&app, version).is_some() {
+                return Err("Cannot delete a version while the game is running.".to_string());
+            }
         }
+        guard.retain(|active| active.version != version);
     }
 
     {
@@ -3065,7 +3223,7 @@ async fn open_downloader_folder(app: tauri::AppHandle) -> Result<bool, String> {
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?
         .join("downloader");
     std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create downloader dir: {e}"))?;
-    opener::open(dir).map_err(|e| e.to_string())?;
+    open_folder_path(&dir)?;
     Ok(true)
 }
 
@@ -3087,7 +3245,7 @@ async fn open_mod_folder(
         ));
     };
 
-    opener::open(dir).map_err(|e| e.to_string())?;
+    open_folder_path(&dir)?;
     Ok(true)
 }
 
@@ -3108,6 +3266,8 @@ async fn check_mod_updates(
     let extract_dir = dir.join(format!("v{version}"));
     let mods_cfg =
         effective_mods_config_for_run_mode(&client, version, run_mode_name, false, true).await?;
+    let (preset, _practice) = preset_and_practice_for_run_mode(run_mode_name);
+    let active_tags = preset_tags_for_name(&preset);
 
     let mut updatable_mods: Vec<String> = vec![];
 
@@ -3116,6 +3276,7 @@ async fn check_mod_updates(
         &extract_dir,
         version,
         &mods_cfg,
+        &active_tags,
         |checked, total, detail, mod_name| {
             if let Some(mod_name) = mod_name {
                 if !updatable_mods.contains(&mod_name) {
@@ -3207,6 +3368,8 @@ async fn apply_mod_updates(
             true,
         )
         .await?;
+        let (preset, _practice) = preset_and_practice_for_run_mode(&run_mode_name);
+        let active_tags = preset_tags_for_name(&preset);
 
         const STEPS_TOTAL: u32 = 2;
         progress::emit_progress(
@@ -3232,6 +3395,7 @@ async fn apply_mod_updates(
             &game_root,
             version,
             &mods_cfg,
+            &active_tags,
             |checked, total, detail, mod_name| {
                 if let Some(m) = mod_name {
                     if !updatable.contains(&m) {
@@ -3461,18 +3625,58 @@ fn resolve_game_launch_paths(
     Ok((dir, exe_path, exe_dir))
 }
 
-fn ensure_game_not_running(state: &State<'_, GameState>) -> Result<(), String> {
+fn ensure_game_not_running(app: &tauri::AppHandle, state: &State<'_, GameState>) -> Result<(), String> {
     let mut guard = state
-        .child
+        .active
         .lock()
         .map_err(|_| "game state lock poisoned".to_string())?;
-    if let Some(child) = guard.as_mut() {
-        if child.try_wait().map_err(|e| e.to_string())?.is_none() {
-            return Err("game is already running".to_string());
+    let mut has_running = false;
+    for active in guard.iter_mut() {
+        if active.child.try_wait().map_err(|e| e.to_string())?.is_none() {
+            has_running = true;
+        } else if linux_lingering_game_pid(app, active.version).is_some() {
+            has_running = true;
         }
     }
-    *guard = None;
+    if has_running {
+        return Err("game is already running".to_string());
+    }
+    guard.clear();
     Ok(())
+}
+
+fn cleanup_active_games(
+    app: &tauri::AppHandle,
+    active_games: &mut Vec<ActiveGame>,
+) -> Result<bool, String> {
+    let mut any_finished = false;
+    let mut kept = Vec::with_capacity(active_games.len());
+    for mut active in active_games.drain(..) {
+        match active.child.try_wait().map_err(|e| e.to_string())? {
+            None => kept.push(active),
+            Some(_) => {
+                if linux_lingering_game_pid(app, active.version).is_some() {
+                    kept.push(active);
+                } else {
+                    any_finished = true;
+                }
+            }
+        }
+    }
+    *active_games = kept;
+    Ok(any_finished)
+}
+
+fn active_game_dto(order: usize, active: &ActiveGame) -> RunningGameDto {
+    RunningGameDto {
+        id: active.id,
+        order,
+        pid: Some(active.child.id()),
+        version: active.version,
+        mode_label: active.mode_label.clone(),
+        launch_options: active.launch_options.clone(),
+        launch_command_template: active.launch_command_template.clone(),
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -3540,12 +3744,218 @@ fn apply_custom_launch_options(command: &mut std::process::Command, launch_optio
     }
 }
 
+#[cfg(target_os = "linux")]
+fn put_command_in_new_process_group(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn put_command_in_new_process_group(_command: &mut std::process::Command) {}
+
+#[cfg(target_os = "linux")]
+fn terminate_child_process_tree(child: &mut std::process::Child) {
+    let pgid = child.id() as libc::pid_t;
+    unsafe {
+        let _ = libc::kill(-pgid, libc::SIGTERM);
+    }
+
+    for _ in 0..15 {
+        if child.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    unsafe {
+        let _ = libc::kill(-pgid, libc::SIGKILL);
+    }
+    let _ = child.kill();
+}
+
+#[cfg(not(target_os = "linux"))]
+fn terminate_child_process_tree(child: &mut std::process::Child) {
+    let _ = child.kill();
+}
+
+#[cfg(target_os = "linux")]
+fn read_proc_bytes(pid: libc::pid_t, name: &str) -> Option<Vec<u8>> {
+    std::fs::read(format!("/proc/{pid}/{name}")).ok()
+}
+
+#[cfg(target_os = "linux")]
+fn bytes_contain(haystack: &[u8], needle: &std::path::Path) -> bool {
+    let needle = needle.to_string_lossy();
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle.as_bytes())
+}
+
+#[cfg(target_os = "linux")]
+fn collect_linux_game_processes(app: &tauri::AppHandle, version: u32) -> Vec<libc::pid_t> {
+    let self_pid = std::process::id() as libc::pid_t;
+    let Ok(game_root) = version_dir(app, version) else {
+        return vec![];
+    };
+    let compat_prefix = installer::proton_env_dir(app)
+        .ok()
+        .map(|path| path.join("wine_prefix"));
+    let compat_env = compat_prefix
+        .as_ref()
+        .map(|path| format!("STEAM_COMPAT_DATA_PATH={}", path.to_string_lossy()));
+
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return vec![];
+    };
+
+    let mut pids = Vec::new();
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<libc::pid_t>().ok())
+        else {
+            continue;
+        };
+        if pid <= 1 || pid == self_pid {
+            continue;
+        }
+
+        let cmdline = read_proc_bytes(pid, "cmdline").unwrap_or_default();
+        let environ = read_proc_bytes(pid, "environ").unwrap_or_default();
+
+        let matches_version = bytes_contain(&cmdline, &game_root)
+            || bytes_contain(&environ, &game_root);
+        let matches_prefix = compat_prefix
+            .as_ref()
+            .is_some_and(|prefix| bytes_contain(&cmdline, prefix) || bytes_contain(&environ, prefix))
+            || compat_env
+                .as_ref()
+                .is_some_and(|env| environ.windows(env.len()).any(|window| window == env.as_bytes()));
+
+        if matches_version || matches_prefix {
+            pids.push(pid);
+        }
+    }
+
+    pids.sort_unstable();
+    pids.dedup();
+    pids
+}
+
+#[cfg(target_os = "linux")]
+fn pid_is_alive(pid: libc::pid_t) -> bool {
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+#[cfg(target_os = "linux")]
+fn terminate_linux_game_processes_for_version(app: &tauri::AppHandle, version: u32) {
+    let pids = collect_linux_game_processes(app, version);
+    if pids.is_empty() {
+        return;
+    }
+
+    log::info!(
+        "Stopping {} lingering Linux game processes for v{}: {:?}",
+        pids.len(),
+        version,
+        pids
+    );
+
+    for pid in &pids {
+        unsafe {
+            let _ = libc::kill(*pid, libc::SIGTERM);
+        }
+    }
+
+    for _ in 0..15 {
+        if pids.iter().all(|pid| !pid_is_alive(*pid)) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    for pid in pids {
+        if pid_is_alive(pid) {
+            unsafe {
+                let _ = libc::kill(pid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_lingering_game_pid(app: &tauri::AppHandle, version: u32) -> Option<u32> {
+    collect_linux_game_processes(app, version)
+        .into_iter()
+        .next()
+        .map(|pid| pid as u32)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn linux_lingering_game_pid(_app: &tauri::AppHandle, _version: u32) -> Option<u32> {
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn terminate_linux_game_processes_for_version(_app: &tauri::AppHandle, _version: u32) {}
+
+fn build_wrapped_launch_command(
+    template: Option<&str>,
+    default_program: &std::ffi::OsStr,
+    default_args: &[OsString],
+) -> Result<(OsString, Vec<OsString>), String> {
+    let default_tokens: Vec<OsString> = std::iter::once(default_program.to_os_string())
+        .chain(default_args.iter().cloned())
+        .collect();
+
+    let Some(template) = template.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok((default_program.to_os_string(), default_args.to_vec()));
+    };
+
+    let parsed = shlex::split(template)
+        .ok_or_else(|| "failed to parse launch command template".to_string())?;
+    if parsed.is_empty() {
+        return Ok((default_program.to_os_string(), default_args.to_vec()));
+    }
+
+    let mut wrapped_tokens = Vec::new();
+    let mut inserted_command = false;
+    for token in parsed {
+        if token == "%command%" {
+            wrapped_tokens.extend(default_tokens.iter().cloned());
+            inserted_command = true;
+        } else {
+            wrapped_tokens.push(OsString::from(token));
+        }
+    }
+
+    if !inserted_command {
+        wrapped_tokens.extend(default_tokens);
+    }
+
+    let mut parts = wrapped_tokens.into_iter();
+    let program = parts
+        .next()
+        .ok_or_else(|| "launch command template produced an empty command".to_string())?;
+    Ok((program, parts.collect()))
+}
+
 fn spawn_game_process(
     _app: &tauri::AppHandle,
     _version_dir: &std::path::Path,
     exe_path: &std::path::Path,
     exe_dir: &std::path::Path,
     launch_options: &[String],
+    launch_command_template: Option<&str>,
 ) -> Result<std::process::Child, String> {
     #[cfg(target_os = "windows")]
     let overlay_config = read_steam_overlay_config(_app)?;
@@ -3557,7 +3967,12 @@ fn spawn_game_process(
         use std::os::windows::process::CommandExt;
         use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
 
-        let mut cmd = std::process::Command::new(exe_path);
+        let default_program = exe_path.as_os_str().to_os_string();
+        let default_args = Vec::new();
+        let (program, args) =
+            build_wrapped_launch_command(launch_command_template, &default_program, &default_args)?;
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args);
         if overlay_config.enabled {
             cmd.creation_flags(CREATE_SUSPENDED);
             cmd.env("SteamGameId", LETHAL_COMPANY_STEAM_APP_ID);
@@ -3568,9 +3983,12 @@ fn spawn_game_process(
 
     #[cfg(target_os = "macos")]
     let mut command = {
-        let mut cmd = std::process::Command::new("open");
-        cmd.arg("-a");
-        cmd.arg(exe_path);
+        let default_program = OsString::from("open");
+        let default_args = vec![OsString::from("-a"), exe_path.as_os_str().to_os_string()];
+        let (program, args) =
+            build_wrapped_launch_command(launch_command_template, &default_program, &default_args)?;
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args);
         cmd
     };
 
@@ -3591,10 +4009,12 @@ fn spawn_game_process(
                 .map_err(|e| format!("could not make prefix: {e}"))?;
         }
         let steam_path = get_steam_client_path(&app_path, overlay_config.steam_path.as_deref());
-
-        let mut cmd = std::process::Command::new(proton_bin_path.join("proton"));
-        cmd.arg("run");
-        cmd.arg(exe_path);
+        let default_program = proton_bin_path.join("proton").into_os_string();
+        let default_args = vec![OsString::from("run"), exe_path.as_os_str().to_os_string()];
+        let (program, args) =
+            build_wrapped_launch_command(launch_command_template, &default_program, &default_args)?;
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args);
         cmd.env("STEAM_COMPAT_DATA_PATH", &compat_pre_path);
         cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_path);
         cmd.env("WINEDLLOVERRIDES", "winhttp=n,b");
@@ -3621,6 +4041,7 @@ fn spawn_game_process(
     };
 
     apply_custom_launch_options(&mut command, launch_options);
+    put_command_in_new_process_group(&mut command);
 
     #[allow(unused_mut)]
     let mut child = command
@@ -3716,6 +4137,8 @@ async fn launch_game(
     app: tauri::AppHandle,
     version: u32,
     launch_options: Option<Vec<String>>,
+    launch_command_template: Option<String>,
+    allow_multiple: Option<bool>,
     state: State<'_, GameState>,
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
@@ -3723,7 +4146,7 @@ async fn launch_game(
     let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
 
     let mut forced_disabled_ids = practice_mode_mod_ids();
-    forced_disabled_ids.extend(run_mode_tagged_mod_ids(None).await?);
+    forced_disabled_ids.extend(run_mode_tagged_mod_ids(version, None).await?);
 
     // Non-practice launch: mode-required disabled mods win over the saved disabled list.
     let _ = apply_effective_mod_states_for_version(&app, version, &forced_disabled_ids, &[]);
@@ -3738,16 +4161,34 @@ async fn launch_game(
         .launch_lock
         .lock()
         .map_err(|_| "game launch lock poisoned".to_string())?;
-    ensure_game_not_running(&state)?;
+    if !allow_multiple.unwrap_or(false) {
+        ensure_game_not_running(&app, &state)?;
+    }
 
     let launch_options = launch_options.unwrap_or_default();
-    let child = spawn_game_process(&app, &dir, &exe_path, &exe_dir, &launch_options)?;
+    let launch_command_template_for_state = launch_command_template.clone();
+    let child = spawn_game_process(
+        &app,
+        &dir,
+        &exe_path,
+        &exe_dir,
+        &launch_options,
+        launch_command_template.as_deref(),
+    )?;
     let pid = child.id();
+    let id = state.next_id.fetch_add(1, Ordering::Relaxed) + 1;
     let mut guard = state
-        .child
+        .active
         .lock()
         .map_err(|_| "game state lock poisoned".to_string())?;
-    *guard = Some(child);
+    guard.push(ActiveGame {
+        id,
+        child,
+        version,
+        mode_label: "HQ".to_string(),
+        launch_options,
+        launch_command_template: launch_command_template_for_state,
+    });
     Ok(pid)
 }
 
@@ -3756,6 +4197,8 @@ async fn launch_game_practice(
     app: tauri::AppHandle,
     version: u32,
     launch_options: Option<Vec<String>>,
+    launch_command_template: Option<String>,
+    allow_multiple: Option<bool>,
     state: State<'_, GameState>,
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
@@ -3765,7 +4208,7 @@ async fn launch_game_practice(
     // Practice run: install + enable practice mods (compatible with this game version).
     let practice_ids = prepare_practice_mods_for_version(&app, version, None).await?;
     let mut forced_disabled_ids = practice_mode_forced_disabled_ids();
-    forced_disabled_ids.extend(run_mode_tagged_mod_ids(None).await?);
+    forced_disabled_ids.extend(run_mode_tagged_mod_ids(version, None).await?);
 
     // Practice mode state wins over the saved disabled list on launch.
     let _ =
@@ -3780,16 +4223,34 @@ async fn launch_game_practice(
         .launch_lock
         .lock()
         .map_err(|_| "game launch lock poisoned".to_string())?;
-    ensure_game_not_running(&state)?;
+    if !allow_multiple.unwrap_or(false) {
+        ensure_game_not_running(&app, &state)?;
+    }
 
     let launch_options = launch_options.unwrap_or_default();
-    let child = spawn_game_process(&app, &dir, &exe_path, &exe_dir, &launch_options)?;
+    let launch_command_template_for_state = launch_command_template.clone();
+    let child = spawn_game_process(
+        &app,
+        &dir,
+        &exe_path,
+        &exe_dir,
+        &launch_options,
+        launch_command_template.as_deref(),
+    )?;
     let pid = child.id();
+    let id = state.next_id.fetch_add(1, Ordering::Relaxed) + 1;
     let mut guard = state
-        .child
+        .active
         .lock()
         .map_err(|_| "game state lock poisoned".to_string())?;
-    *guard = Some(child);
+    guard.push(ActiveGame {
+        id,
+        child,
+        version,
+        mode_label: "Practice".to_string(),
+        launch_options,
+        launch_command_template: launch_command_template_for_state,
+    });
     Ok(pid)
 }
 
@@ -3800,6 +4261,8 @@ async fn launch_game_preset(
     preset: String,
     practice: bool,
     launch_options: Option<Vec<String>>,
+    launch_command_template: Option<String>,
+    allow_multiple: Option<bool>,
     state: State<'_, GameState>,
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
@@ -3835,7 +4298,7 @@ async fn launch_game_preset(
         let _ = force_enable_mods_for_version(&app, version, &preset_ids);
     }
 
-    let tagged_disabled_ids = run_mode_tagged_mod_ids(None).await?;
+    let tagged_disabled_ids = run_mode_tagged_mod_ids(version, None).await?;
     let mut forced_enabled_ids = preset_ids.clone();
     forced_enabled_ids.extend(practice_ids.clone());
     let forced_disabled_ids = if practice {
@@ -3880,16 +4343,39 @@ async fn launch_game_preset(
         .launch_lock
         .lock()
         .map_err(|_| "game launch lock poisoned".to_string())?;
-    ensure_game_not_running(&state)?;
+    if !allow_multiple.unwrap_or(false) {
+        ensure_game_not_running(&app, &state)?;
+    }
 
     let launch_options = launch_options.unwrap_or_default();
-    let child = spawn_game_process(&app, &dir, &exe_path, &exe_dir, &launch_options)?;
+    let launch_command_template_for_state = launch_command_template.clone();
+    let child = spawn_game_process(
+        &app,
+        &dir,
+        &exe_path,
+        &exe_dir,
+        &launch_options,
+        launch_command_template.as_deref(),
+    )?;
     let pid = child.id();
+    let id = state.next_id.fetch_add(1, Ordering::Relaxed) + 1;
     let mut guard = state
-        .child
+        .active
         .lock()
         .map_err(|_| "game state lock poisoned".to_string())?;
-    *guard = Some(child);
+    let mode_label = if practice {
+        format!("{preset} Practice")
+    } else {
+        preset.clone()
+    };
+    guard.push(ActiveGame {
+        id,
+        child,
+        version,
+        mode_label,
+        launch_options,
+        launch_command_template: launch_command_template_for_state,
+    });
     Ok(pid)
 }
 
@@ -3947,7 +4433,7 @@ async fn prepare_preset_for_version(
         return Err("Cancelled".to_string());
     }
 
-    let tagged_disabled_ids = run_mode_tagged_mod_ids(Some(&cancel)).await?;
+    let tagged_disabled_ids = run_mode_tagged_mod_ids(version, Some(&cancel)).await?;
     let mut forced_enabled_ids = preset_ids.clone();
     forced_enabled_ids.extend(practice_ids.clone());
     let forced_disabled_ids = if practice {
@@ -4054,32 +4540,101 @@ fn get_game_status(
     state: State<'_, GameState>,
 ) -> Result<GameStatus, String> {
     let mut guard = state
-        .child
+        .active
         .lock()
         .map_err(|_| "game state lock poisoned".to_string())?;
-    if let Some(child) = guard.as_mut() {
-        match child.try_wait().map_err(|e| e.to_string())? {
-            None => Ok(GameStatus {
-                running: true,
-                pid: Some(child.id()),
-            }),
+    let mut running_pid = None;
+    let mut any_finished = false;
+    let mut kept = Vec::with_capacity(guard.len());
+    for mut active in guard.drain(..) {
+        match active.child.try_wait().map_err(|e| e.to_string())? {
+            None => {
+                running_pid.get_or_insert_with(|| active.child.id());
+                kept.push(active);
+            }
             Some(_) => {
-                *guard = None;
-                if let Err(e) = restore_hqol_wesley_dont_store_backup_if_present(&app) {
-                    log::warn!("Failed to restore HQoL Wesley dont-store backup after exit: {e}");
+                any_finished = true;
+                if let Some(pid) = linux_lingering_game_pid(&app, active.version) {
+                    running_pid.get_or_insert(pid);
+                    kept.push(active);
                 }
-                Ok(GameStatus {
-                    running: false,
-                    pid: None,
-                })
             }
         }
-    } else {
-        Ok(GameStatus {
-            running: false,
-            pid: None,
-        })
     }
+    *guard = kept;
+
+    if let Some(pid) = running_pid {
+        return Ok(GameStatus {
+            running: true,
+            pid: Some(pid),
+        });
+    }
+
+    if any_finished {
+        if let Err(e) = restore_hqol_wesley_dont_store_backup_if_present(&app) {
+            log::warn!("Failed to restore HQoL Wesley dont-store backup after exit: {e}");
+        }
+    }
+
+    Ok(GameStatus {
+        running: false,
+        pid: None,
+    })
+}
+
+#[tauri::command]
+fn list_running_games(
+    app: tauri::AppHandle,
+    state: State<'_, GameState>,
+) -> Result<Vec<RunningGameDto>, String> {
+    let mut guard = state
+        .active
+        .lock()
+        .map_err(|_| "game state lock poisoned".to_string())?;
+    let any_finished = cleanup_active_games(&app, &mut guard)?;
+    if any_finished {
+        if let Err(e) = restore_hqol_wesley_dont_store_backup_if_present(&app) {
+            log::warn!("Failed to restore HQoL Wesley dont-store backup after exit: {e}");
+        }
+    }
+
+    Ok(guard
+        .iter()
+        .enumerate()
+        .map(|(idx, active)| active_game_dto(idx + 1, active))
+        .collect())
+}
+
+#[tauri::command]
+fn stop_game_instance(
+    app: tauri::AppHandle,
+    id: u64,
+    state: State<'_, GameState>,
+) -> Result<bool, String> {
+    let _launch_guard = state
+        .launch_lock
+        .lock()
+        .map_err(|_| "game launch lock poisoned".to_string())?;
+    let mut guard = state
+        .active
+        .lock()
+        .map_err(|_| "game state lock poisoned".to_string())?;
+    let Some(index) = guard.iter().position(|active| active.id == id) else {
+        return Ok(false);
+    };
+
+    let mut active = guard.remove(index);
+    terminate_child_process_tree(&mut active.child);
+    let _ = active.child.wait();
+
+    if guard.is_empty() {
+        terminate_linux_game_processes_for_version(&app, active.version);
+        if let Err(e) = restore_hqol_wesley_dont_store_backup_if_present(&app) {
+            log::warn!("Failed to restore HQoL Wesley dont-store backup after stopping instance: {e}");
+        }
+    }
+
+    Ok(true)
 }
 
 #[tauri::command]
@@ -4089,12 +4644,24 @@ fn stop_game(app: tauri::AppHandle, state: State<'_, GameState>) -> Result<bool,
         .lock()
         .map_err(|_| "game launch lock poisoned".to_string())?;
     let mut guard = state
-        .child
+        .active
         .lock()
         .map_err(|_| "game state lock poisoned".to_string())?;
-    if let Some(mut child) = guard.take() {
-        let _ = child.kill();
-        let _ = child.wait();
+    if !guard.is_empty() {
+        let mut active_games = std::mem::take(&mut *guard);
+        let mut versions = Vec::new();
+        for active in &mut active_games {
+            versions.push(active.version);
+            terminate_child_process_tree(&mut active.child);
+        }
+        for mut active in active_games {
+            let _ = active.child.wait();
+        }
+        versions.sort_unstable();
+        versions.dedup();
+        for version in versions {
+            terminate_linux_game_processes_for_version(&app, version);
+        }
         if let Err(e) = restore_hqol_wesley_dont_store_backup_if_present(&app) {
             log::warn!("Failed to restore HQoL Wesley dont-store backup after stop: {e}");
         }
@@ -4542,7 +5109,7 @@ fn open_config_file_for_version(
     if !path.exists() {
         return Err(format!("config file not found: {}", rel_path));
     }
-    opener::open(path).map_err(|e| e.to_string())?;
+    open_file_path(&path)?;
     Ok(true)
 }
 
@@ -4991,7 +5558,9 @@ pub fn run() {
             launch_game_practice,
             launch_game_preset,
             get_game_status,
+            list_running_games,
             stop_game,
+            stop_game_instance,
             get_disabled_mods,
             apply_disabled_mods,
             set_mod_enabled,

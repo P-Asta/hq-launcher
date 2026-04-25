@@ -106,14 +106,6 @@
             "version_config": {}
         },
         {
-            "name": "ShipLoot",
-            "dev": "tinyhoot",
-            "enabled": true,
-            "low_cap": null,
-            "high_cap": 55,
-            "version_config": {}
-        },
-        {
             "name": "ShipLootCruiser",
             "dev": "HQHQTeam",
             "enabled": true,
@@ -1074,6 +1066,17 @@
                 "73": "0.4.2",
                 "80": "0.0.0"
             }
+        },
+        {
+            "name": "EclipseOnly",
+            "dev": "stormytuna",
+            "tags": [
+                "Eclipsed"
+            ],
+            "enabled": true,
+            "low_cap": null,
+            "high_cap": null,
+            "version_config": {}
         }
     ]
 }

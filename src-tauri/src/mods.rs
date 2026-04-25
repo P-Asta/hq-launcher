@@ -86,16 +86,35 @@ fn install_compatibility_matches(
     active_tags: &[String],
 ) -> bool {
     if !active_tags.is_empty()
-        && spec.tags.iter().any(|tag| {
-            active_tags
-                .iter()
-                .any(|active| tag.eq_ignore_ascii_case(active))
-        })
+        && active_tags
+            .iter()
+            .any(|active_tag| spec.applies_to_tag(active_tag))
     {
         return spec.is_compatible_for_tags(game_version, active_tags);
     }
 
     spec.is_compatible(game_version)
+}
+
+fn compatibility_caps_for_tags(
+    spec: &ModEntry,
+    active_tags: &[String],
+) -> (Option<u32>, Option<u32>) {
+    if !active_tags.is_empty() {
+        for active_tag in active_tags {
+            if !spec.applies_to_tag(active_tag) {
+                continue;
+            }
+
+            let constraint = spec.constraint_for_tag(active_tag);
+            return (
+                constraint.and_then(|rule| rule.low_cap).or(spec.low_cap),
+                constraint.and_then(|rule| rule.high_cap).or(spec.high_cap),
+            );
+        }
+    }
+
+    (spec.low_cap, spec.high_cap)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -279,7 +298,7 @@ where
 
         if !install_compatibility_matches(spec, game_version, active_tags) {
             installed = installed.saturating_add(1);
-            let why = incompatible_reason(spec, game_version);
+            let why = incompatible_reason(spec, game_version, active_tags);
             log::warn!("Skipping {mod_label}{why}");
             on_progress(
                 installed,
@@ -513,6 +532,7 @@ pub async fn updatable_mods_with_progress<F>(
     game_root: &Path,
     game_version: u32,
     cfg: &ModsConfig,
+    active_tags: &[String],
     mut on_progress: F,
 ) -> Result<(), String>
 where
@@ -553,8 +573,8 @@ where
         let already_dir = target_plugins.join(format!("{}-{}", spec.dev, spec.name));
         let mod_label = format!("{}-{}", spec.dev, spec.name);
         if already_dir.exists() {
-            if !spec.is_compatible(game_version) {
-                let why = incompatible_reason(spec, game_version);
+            if !install_compatibility_matches(spec, game_version, active_tags) {
+                let why = incompatible_reason(spec, game_version, active_tags);
                 log::info!("Skipping incompatible installed mod {}{}", mod_label, why);
                 on_progress(
                     idx,
@@ -651,7 +671,7 @@ where
             }
         } else {
             // Plugin folder doesn't exist, but mod is in remote manifest - mark as updatable (installable)
-            if spec.is_compatible(game_version) {
+            if install_compatibility_matches(spec, game_version, active_tags) {
                 log::info!(
                     "{} is missing but available in manifest - can install",
                     mod_label.clone()
@@ -666,7 +686,7 @@ where
                     Some(mod_label.clone()),
                 );
             } else {
-                let why = incompatible_reason(spec, game_version);
+                let why = incompatible_reason(spec, game_version, active_tags);
                 log::info!("{} is missing but incompatible{}", mod_label.clone(), why);
                 on_progress(
                     idx,
@@ -933,14 +953,15 @@ where
     Ok(())
 }
 
-fn incompatible_reason(spec: &ModEntry, game_version: u32) -> String {
+fn incompatible_reason(spec: &ModEntry, game_version: u32, active_tags: &[String]) -> String {
     let mut parts: Vec<String> = vec![];
-    if let Some(min) = spec.low_cap {
+    let (low_cap, high_cap) = compatibility_caps_for_tags(spec, active_tags);
+    if let Some(min) = low_cap {
         if game_version < min {
             parts.push(format!(" (requires >= {min})"));
         }
     }
-    if let Some(max) = spec.high_cap {
+    if let Some(max) = high_cap {
         if game_version > max {
             parts.push(format!(" (requires <= {max})"));
         }

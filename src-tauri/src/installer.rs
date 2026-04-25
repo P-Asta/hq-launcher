@@ -56,7 +56,8 @@ fn base_mods_config_for_version(mods_cfg: ModsConfig, game_version: u32) -> Mods
             .mods
             .into_iter()
             .filter(|mod_entry| {
-                !mod_has_run_mode_affinity(mod_entry) && mod_entry.is_compatible(game_version)
+                (!mod_has_run_mode_affinity(mod_entry) || mod_entry.tags.is_empty())
+                    && mod_entry.is_compatible(game_version)
             })
             .collect(),
     }

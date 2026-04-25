@@ -1,6 +1,18 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.9.7 (2026-04-26)
+- You can now right-click the launch/stop button to launch another game instance or open a running-game manager.
+- Added a running-game manager that shows each launched game in order, including its version, run mode, PID, command wrapper, and launch options. You can stop a single instance from this window.
+- The Stop button now stops every game instance launched by the launcher, with improved cleanup for Linux/Proton where Wine processes could stay alive after Proton exited.
+- Improved Linux support for opening folders and config files, especially on Hyprland and other setups where the default opener may not work reliably.
+- Custom launch options now support a command wrapper using `%command%`, so tools such as Gamescope can wrap the full launch command more cleanly.
+- Added `Brutal SMHQ` as a selectable run mode.
+- Added `Eclipsed HQ`, `Wesley Eclipsed`, `Brutal Eclipsed`, and `C.Moons Eclipsed` run modes using `stormytuna-EclipsedOnly`.
+- Fixed Wesley/SMHQ mod compatibility handling so `tag_constraints` are respected during install, update checks, and cleanup.
+- Fixed `MrovLib` behavior across v73 and v81: it now installs for Wesley where needed, stays disabled instead of being deleted when switching back to HQ on v73, and remains enabled as a base-compatible mod on v81.
+- Removed the old `ShipLoot` manifest entry in favor of the current replacement.
+
 ## 1.9.6 (2026-04-22)
 - We have added the ability to add launch options for those who want to optimize the game.
 

@@ -105,6 +105,10 @@ function isSmhqRunMode(mode) {
   return String(mode ?? "").toLowerCase().includes("smhq");
 }
 
+function isEclipsedRunMode(mode) {
+  return String(mode ?? "").toLowerCase().includes("eclipsed");
+}
+
 function isUiHiddenMod(mod) {
   return Array.isArray(mod?.tags)
     ? mod.tags.some((tag) => String(tag).toLowerCase() === "ui_hidden")
@@ -133,10 +137,15 @@ function isModCompatibleWithVersion(mod, version) {
 
 function getRunModePresetTags(mode) {
   if (mode === "brutal" || mode === "brutal_practice") return ["Brutal"];
+  if (mode === "brutal_smhq") return ["Brutal", "SMHQ"];
+  if (mode === "brutal_eclipsed") return ["Brutal", "Eclipsed"];
   if (mode === "c_moons" || mode === "c_moons_practice" || mode === "c_moons_smhq")
     return ["C.Moons"];
+  if (mode === "c_moons_eclipsed") return ["C.Moons", "Eclipsed"];
   if (mode === "wesley" || mode === "wesley_practice" || mode === "wesley_smhq")
     return ["Wesley"];
+  if (mode === "wesley_eclipsed") return ["Wesley", "Eclipsed"];
+  if (mode === "eclipsed_hq") return ["Eclipsed"];
   return [];
 }
 
@@ -188,6 +197,11 @@ const SMHQ_FORCED_MOD_KEYS = new Set([
   "slushyrh::freeeeeemoooooons",
 ]);
 
+const ECLIPSED_FORCED_MOD_KEYS = new Set([
+  "stormytuna::eclipseonly",
+  "stormytuna::eclipsedonly",
+]);
+
 function valueLabel(v) {
   if (!v) return "";
   if (v.type === "Bool") return v.data ? "true" : "false";
@@ -219,12 +233,17 @@ const RUN_MODE_VALUES = [
   "smhq",
   "c_moons",
   "c_moons_smhq",
+  "c_moons_eclipsed",
   "c_moons_practice",
   "practice",
+  "eclipsed_hq",
   "brutal",
+  "brutal_smhq",
+  "brutal_eclipsed",
   "brutal_practice",
   "wesley",
   "wesley_smhq",
+  "wesley_eclipsed",
   "wesley_practice",
 ];
 
@@ -242,21 +261,26 @@ function normalizeLaunchOptionsEntries(entries) {
     .filter(Boolean);
 }
 
+function normalizeLaunchCommandTemplate(value) {
+  return String(value ?? "").trim();
+}
+
 function getInitialLaunchOptionsConfig() {
   if (typeof window === "undefined") {
-    return { enabled: false, entries: [] };
+    return { enabled: false, entries: [], commandTemplate: "" };
   }
 
   try {
     const raw = localStorage.getItem(LAUNCH_OPTIONS_STORAGE_KEY);
-    if (!raw) return { enabled: false, entries: [] };
+    if (!raw) return { enabled: false, entries: [], commandTemplate: "" };
     const parsed = JSON.parse(raw);
     return {
       enabled: !!parsed?.enabled,
       entries: normalizeLaunchOptionsEntries(parsed?.entries),
+      commandTemplate: normalizeLaunchCommandTemplate(parsed?.commandTemplate),
     };
   } catch {
-    return { enabled: false, entries: [] };
+    return { enabled: false, entries: [], commandTemplate: "" };
   }
 }
 
@@ -279,6 +303,18 @@ function getLaunchRequestForRunMode(mode, version) {
       args: { version, preset: "brutal", practice: true },
     };
   }
+  if (mode === "brutal_smhq") {
+    return {
+      command: "launch_game_preset",
+      args: { version, preset: "brutal_smhq", practice: false },
+    };
+  }
+  if (mode === "brutal_eclipsed") {
+    return {
+      command: "launch_game_preset",
+      args: { version, preset: "brutal_eclipsed", practice: false },
+    };
+  }
   if (mode === "wesley") {
     return {
       command: "launch_game_preset",
@@ -295,6 +331,12 @@ function getLaunchRequestForRunMode(mode, version) {
     return {
       command: "launch_game_preset",
       args: { version, preset: "wesley_smhq", practice: false },
+    };
+  }
+  if (mode === "wesley_eclipsed") {
+    return {
+      command: "launch_game_preset",
+      args: { version, preset: "wesley_eclipsed", practice: false },
     };
   }
   if (mode === "smhq") {
@@ -319,6 +361,18 @@ function getLaunchRequestForRunMode(mode, version) {
     return {
       command: "launch_game_preset",
       args: { version, preset: "c_moons_smhq", practice: false },
+    };
+  }
+  if (mode === "c_moons_eclipsed") {
+    return {
+      command: "launch_game_preset",
+      args: { version, preset: "c_moons_eclipsed", practice: false },
+    };
+  }
+  if (mode === "eclipsed_hq") {
+    return {
+      command: "launch_game_preset",
+      args: { version, preset: "eclipsed_hq", practice: false },
     };
   }
   return {
@@ -369,7 +423,13 @@ function modHasRunModeAffinity(mod) {
   if (
     modTags.some((tag) => {
       const value = String(tag).toLowerCase();
-      return value === "brutal" || value === "wesley" || value === "smhq" || value === "c.moons";
+      return (
+        value === "brutal" ||
+        value === "wesley" ||
+        value === "smhq" ||
+        value === "eclipsed" ||
+        value === "c.moons"
+      );
     })
   ) {
     return true;
@@ -379,7 +439,13 @@ function modHasRunModeAffinity(mod) {
   if (!constraints || typeof constraints !== "object") return false;
   return Object.keys(constraints).some((tag) => {
     const value = String(tag).toLowerCase();
-    return value === "brutal" || value === "wesley" || value === "smhq" || value === "c.moons";
+    return (
+      value === "brutal" ||
+      value === "wesley" ||
+      value === "smhq" ||
+      value === "eclipsed" ||
+      value === "c.moons"
+    );
   });
 }
 
@@ -409,6 +475,26 @@ function getPresetSummarySpec(mode) {
     };
   }
 
+  if (mode === "brutal_smhq") {
+    return {
+      summary_id: "preset::brutal_smhq",
+      name: "Brutal Mods",
+      subtitle: "",
+      activeTags: ["Brutal", "SMHQ"],
+      iconKey: "drinkablewater::brutal_company_minus",
+    };
+  }
+
+  if (mode === "brutal_eclipsed") {
+    return {
+      summary_id: "preset::brutal_eclipsed",
+      name: "Brutal Mods",
+      subtitle: "",
+      activeTags: ["Brutal", "Eclipsed"],
+      iconKey: "drinkablewater::brutal_company_minus",
+    };
+  }
+
   if (mode === "wesley" || mode === "wesley_practice") {
     return {
       summary_id: "preset::wesley",
@@ -429,6 +515,16 @@ function getPresetSummarySpec(mode) {
     };
   }
 
+  if (mode === "wesley_eclipsed") {
+    return {
+      summary_id: "preset::wesley_eclipsed",
+      name: "Wesley's Mods",
+      subtitle: "",
+      activeTags: ["Wesley", "Eclipsed"],
+      iconKey: "magic_wesley::wesleys_moons",
+    };
+  }
+
   if (mode === "c_moons" || mode === "c_moons_practice") {
     return {
       summary_id: "preset::c_moons",
@@ -445,6 +541,16 @@ function getPresetSummarySpec(mode) {
       name: "C.Moons Mods",
       subtitle: "",
       activeTags: ["C.Moons", "SMHQ"],
+      iconKey: "willowpillows::5_tandraus",
+    };
+  }
+
+  if (mode === "c_moons_eclipsed") {
+    return {
+      summary_id: "preset::c_moons_eclipsed",
+      name: "C.Moons Mods",
+      subtitle: "",
+      activeTags: ["C.Moons", "Eclipsed"],
       iconKey: "willowpillows::5_tandraus",
     };
   }
@@ -742,6 +848,9 @@ export default function LauncherPage({
   const [launchOptionsEntries, setLaunchOptionsEntries] = useState(
     initialLaunchOptionsConfig.entries
   );
+  const [launchCommandTemplate, setLaunchCommandTemplate] = useState(
+    initialLaunchOptionsConfig.commandTemplate
+  );
   const [newLaunchOptionEntry, setNewLaunchOptionEntry] = useState("");
   const [steamOverlayResolvedPath, setSteamOverlayResolvedPath] = useState("");
   const [steamOverlaySaveBusy, setSteamOverlaySaveBusy] = useState(false);
@@ -791,7 +900,10 @@ export default function LauncherPage({
   });
 
   const [gameStatus, setGameStatus] = useState({ running: false, pid: null });
-  const [runMode, setRunMode] = useState(getInitialRunMode); // hq | practice | brutal | brutal_practice | wesley | wesley_practice | smhq
+  const [runningGamesDialogOpen, setRunningGamesDialogOpen] = useState(false);
+  const [runningGames, setRunningGames] = useState([]);
+  const [runningGameStopBusyId, setRunningGameStopBusyId] = useState(null);
+  const [runMode, setRunMode] = useState(getInitialRunMode); // hq | practice | brutal | brutal_smhq | brutal_practice | wesley | wesley_practice | smhq
   const [launchBusy, setLaunchBusy] = useState(false);
   const [modPanelWidthPercent, setModPanelWidthPercent] = useState(() => {
     if (typeof window === "undefined") return DEFAULT_MOD_PANEL_WIDTH;
@@ -821,6 +933,11 @@ export default function LauncherPage({
     y: 0,
     version: null,
   });
+  const [launchContextMenu, setLaunchContextMenu] = useState({
+    open: false,
+    x: 0,
+    y: 0,
+  });
   const practicePromptOpenRef = useRef(false);
   const presetPromptOpenRef = useRef(false);
   const practiceTaskRef = useRef(null);
@@ -829,6 +946,7 @@ export default function LauncherPage({
   const selectedVersionRef = useRef(selectedVersion);
   const modContextMenuRef = useRef(null);
   const versionContextMenuRef = useRef(null);
+  const launchContextMenuRef = useRef(null);
   const splitContainerRef = useRef(null);
 
   function updateInstalledVersionsState(nextVersions) {
@@ -876,9 +994,10 @@ export default function LauncherPage({
       JSON.stringify({
         enabled: launchOptionsEnabled,
         entries: normalizeLaunchOptionsEntries(launchOptionsEntries),
+        commandTemplate: normalizeLaunchCommandTemplate(launchCommandTemplate),
       })
     );
-  }, [launchOptionsEnabled, launchOptionsEntries]);
+  }, [launchOptionsEnabled, launchOptionsEntries, launchCommandTemplate]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1027,6 +1146,54 @@ export default function LauncherPage({
     };
   }, [versionContextMenu.open, versionContextMenu.x, versionContextMenu.y]);
 
+  useEffect(() => {
+    if (!launchContextMenu.open) return;
+
+    const close = () => setLaunchContextMenu((prev) => ({ ...prev, open: false }));
+
+    const handlePointerDown = (event) => {
+      if (launchContextMenuRef.current?.contains(event.target)) return;
+      close();
+    };
+
+    const handleEscape = (event) => {
+      if (event.key === "Escape") close();
+    };
+
+    const handleWindowChange = () => close();
+
+    const adjustPosition = () => {
+      const menu = launchContextMenuRef.current;
+      if (!menu) return;
+      const rect = menu.getBoundingClientRect();
+      const nextX = Math.min(
+        launchContextMenu.x,
+        Math.max(8, window.innerWidth - rect.width - 8)
+      );
+      const nextY = Math.min(
+        launchContextMenu.y,
+        Math.max(8, window.innerHeight - rect.height - 8)
+      );
+      if (nextX !== launchContextMenu.x || nextY !== launchContextMenu.y) {
+        setLaunchContextMenu((prev) => ({ ...prev, x: nextX, y: nextY }));
+      }
+    };
+
+    const raf = window.requestAnimationFrame(adjustPosition);
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleEscape);
+    window.addEventListener("resize", handleWindowChange);
+    window.addEventListener("scroll", handleWindowChange, true);
+
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleEscape);
+      window.removeEventListener("resize", handleWindowChange);
+      window.removeEventListener("scroll", handleWindowChange, true);
+    };
+  }, [launchContextMenu.open, launchContextMenu.x, launchContextMenu.y]);
+
   const isInstalled = useMemo(() => {
     const s = new Set(installedVersions);
     return (v) => s.has(v);
@@ -1072,6 +1239,7 @@ export default function LauncherPage({
         (mod) =>
           !isUiHiddenMod(mod) &&
           !SMHQ_FORCED_MOD_KEYS.has(modKeyLower(mod)) &&
+          !ECLIPSED_FORCED_MOD_KEYS.has(modKeyLower(mod)) &&
           isModCompatibleWithTags(mod, selectedVersion, spec.activeTags)
       )
       .sort((a, b) => {
@@ -1131,6 +1299,20 @@ export default function LauncherPage({
     });
   }, [manifest.mods, runMode, selectedVersion]);
 
+  const eclipsedReferenceMods = useMemo(() => {
+    if (!isEclipsedRunMode(runMode)) return [];
+    const mods = Array.isArray(manifest.mods) ? manifest.mods : [];
+    return mods.filter((m) => {
+      const key = modKeyLower(m);
+      return (
+        ECLIPSED_FORCED_MOD_KEYS.has(key) &&
+        m?.enabled !== false &&
+        !isUiHiddenMod(m) &&
+        isModCompatibleWithVersion(m, selectedVersion)
+      );
+    });
+  }, [manifest.mods, runMode, selectedVersion]);
+
   const modsForList = useMemo(() => {
     const regularMods = (Array.isArray(manifest.mods) ? manifest.mods : []).filter(
       (m) =>
@@ -1141,9 +1323,12 @@ export default function LauncherPage({
     const merged = [
       ...(isPracticeRunMode(runMode) ? practiceReferenceMods : []),
       ...smhqReferenceMods,
+      ...eclipsedReferenceMods,
       ...regularMods,
     ];
-    if (!isPracticeRunMode(runMode) && !isSmhqRunMode(runMode)) return regularMods;
+    if (!isPracticeRunMode(runMode) && !isSmhqRunMode(runMode) && !isEclipsedRunMode(runMode)) {
+      return regularMods;
+    }
 
     const seen = new Set();
     return merged.filter((m) => {
@@ -1152,7 +1337,14 @@ export default function LauncherPage({
       seen.add(key);
       return true;
     });
-  }, [manifest.mods, practiceReferenceMods, runMode, selectedVersion, smhqReferenceMods]);
+  }, [
+    eclipsedReferenceMods,
+    manifest.mods,
+    practiceReferenceMods,
+    runMode,
+    selectedVersion,
+    smhqReferenceMods,
+  ]);
 
   const availableModKeys = useMemo(
     () => new Set(modsForList.map((m) => modKeyLower(m))),
@@ -1173,6 +1365,11 @@ export default function LauncherPage({
     if (!isSmhqRunMode(runMode)) return new Set();
     return new Set(smhqReferenceMods.map((m) => modKeyLower(m)));
   }, [runMode, smhqReferenceMods]);
+
+  const eclipsedForcedModKeys = useMemo(() => {
+    if (!isEclipsedRunMode(runMode)) return new Set();
+    return new Set(eclipsedReferenceMods.map((m) => modKeyLower(m)));
+  }, [eclipsedReferenceMods, runMode]);
 
   useEffect(() => {
     if (!isPracticeRunMode(runMode)) return;
@@ -2527,6 +2724,9 @@ export default function LauncherPage({
     if (isSmhqRunMode(runMode) && !nextEnabled && smhqForcedModKeys.has(baseKey)) {
       return;
     }
+    if (isEclipsedRunMode(runMode) && !nextEnabled && eclipsedForcedModKeys.has(baseKey)) {
+      return;
+    }
 
     // If the mod has a chained config file, toggle linked mods too.
     let modsToToggle = [mod];
@@ -2714,6 +2914,22 @@ export default function LauncherPage({
     setVersionContextMenu((prev) => ({ ...prev, open: false, version: null }));
   }
 
+  function openLaunchContextMenu(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const version = Number(selectedVersion);
+    if (!Number.isFinite(version) || !isInstalled(version)) return;
+    setLaunchContextMenu({
+      open: true,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  }
+
+  function closeLaunchContextMenu() {
+    setLaunchContextMenu((prev) => ({ ...prev, open: false }));
+  }
+
   async function openModContextMenu(event, mod) {
     event.preventDefault();
     const version = Number(selectedVersion);
@@ -2850,6 +3066,13 @@ export default function LauncherPage({
         title: "SMHQ preset run",
       },
       {
+        value: "eclipsed_hq",
+        label: "Eclipsed HQ",
+        preset: "eclipsed_hq",
+        practice: false,
+        title: "HQ run with EclipsedOnly enabled",
+      },
+      {
         value: "practice",
         label: "Normal Practice",
         buttonLabel: "Normal Practice",
@@ -2867,6 +3090,21 @@ export default function LauncherPage({
         preset: "brutal",
         practice: false,
         title: "Brutal preset: installs Brutal-tagged mods (v49+)",
+      },
+      {
+        value: "brutal_smhq",
+        label: "Brutal SMHQ",
+        preset: "brutal_smhq",
+        practice: false,
+        title:
+          "Brutal + SMHQ preset: installs Brutal-tagged and SMHQ-tagged mods (v49+)",
+      },
+      {
+        value: "brutal_eclipsed",
+        label: "Brutal Eclipsed",
+        preset: "brutal_eclipsed",
+        practice: false,
+        title: "Brutal preset with EclipsedOnly enabled",
       },
       {
         value: "brutal_practice",
@@ -2896,6 +3134,13 @@ export default function LauncherPage({
           "Wesley + SMHQ preset: installs Wesley-tagged and SMHQ-tagged mods (v69+)",
       },
       {
+        value: "wesley_eclipsed",
+        label: "Wesley Eclipsed",
+        preset: "wesley_eclipsed",
+        practice: false,
+        title: "Wesley preset with EclipsedOnly enabled",
+      },
+      {
         value: "wesley_practice",
         label: "Wesley's Practice",
         preset: "wesley",
@@ -2920,6 +3165,13 @@ export default function LauncherPage({
         preset: "c_moons_smhq",
         practice: false,
         title: "C.Moons + SMHQ preset: installs C.Moons-tagged and SMHQ-tagged mods",
+      },
+      {
+        value: "c_moons_eclipsed",
+        label: "C.Moons Eclipsed",
+        preset: "c_moons_eclipsed",
+        practice: false,
+        title: "C.Moons preset with EclipsedOnly enabled",
       },
       {
         value: "c_moons_practice",
@@ -2947,6 +3199,7 @@ export default function LauncherPage({
     if (value === "practice") return "High Quota Practice";
     if (value === "c_moons") return "Classic Moons Run";
     if (value === "c_moons_smhq") return "Classic Moons SMHQ";
+    if (value === "c_moons_eclipsed") return "Classic Moons Eclipsed";
     if (value === "c_moons_practice") return "Classic Moons Practice";
     return selectedRunOption.label;
   }, [selectedRunOption]);
@@ -2964,6 +3217,7 @@ export default function LauncherPage({
     if (!value) return discordRunLabel;
     if (value === "c_moons") return "Classic Moons Run";
     if (value === "c_moons_smhq") return "Classic Moons SMHQ";
+    if (value === "c_moons_eclipsed") return "Classic Moons Eclipsed";
     if (value === "c_moons_practice") return "Classic Moons Practice";
     return discordRunLabel;
   }, [discordRunLabel, selectedRunOption]);
@@ -3152,8 +3406,45 @@ export default function LauncherPage({
     if (!gameStatus.running) return;
     try {
       await invoke("stop_game");
+      setRunningGames([]);
     } finally {
       setGameStatus({ running: false, pid: null });
+    }
+  }
+
+  async function refreshRunningGames() {
+    const games = await invoke("list_running_games");
+    const list = Array.isArray(games) ? games : [];
+    setRunningGames(list);
+    setGameStatus({
+      running: list.length > 0,
+      pid: typeof list[0]?.pid === "number" ? list[0].pid : null,
+    });
+    return list;
+  }
+
+  async function openRunningGamesDialog() {
+    try {
+      await refreshRunningGames();
+    } catch (e) {
+      console.error(e);
+    }
+    setRunningGamesDialogOpen(true);
+  }
+
+  async function stopRunningGame(id) {
+    if (!Number.isFinite(Number(id))) return;
+    setRunningGameStopBusyId(id);
+    try {
+      await invoke("stop_game_instance", { id });
+      const list = await refreshRunningGames();
+      if (list.length === 0) {
+        setRunningGamesDialogOpen(false);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setRunningGameStopBusyId(null);
     }
   }
 
@@ -3179,6 +3470,12 @@ export default function LauncherPage({
   function getActiveLaunchOptions() {
     if (!launchOptionsEnabled) return [];
     return normalizeLaunchOptionsEntries(launchOptionsEntries);
+  }
+
+  function getActiveLaunchCommandTemplate() {
+    if (!launchOptionsEnabled) return null;
+    const normalized = normalizeLaunchCommandTemplate(launchCommandTemplate);
+    return normalized || null;
   }
 
   async function saveSteamOverlaySettings() {
@@ -3224,7 +3521,8 @@ export default function LauncherPage({
 
   async function startSelectedRun(opts = {}) {
     if (launchBusy) return;
-    if (gameStatus.running) return stopRun();
+    const allowMultiple = opts?.allowMultiple === true;
+    if (gameStatus.running && !allowMultiple) return stopRun();
 
     const nextRunMode =
       typeof opts?.runMode === "string" && opts.runMode
@@ -3247,6 +3545,8 @@ export default function LauncherPage({
       const pid = await invoke(launchRequest.command, {
         ...launchRequest.args,
         launchOptions: getActiveLaunchOptions(),
+        launchCommandTemplate: getActiveLaunchCommandTemplate(),
+        allowMultiple,
       });
       setGameStatus({
         running: true,
@@ -3399,7 +3699,8 @@ export default function LauncherPage({
               variant="secondary"
               className="h-11 px-5"
               onClick={stopRun}
-              title="Stop"
+              onContextMenu={openLaunchContextMenu}
+              title="Stop all"
             >
               <Play className="h-4 w-4" />
               Stop
@@ -3413,6 +3714,7 @@ export default function LauncherPage({
                 type="button"
                 className="flex h-full select-none items-center gap-2 px-5 text-[14px] font-[620] tracking-[-0.014em] transition-colors hover:bg-black/[0.04] disabled:cursor-not-allowed disabled:opacity-70"
                 disabled={launchBusy}
+                onContextMenu={openLaunchContextMenu}
                 onClick={() =>
                   startSelectedRun({
                     runMode,
@@ -3714,8 +4016,11 @@ export default function LauncherPage({
                     : installedModDescriptions[keyLower] || "Click to edit config";
                   const smhqEnableLocked =
                     isSmhqRunMode(runMode) && smhqForcedModKeys.has(keyLower);
+                  const eclipsedEnableLocked =
+                    isEclipsedRunMode(runMode) && eclipsedForcedModKeys.has(keyLower);
                   const enabled =
                     smhqEnableLocked ||
+                    eclipsedEnableLocked ||
                     (!disabledSet.has(keyLower) && !practiceLockedModKeys.has(keyLower));
                   const installedVer = installedModVersions[keyLower];
                   const busy = modToggleBusyKeys.has(keyLower);
@@ -3771,6 +4076,11 @@ export default function LauncherPage({
                               SMHQ
                             </div>
                           ) : null}
+                          {eclipsedEnableLocked ? (
+                            <div className="rounded-full border border-violet-400/30 bg-violet-400/10 px-2 py-0.5 text-[11px] font-medium text-violet-200">
+                              Eclipsed
+                            </div>
+                          ) : null}
                         </div>
                         <div
                           className="mt-1 overflow-hidden whitespace-nowrap text-sm text-white/50"
@@ -3798,7 +4108,12 @@ export default function LauncherPage({
                           >
                             <Switch
                               checked={enabled}
-                              disabled={busy || practiceEnableLocked || smhqEnableLocked}
+                              disabled={
+                                busy ||
+                                practiceEnableLocked ||
+                                smhqEnableLocked ||
+                                eclipsedEnableLocked
+                              }
                               onCheckedChange={(v) =>
                                 toggleModEnabledForMod(m, !!v)
                               }
@@ -4416,6 +4731,137 @@ export default function LauncherPage({
           </button>
         </div>
       )}
+
+      {launchContextMenu.open && (
+        <div
+          ref={launchContextMenuRef}
+          className="fixed z-[70] min-w-[220px] overflow-hidden rounded-2xl border border-panel-outline bg-[#14161c] p-1.5 shadow-2xl shadow-black/40"
+          style={{
+            left: launchContextMenu.x,
+            top: launchContextMenu.y,
+          }}
+        >
+          <button
+            className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/10 disabled:pointer-events-none disabled:text-white/30 disabled:opacity-60"
+            disabled={
+              !gameStatus.running ||
+              launchBusy ||
+              !isInstalled(Number(selectedVersion))
+            }
+            onClick={() => {
+              closeLaunchContextMenu();
+              startSelectedRun({
+                runMode,
+                version: selectedVersion,
+                allowMultiple: true,
+              });
+            }}
+          >
+            Launch Another Game
+          </button>
+          {gameStatus.running ? (
+            <button
+              className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/10"
+              onClick={() => {
+                closeLaunchContextMenu();
+                openRunningGamesDialog();
+              }}
+            >
+              Manage Running Games
+            </button>
+          ) : null}
+        </div>
+      )}
+
+      <Dialog open={runningGamesDialogOpen} onOpenChange={setRunningGamesDialogOpen}>
+        <DialogContent className="w-[min(760px,94vw)] p-0">
+          <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
+            <div>
+              <div className="text-lg font-semibold">Running Games</div>
+              <div className="mt-1 text-sm text-white/50">
+                Manage game instances launched from this session.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRunningGamesDialogOpen(false)}
+              className="rounded-lg p-2 text-white/60 transition hover:bg-white/10 hover:text-white"
+              aria-label="Close running games"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="max-h-[min(62vh,560px)] overflow-y-auto px-5 py-4">
+            {runningGames.length === 0 ? (
+              <div className="rounded-2xl border border-panel-outline bg-white/5 px-4 py-5 text-sm text-white/55">
+                No running games.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {runningGames.map((game) => {
+                  const options = Array.isArray(game.launch_options)
+                    ? game.launch_options
+                    : [];
+                  const template = String(game.launch_command_template ?? "").trim();
+                  return (
+                    <div
+                      key={game.id}
+                      className="rounded-2xl border border-panel-outline bg-white/[0.04] p-4"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm font-semibold text-white">
+                              #{game.order} {game.mode_label || "Game"}
+                            </span>
+                            <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-white/65">
+                              v{game.version}
+                            </span>
+                            {typeof game.pid === "number" ? (
+                              <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-white/65">
+                                PID {game.pid}
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="mt-3 space-y-2 text-xs text-white/55">
+                            <div>
+                              <span className="text-white/35">Command wrapper</span>
+                              <div className="mt-1 rounded-lg bg-black/20 px-2 py-1 font-mono text-white/70">
+                                {template || "Default"}
+                              </div>
+                            </div>
+                            <div>
+                              <span className="text-white/35">Launch options</span>
+                              <div className="mt-1 rounded-lg bg-black/20 px-2 py-1 font-mono text-white/70">
+                                {options.length > 0 ? options.join("  ") : "None"}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        <Button
+                          variant="secondary"
+                          className="h-9 shrink-0 px-3"
+                          disabled={runningGameStopBusyId === game.id}
+                          onClick={() => stopRunningGame(game.id)}
+                          title="Stop this game"
+                        >
+                          {runningGameStopBusyId === game.id ? (
+                            <LoaderCircle className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <X className="h-4 w-4" />
+                          )}
+                          Stop
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Download confirm modal */}
       {downloadPrompt.open && (
@@ -5202,7 +5648,7 @@ export default function LauncherPage({
                   Launch
                 </div>
                 <div className="mt-1 text-sm text-white/55">
-                  Add custom launch options. Use one row per entry. <span className="font-mono">KEY=VALUE</span> becomes an environment variable; anything else is passed as a single argument.
+                  Add custom launch options. Use one row per entry. <span className="font-mono">KEY=VALUE</span> becomes an environment variable; anything else is passed as one extra launch token. You can also wrap the full game command with a template such as <span className="font-mono">gamescope -f -r 144 -- %command%</span>.
                 </div>
               </div>
               <button
@@ -5234,10 +5680,29 @@ export default function LauncherPage({
               </div>
 
               <div className="space-y-3">
+                <div className="space-y-2 rounded-2xl border border-panel-outline bg-white/[0.04] p-4">
+                  <div>
+                    <div className="text-sm font-medium text-white">
+                      Command template
+                    </div>
+                    <div className="mt-1 text-xs text-white/50">
+                      Use <span className="font-mono">%command%</span> where the launcher should insert the default game command. This is the right place for wrappers that should run before the game command, like <span className="font-mono">gamescope</span>. If omitted, the launcher appends the game command to the end.
+                    </div>
+                  </div>
+                  <Input
+                    value={launchCommandTemplate}
+                    onChange={(event) => {
+                      setLaunchCommandTemplate(event.target.value);
+                    }}
+                    placeholder="gamescope -f -r 144 -- %command%"
+                    className="font-mono"
+                  />
+                </div>
+
                 {launchOptionsEntries.length > 0 ? (
                   launchOptionsEntries.map((entry, index) => (
                     <div
-                      key={`${index}:${entry}`}
+                      key={index}
                       className="flex items-center gap-2"
                     >
                       <button
@@ -5277,7 +5742,7 @@ export default function LauncherPage({
                       event.preventDefault();
                       addLaunchOptionEntry();
                     }}
-                    placeholder="Enter new argument..."
+                    placeholder="Enter env var or extra launch token..."
                     className="font-mono"
                   />
                 </div>
