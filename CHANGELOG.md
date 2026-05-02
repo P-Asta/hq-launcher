@@ -1,6 +1,11 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+## 1.9.8 (2026-05-02)
+- Added the ability to toggle FreeMoons in Eclipsed HQ (it turns off when switching to another mode and back)
+- Partially resolved the login issue mentioned in [#8](https://github.com/P-Asta/hq-launcher/issues/8)
+
+
 ## 1.9.7 (2026-04-26)
 - You can now right-click the launch/stop button to launch another game instance or open a running-game manager.
 - Added a running-game manager that shows each launched game in order, including its version, run mode, PID, command wrapper, and launch options. You can stop a single instance from this window.

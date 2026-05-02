@@ -53,6 +53,38 @@ use crate::{
     progress::{TaskFinishedPayload, TaskUpdatableProgressPayload},
 };
 
+const INSTALL_COMPLETE_MARKER: &str = ".hq_install_complete";
+
+fn manifest_state_has_version(app: &tauri::AppHandle, version: u32) -> bool {
+    let Ok(app_data) = app.path().app_data_dir() else {
+        return false;
+    };
+    let path = app_data.join("config").join("manifest_state.json");
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    value
+        .get("depot_manifests")
+        .and_then(|v| v.get(version.to_string()))
+        .is_some()
+}
+
+fn has_legacy_complete_files(path: &Path) -> bool {
+    path.join("Lethal Company.exe").is_file()
+        && path.join("UnityPlayer.dll").is_file()
+        && path.join("Lethal Company_Data").is_dir()
+        && path.join("winhttp.dll").is_file()
+        && path.join("BepInEx").join("core").is_dir()
+}
+
+fn is_complete_version_dir(app: &tauri::AppHandle, version: u32, path: &Path) -> bool {
+    path.join(INSTALL_COMPLETE_MARKER).is_file()
+        || (manifest_state_has_version(app, version) && has_legacy_complete_files(path))
+}
+
 fn preset_tags_for_name(preset: &str) -> Vec<String> {
     let p = preset.trim().to_lowercase();
     match p.as_str() {
@@ -2990,8 +3022,31 @@ fn open_file_path(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-fn command_status_ok(program: &str, args: &[&std::ffi::OsStr]) -> bool {
+fn host_open_command(program: &str) -> std::process::Command {
     let mut command = std::process::Command::new(program);
+    for key in [
+        "APPDIR",
+        "APPIMAGE",
+        "ARGV0",
+        "GIO_MODULE_DIR",
+        "GTK_PATH",
+        "LD_PRELOAD",
+        "QT_PLUGIN_PATH",
+        "QT_QPA_PLATFORM_PLUGIN_PATH",
+    ] {
+        command.env_remove(key);
+    }
+    if let Some(original_ld_library_path) = std::env::var_os("APPIMAGE_ORIGINAL_LD_LIBRARY_PATH") {
+        command.env("LD_LIBRARY_PATH", original_ld_library_path);
+    } else {
+        command.env_remove("LD_LIBRARY_PATH");
+    }
+    command
+}
+
+#[cfg(target_os = "linux")]
+fn command_status_ok(program: &str, args: &[&std::ffi::OsStr]) -> bool {
+    let mut command = host_open_command(program);
     for arg in args {
         command.arg(arg);
     }
@@ -3000,29 +3055,21 @@ fn command_status_ok(program: &str, args: &[&std::ffi::OsStr]) -> bool {
 
 #[cfg(target_os = "linux")]
 fn spawn_open_command(program: &str, path: &Path) -> bool {
-    std::process::Command::new(program).arg(path).spawn().is_ok()
+    host_open_command(program).arg(path).spawn().is_ok()
 }
 
 #[cfg(target_os = "linux")]
 fn open_path_with_fallbacks(path: &Path, is_folder: bool) -> Result<(), String> {
-    if is_folder {
-        for program in [
-            "dolphin",
-            "nautilus",
-            "thunar",
-            "nemo",
-            "pcmanfm",
-            "pcmanfm-qt",
-            "caja",
-        ] {
-            if spawn_open_command(program, path) {
-                return Ok(());
-            }
-        }
-    }
-
     if command_status_ok("xdg-open", &[path.as_os_str()])
         || command_status_ok("gio", &[std::ffi::OsStr::new("open"), path.as_os_str()])
+        || (is_folder
+            && (command_status_ok(
+                "kioclient6",
+                &[std::ffi::OsStr::new("exec"), path.as_os_str()],
+            ) || command_status_ok(
+                "kioclient5",
+                &[std::ffi::OsStr::new("exec"), path.as_os_str()],
+            )))
     {
         return Ok(());
     }
@@ -3056,6 +3103,22 @@ fn open_path_with_fallbacks(path: &Path, is_folder: bool) -> Result<(), String> 
 
         if let Some(parent) = path.parent() {
             if open_folder_path(parent).is_ok() {
+                return Ok(());
+            }
+        }
+    }
+
+    if is_folder {
+        for program in [
+            "dolphin",
+            "nautilus",
+            "thunar",
+            "nemo",
+            "pcmanfm",
+            "pcmanfm-qt",
+            "caja",
+        ] {
+            if spawn_open_command(program, path) {
                 return Ok(());
             }
         }
@@ -4916,6 +4979,9 @@ fn list_installed_versions(app: tauri::AppHandle) -> Result<Vec<u32>, String> {
             continue;
         };
         if let Ok(v) = num.parse::<u32>() {
+            if !is_complete_version_dir(&app, v, &path) {
+                continue;
+            }
             out.push(v);
         }
     }

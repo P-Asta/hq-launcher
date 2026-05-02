@@ -109,6 +109,10 @@ function isEclipsedRunMode(mode) {
   return String(mode ?? "").toLowerCase().includes("eclipsed");
 }
 
+function isEclipsedHqRunMode(mode) {
+  return String(mode ?? "").toLowerCase() === "eclipsed_hq";
+}
+
 function isUiHiddenMod(mod) {
   return Array.isArray(mod?.tags)
     ? mod.tags.some((tag) => String(tag).toLowerCase() === "ui_hidden")
@@ -194,6 +198,10 @@ const PRACTICE_LOCKED_MOD_KEYS = new Set([
 ]);
 
 const SMHQ_FORCED_MOD_KEYS = new Set([
+  "slushyrh::freeeeeemoooooons",
+]);
+
+const ECLIPSED_HQ_OPTIONAL_MOD_KEYS = new Set([
   "slushyrh::freeeeeemoooooons",
 ]);
 
@@ -1313,6 +1321,20 @@ export default function LauncherPage({
     });
   }, [manifest.mods, runMode, selectedVersion]);
 
+  const eclipsedHqOptionalMods = useMemo(() => {
+    if (!isEclipsedHqRunMode(runMode)) return [];
+    const mods = Array.isArray(manifest.mods) ? manifest.mods : [];
+    return mods.filter((m) => {
+      const key = modKeyLower(m);
+      return (
+        ECLIPSED_HQ_OPTIONAL_MOD_KEYS.has(key) &&
+        m?.enabled !== false &&
+        !isUiHiddenMod(m) &&
+        isModCompatibleWithVersion(m, selectedVersion)
+      );
+    });
+  }, [manifest.mods, runMode, selectedVersion]);
+
   const modsForList = useMemo(() => {
     const regularMods = (Array.isArray(manifest.mods) ? manifest.mods : []).filter(
       (m) =>
@@ -1324,6 +1346,7 @@ export default function LauncherPage({
       ...(isPracticeRunMode(runMode) ? practiceReferenceMods : []),
       ...smhqReferenceMods,
       ...eclipsedReferenceMods,
+      ...eclipsedHqOptionalMods,
       ...regularMods,
     ];
     if (!isPracticeRunMode(runMode) && !isSmhqRunMode(runMode) && !isEclipsedRunMode(runMode)) {
@@ -1338,6 +1361,7 @@ export default function LauncherPage({
       return true;
     });
   }, [
+    eclipsedHqOptionalMods,
     eclipsedReferenceMods,
     manifest.mods,
     practiceReferenceMods,
@@ -2809,6 +2833,33 @@ export default function LauncherPage({
     return toggleModEnabledForMod(selectedMod, nextEnabled);
   }
 
+  async function resetEclipsedHqOptionalMods(version) {
+    const v = Number(version);
+    if (!Number.isFinite(v)) return;
+
+    const mods = (Array.isArray(manifest.mods) ? manifest.mods : []).filter((m) =>
+      ECLIPSED_HQ_OPTIONAL_MOD_KEYS.has(modKeyLower(m))
+    );
+    if (mods.length === 0) return;
+
+    try {
+      await Promise.all(
+        mods.map((m) =>
+          invoke("set_mod_enabled", {
+            version: v,
+            dev: m.dev,
+            name: m.name,
+            enabled: false,
+          })
+        )
+      );
+      const dm = await invoke("get_disabled_mods");
+      setDisabledMods(Array.isArray(dm) ? dm : []);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
   const selectedRunModeRange = useMemo(
     () => getPresetVersionRange(manifest, runMode),
     [manifest, runMode]
@@ -3652,8 +3703,14 @@ export default function LauncherPage({
     const prevVer = selectedVersion;
     const range = getPresetVersionRange(manifest, nextRunMode);
     const effectiveV = clampVersionToRange(selectedVersion, range);
+    const shouldResetEclipsedHqOptionalMods =
+      prevRun !== nextRunMode &&
+      (isEclipsedHqRunMode(prevRun) || isEclipsedHqRunMode(nextRunMode));
 
     setRunMode(nextRunMode);
+    if (shouldResetEclipsedHqOptionalMods) {
+      await resetEclipsedHqOptionalMods(effectiveV);
+    }
     if (effectiveV !== selectedVersion) {
       setSelectedVersion(effectiveV);
       if (isInstalled(effectiveV)) {

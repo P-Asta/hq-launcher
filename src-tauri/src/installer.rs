@@ -24,6 +24,7 @@ use progress::{emit_error, emit_finished, emit_progress};
 const BEPINEXPACK_VERSION: &str = "5.4.2304";
 const BEPINEXPACK_URL: &str =
     "https://thunderstore.io/package/download/BepInEx/BepInExPack/5.4.2304/";
+const INSTALL_COMPLETE_MARKER: &str = ".hq_install_complete";
 
 // Proton-GE (Linux): download and extract into AppData/proton_env/proton/.
 #[cfg(target_os = "linux")]
@@ -61,6 +62,35 @@ fn base_mods_config_for_version(mods_cfg: ModsConfig, game_version: u32) -> Mods
             })
             .collect(),
     }
+}
+
+fn raw_manifest_state_has_version(app: &tauri::AppHandle, version: u32) -> bool {
+    let Ok(path) = manifest_state_path(app) else {
+        return false;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    value
+        .get("depot_manifests")
+        .and_then(|v| v.get(version.to_string()))
+        .is_some()
+}
+
+fn has_legacy_complete_files(path: &Path) -> bool {
+    path.join("Lethal Company.exe").is_file()
+        && path.join("UnityPlayer.dll").is_file()
+        && path.join("Lethal Company_Data").is_dir()
+        && path.join("winhttp.dll").is_file()
+        && path.join("BepInEx").join("core").is_dir()
+}
+
+fn is_complete_version_dir(app: &tauri::AppHandle, version: u32, path: &Path) -> bool {
+    path.join(INSTALL_COMPLETE_MARKER).is_file()
+        || (raw_manifest_state_has_version(app, version) && has_legacy_complete_files(path))
 }
 
 #[cfg(target_os = "linux")]
@@ -517,6 +547,9 @@ fn latest_installed_version_dir(
         let Ok(v) = num.parse::<u32>() else {
             continue;
         };
+        if !is_complete_version_dir(app, v, &path) {
+            continue;
+        }
         if best.as_ref().map(|(bv, _)| v > *bv).unwrap_or(true) {
             best = Some((v, path));
         }
@@ -554,6 +587,9 @@ fn installed_version_dirs(
         let Ok(v) = num.parse::<u32>() else {
             continue;
         };
+        if !is_complete_version_dir(app, v, &path) {
+            continue;
+        }
         out.push((v, path));
     }
 
@@ -1453,7 +1489,9 @@ pub async fn download_and_setup(
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?
         .join("versions");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let extract_dir = dir.join(format!("v{version}"));
+    let final_dir = dir.join(format!("v{version}"));
+    let partial_dir = dir.join(format!(".v{version}.partial"));
+    let finalized = Arc::new(AtomicBool::new(false));
 
     let res: Result<bool, String> = async {
         // DepotDownloader 설치 확인
@@ -1465,6 +1503,7 @@ pub async fn download_and_setup(
         if cancel.load(Ordering::Relaxed) {
             return Err("Cancelled".to_string());
         }
+        let extract_dir = partial_dir.clone();
 
         // Download -> Extract Game -> Install BepInEx -> Install Config -> Install Mods
         const STEPS_TOTAL: u32 = 5;
@@ -1543,6 +1582,9 @@ pub async fn download_and_setup(
 
         if extract_dir.exists() {
             std::fs::remove_dir_all(&extract_dir).map_err(|e| e.to_string())?;
+        }
+        if final_dir.exists() {
+            std::fs::remove_dir_all(&final_dir).map_err(|e| e.to_string())?;
         }
         std::fs::create_dir_all(&extract_dir).map_err(|e| e.to_string())?;
 
@@ -1852,6 +1894,20 @@ pub async fn download_and_setup(
         .await?;
 
         crate::ensure_reverb_trigger_fix_cfg(&app, version)?;
+
+        let marker = format!(
+            "version={version}\nremote_manifest_version={remote_manifest_version}\ndepot_manifest={manifest_id}\n"
+        );
+        std::fs::write(extract_dir.join(INSTALL_COMPLETE_MARKER), marker)
+            .map_err(|e| e.to_string())?;
+
+        if final_dir.exists() {
+            std::fs::remove_dir_all(&final_dir).map_err(|e| e.to_string())?;
+        }
+        std::fs::rename(&extract_dir, &final_dir)
+            .map_err(|e| format!("Failed to finalize install: {e}"))?;
+        finalized.store(true, Ordering::Relaxed);
+
         let mut manifest_state = read_manifest_state(&app)?;
         manifest_state.manifest_version = remote_manifest_version;
         manifest_state.depot_manifests.insert(version, manifest_id);
@@ -1879,7 +1935,7 @@ pub async fn download_and_setup(
             TaskFinishedPayload {
                 version,
                 run_mode: None,
-                path: extract_dir.to_string_lossy().to_string(),
+                path: final_dir.to_string_lossy().to_string(),
             },
         );
 
@@ -1889,8 +1945,11 @@ pub async fn download_and_setup(
     .await;
 
     if let Err(message) = &res {
-        if message == "Cancelled" {
-            let _ = std::fs::remove_dir_all(&extract_dir);
+        if !finalized.load(Ordering::Relaxed) {
+            let _ = std::fs::remove_dir_all(&partial_dir);
+            if final_dir.exists() && !is_complete_version_dir(&app, version, &final_dir) {
+                let _ = std::fs::remove_dir_all(&final_dir);
+            }
         }
         emit_error(
             &app,

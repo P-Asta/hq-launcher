@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::Emitter;
 use tauri::Manager;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
@@ -222,6 +222,47 @@ fn downloader_executable_path(downloader_dir: &std::path::Path) -> PathBuf {
     downloader_dir.join("DepotDownloader")
 }
 
+fn spawn_output_reader<R>(mut reader: R, is_stderr: bool, tx: mpsc::UnboundedSender<(bool, String)>)
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut pending: Vec<u8> = Vec::new();
+        let mut buf = [0u8; 4096];
+
+        loop {
+            let n = match reader.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(_) => return,
+            };
+
+            for &b in &buf[..n] {
+                if b == b'\n' || b == b'\r' {
+                    if !pending.is_empty() {
+                        let line = String::from_utf8_lossy(&pending).to_string();
+                        let _ = tx.send((is_stderr, line));
+                        pending.clear();
+                    }
+                    continue;
+                }
+
+                pending.push(b);
+                if pending.len() >= 16 * 1024 {
+                    let line = String::from_utf8_lossy(&pending).to_string();
+                    let _ = tx.send((is_stderr, line));
+                    pending.clear();
+                }
+            }
+        }
+
+        if !pending.is_empty() {
+            let line = String::from_utf8_lossy(&pending).to_string();
+            let _ = tx.send((is_stderr, line));
+        }
+    });
+}
+
 impl DepotDownloader {
     const APP_ID: &'static str = "1966720";
     const DEPOT_ID: &'static str = "1966721";
@@ -341,24 +382,8 @@ impl DepotDownloader {
 
         let (tx, mut rx) = mpsc::unbounded_channel::<(bool, String)>(); // (is_stderr, line)
 
-        {
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let mut r = BufReader::new(stdout).lines();
-                while let Ok(Some(line)) = r.next_line().await {
-                    let _ = tx.send((false, line));
-                }
-            });
-        }
-        {
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let mut r = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = r.next_line().await {
-                    let _ = tx.send((true, line));
-                }
-            });
-        }
+        spawn_output_reader(stdout, false, tx.clone());
+        spawn_output_reader(stderr, true, tx.clone());
 
         let mut needs_2fa = false;
         let mut auth_code_sent = false;
@@ -808,28 +833,12 @@ impl DepotDownloader {
         let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<(bool, String)>(); // (is_stderr, line)
-        {
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let mut r = BufReader::new(stdout).lines();
-                while let Ok(Some(line)) = r.next_line().await {
-                    let _ = tx.send((false, line));
-                }
-            });
-        }
-        {
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let mut r = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = r.next_line().await {
-                    let _ = tx.send((true, line));
-                }
-            });
-        }
+        spawn_output_reader(stdout, false, tx.clone());
+        spawn_output_reader(stderr, true, tx.clone());
 
         let mut last_task_progress_bp: Option<u64> = None;
         // If we have seen any progress >= 0.01% (basis point >= 1),
-        // do NOT treat "no output for 15s" as an auth prompt.
+        // do NOT treat "no output for 30s" as an auth prompt.
         let mut last_progress_bp: u64 = 0;
         let mut last_output_at = Instant::now();
         let mut idle_ticks = tokio::time::interval(Duration::from_millis(500));
@@ -842,7 +851,7 @@ impl DepotDownloader {
                         let _ = child.wait().await;
                         return Err("Cancelled".to_string());
                     }
-                    if last_output_at.elapsed() > Duration::from_secs(15) {
+                    if last_output_at.elapsed() > Duration::from_secs(30) {
                         // After progress has started, DepotDownloader may go quiet for a while
                         // (large files, disk I/O). Only fail if it stays silent for a long time.
                         if last_progress_bp >= 1 {
@@ -1011,24 +1020,8 @@ impl DepotDownloader {
         let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<(bool, String)>(); // (is_stderr, line)
-        {
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let mut r = BufReader::new(stdout).lines();
-                while let Ok(Some(line)) = r.next_line().await {
-                    let _ = tx.send((false, line));
-                }
-            });
-        }
-        {
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let mut r = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = r.next_line().await {
-                    let _ = tx.send((true, line));
-                }
-            });
-        }
+        spawn_output_reader(stdout, false, tx.clone());
+        spawn_output_reader(stderr, true, tx.clone());
 
         // Same logic as download(): once we've seen progress, don't treat short silence as auth.
         let mut last_progress_bp: u64 = 0;
@@ -1038,7 +1031,7 @@ impl DepotDownloader {
             tokio::select! {
                 s = child.wait() => break s.map_err(|e| e.to_string())?,
                 _ = idle_ticks.tick() => {
-                    if last_output_at.elapsed() > Duration::from_secs(15) {
+                    if last_output_at.elapsed() > Duration::from_secs(30) {
                         if last_progress_bp >= 1 {
                             if last_output_at.elapsed() > Duration::from_secs(300) {
                                 let _ = child.kill().await;
