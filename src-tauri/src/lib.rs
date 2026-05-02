@@ -3031,6 +3031,10 @@ fn host_open_command(program: &str) -> std::process::Command {
         "GIO_MODULE_DIR",
         "GTK_PATH",
         "LD_PRELOAD",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "PYTHONPLATLIBDIR",
+        "PYTHONSAFEPATH",
         "QT_PLUGIN_PATH",
         "QT_QPA_PLATFORM_PLUGIN_PATH",
     ] {
@@ -3082,7 +3086,7 @@ fn open_path_with_fallbacks(path: &Path, is_folder: bool) -> Result<(), String> 
                 shlex::split(&value).and_then(|parts| parts.into_iter().next())
             })
         {
-            if std::process::Command::new(editor).arg(path).spawn().is_ok() {
+            if host_open_command(&editor).arg(path).spawn().is_ok() {
                 return Ok(());
             }
         }
