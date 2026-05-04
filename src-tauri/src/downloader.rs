@@ -879,6 +879,7 @@ impl DepotDownloader {
                     last_output_at = Instant::now();
                     let l = line.to_lowercase();
                     let auth_prompt =
+                        (!l.contains("pre-allocating") && !l.contains("%")) && ( //This used to just pray the user didn't have any of these search terms in the downloaded file paths.
                         l.contains("steam guard")
                         || l.contains("two-factor")
                         || l.contains("two factor")
@@ -887,7 +888,7 @@ impl DepotDownloader {
                         || (l.contains("enter") && l.contains("password"))
                         || l.contains("authentication code")
                         || l.contains("emailed")
-                        || l.contains("use the steam mobile app to confirm");
+                        || l.contains("use the steam mobile app to confirm"));
                     if auth_prompt {
                         // Downloads are non-interactive. If Steam auth is required here,
                         // instruct the UI to run an interactive login first.
