@@ -5578,6 +5578,7 @@ pub fn run() {
             // - Purge mods that remote manifest marks as enabled=false (and their configs)
             // - Ensure default config is downloaded if shared config dir is empty
             // - Warm the Thunderstore package cache for later update checks
+            // - Make sure all pre-v73 instances are patched
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) =
@@ -5590,6 +5591,9 @@ pub fn run() {
                 }
                 if let Err(e) = installer::ensure_pack_specific_configs_on_startup(&app_handle) {
                     log::warn!("Failed to ensure pack-specific configs on startup: {e}");
+                }
+                if let Err(e) = installer::patch_all_instances(&app_handle).await {
+                    log::warn!("Failed to do a safely patch on all instances on startup: {e}");
                 }
                 match thunderstore_cache_path(&app_handle) {
                     Ok(cache_path) => {

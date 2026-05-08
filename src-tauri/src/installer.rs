@@ -1,19 +1,20 @@
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Write};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use futures_util::StreamExt;
+use futures_util::{StreamExt, TryFutureExt};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
-use crate::downloader;
+use crate::downloader::{self, DownloadTaskContext};
 use crate::mod_config::{ModEntry, ModsConfig};
 use crate::mods;
 use crate::progress::{self, TaskErrorPayload, TaskFinishedPayload, TaskProgressPayload};
-use crate::zip_utils;
+use crate::zip_utils::{self, extract_zip_with_progress};
 use progress::{emit_error, emit_finished, emit_progress};
 
 // BepInEx installation via Thunderstore BepInExPack (Mono, preconfigured).
@@ -25,6 +26,20 @@ const BEPINEXPACK_VERSION: &str = "5.4.2304";
 const BEPINEXPACK_URL: &str =
     "https://thunderstore.io/package/download/BepInEx/BepInExPack/5.4.2304/";
 const INSTALL_COMPLETE_MARKER: &str = ".hq_install_complete";
+
+#[cfg(target_os = "windows")]
+const UNITY_APP_PATCHER_URL: &str = "https://security-patches.unity.com/bc0977e0-21a9-4f6e-9414-4f44b242110a/unity-patcher/UnityApplicationPatcher-1.3.3-Win.zip";
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const UNITY_APP_PATCHER_URL: &str = "https://security-patches.unity.com/bc0977e0-21a9-4f6e-9414-4f44b242110a/unity-patcher/UnityApplicationPatcher-1.3.3-macOS-Arm64.zip";
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+const UNITY_APP_PATCHER_URL: &str = "https://security-patches.unity.com/bc0977e0-21a9-4f6e-9414-4f44b242110a/unity-patcher/UnityApplicationPatcher-1.3.3-macOS-x64.zip";
+#[cfg(target_os = "linux")]
+const UNITY_APP_PATCHER_URL: &str = "https://security-patches.unity.com/bc0977e0-21a9-4f6e-9414-4f44b242110a/unity-patcher/UnityApplicationPatcher-1.3.3-Linux.zip";
+
+#[cfg(target_os = "windows")]
+const UNITY_APP_PATCHER_NAME: &str = "UnityApplicationPatcherCLI.exe";
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const UNITY_APP_PATCHER_NAME: &str = "UnityApplicationPatcherCLI";
 
 // Proton-GE (Linux): download and extract into AppData/proton_env/proton/.
 #[cfg(target_os = "linux")]
@@ -607,8 +622,235 @@ fn shared_config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .join("shared"))
 }
 
+fn app_patcher_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
+        .join("UnityApplicationPatcher"))
+}
+
 fn plugins_dir_for_version_root(version_root: &Path) -> PathBuf {
     version_root.join("BepInEx").join("plugins")
+}
+
+async fn install_app_patcher(app: &tauri::AppHandle, cancel: Option<&Arc<AtomicBool>>, context: Option<downloader::DownloadTaskContext>) -> Result<(), String>{
+    let patcher_output_dir = app_patcher_dir(app)?;
+
+    download_app_patcher_with_progress(&patcher_output_dir, cancel, |done, total, _progress_info| {
+        let Some(context_value) = context.clone() else {
+            return;
+        };
+        let step_progress = if total == 0 {
+            1.0
+        } else {
+            (done as f64 / total as f64).clamp(0.0, 1.0)
+        };
+        emit_progress(
+            &app,
+            TaskProgressPayload {
+                version: context_value.version,
+                steps_total: context_value.steps_total,
+                step: context_value.step,
+                step_name: (&context_value.step_name).to_owned(),
+                step_progress: 1.0,
+                overall_percent: overall_from_step(context_value.step, step_progress * 0.5, context_value.steps_total),
+                detail: Some("Downloading UnityApplicationPatcher.zip".to_string()),
+                downloaded_bytes: Some(done),
+                total_bytes: Some(total),
+                extracted_files: None,
+                total_files: None,
+            },
+        );
+    }).await.map_err(|e| {if e != "Cancelled" { return format!("There was an error while downloading the Unity Application Patcher! Error: {e}").to_string(); } else { return "Cancelled".to_string(); }})?;
+        
+    let mut wants_stop = false;
+
+    extract_zip_with_progress(&patcher_output_dir.join("UnityApplicationPatcher.zip"), &patcher_output_dir, |done, total, _progress_info| {
+        let Some(context_value) = context.clone() else {
+            return;
+        };
+        
+        let step_progress = if total == 0 {
+            1.0
+        } else {
+            (done as f64 / total as f64).clamp(0.0, 1.0)
+        };
+
+        let mut detail: Option<String> = Some("Extracting UnityApplicationPatcher.zip".to_string());
+
+        if cancel.is_some_and(|c|c.load(Ordering::Relaxed)) {
+            detail = Some("Stopping...".to_string());
+            wants_stop = true;
+        }
+
+        emit_progress(
+            &app,
+            TaskProgressPayload {
+                version: context_value.version,
+                steps_total: context_value.steps_total,
+                step: context_value.step,
+                step_name: (&context_value.step_name).to_owned(),
+                step_progress: 1.0,
+                overall_percent: overall_from_step(context_value.step, step_progress * 0.5 + 0.5, context_value.steps_total),
+                detail: detail,
+                downloaded_bytes: None,
+                total_bytes: None,
+                extracted_files: Some(done),
+                total_files: Some(total),
+            },
+        );
+    })?;
+
+    let _ = std::fs::remove_file(&patcher_output_dir.join("UnityApplicationPatcher.zip"));
+
+    if !cfg!(windows) {
+        std::process::Command::new("chmod").arg("+x").arg(&patcher_output_dir.join("UnityApplicationPatcherCLI")).output().map_err(|e| { format!("Couldn't make UnityApplicationPatcherCLI executable! (chmod exited with error: {e})").to_string() })?;
+    }
+
+    if wants_stop {
+        return Err("Cancelled".to_string());
+    }
+
+    Ok(())
+}
+
+///Runs the unity app patcher on all instances below v73.
+pub async fn patch_all_instances(app: &tauri::AppHandle) -> Result<(), String> {
+    for dir in &installed_version_dirs(app)? {
+        if dir.0 > 72 {
+            continue;
+        }
+
+        patch_single_instance(app, None, &dir.1, None).await?;
+    }
+
+    Ok(())
+}
+
+///Runs the Unity Application Patcher on a specifed instance.<br/>Installes the patcher if not already installed.
+pub async fn patch_single_instance(app: &tauri::AppHandle, cancel: Option<&Arc<AtomicBool>>, version_root: &Path, context : Option<downloader::DownloadTaskContext>) -> Result<(), String> {
+    let patcher = &app_patcher_dir(&app)?.join(UNITY_APP_PATCHER_NAME);
+
+    if !Path::exists(patcher) {
+        install_app_patcher(&app, cancel, context.clone()).await?;
+    }
+
+    let unity_player_path = (&version_root).join("UnityPlayer.dll");
+    let Some(unity_player_location) = unity_player_path.to_str() else {
+        return Err("UnityPlayer.dll not found in extracted game directory!".to_string());
+    };
+
+    if let Some(context_value) = &context {
+        emit_progress(&app, TaskProgressPayload { 
+            version: context_value.version, 
+            steps_total: context_value.steps_total, 
+            step: context_value.step, 
+            step_name: context_value.step_name.to_owned(), 
+            step_progress: 1.0, 
+            overall_percent: overall_from_step(context_value.step, 1.0, context_value.steps_total), 
+            detail: Some("Running UnityApplicationPatcherCLI...".to_string()), 
+            downloaded_bytes: None, 
+            total_bytes: None, 
+            extracted_files: None, 
+            total_files: None 
+        });
+    }
+
+    log::info!("Patching {unity_player_location}...");
+
+    let patcher_output = std::process::Command::new(patcher).arg("-windows").arg("-unityPlayerLibrary").arg(unity_player_location).stdout(Stdio::piped()).output().map_err(|e| format!("There was an error running the the Unity Application Patcher! Error: {e}").to_string())?;
+
+    let stdout = String::from_utf8(patcher_output.stdout).map_err(|e| format!("Couldn't parse UnityApplicationPatcher's stdout to string. Error: {e}"))?;
+
+    let split_stdout = stdout.split('\n').collect::<Vec<&str>>();
+
+    let exit_msg = split_stdout[split_stdout.len() - 4];
+    _ = std::io::stderr().write_all(&patcher_output.stderr);
+
+    if let Some(patcher_exit_code) = patcher_output.status.code() {
+        log::info!("[UnityApplicationPatcherCLI] : {exit_msg}");
+
+        if !exit_msg.contains("already patched") && !exit_msg.contains("Success") {
+            log::error!("Patcher exited with error code {patcher_exit_code}!");
+            return Err(format!("UnityApplicationPatcher exited with error code {patcher_exit_code}!").to_string());
+        }
+    }
+
+    Ok(())
+}
+
+///Downloads the Unity Application Patcher from `UNITY_APP_PATCHER_URL`<br/>Updates the on_progress callback with args `downloaded_bytes, total_bytes, details
+async fn download_app_patcher_with_progress<F>(
+    output_dir: &Path,
+    cancel: Option<&Arc<AtomicBool>>,
+    mut on_progress: F
+) -> Result<(), String>
+where
+    F: FnMut(u64, u64, Option<String>), {
+
+    let response = reqwest::Client::builder().build()
+        .map_err(|e| format!("download_app_patcher: Error while building client: {e}"))?
+        .get(UNITY_APP_PATCHER_URL)
+        .send()
+        .map_err(|_e|format!("download_app_patcher: Error while making request to download the UnityApplicationPatcher from URL: {UNITY_APP_PATCHER_URL}")).await?;
+
+    let mut recieved_bytes: Vec<u8> = Vec::new();
+
+    if let Some(total_size) = response.content_length() {
+        let mut downloaded: u64 = 0;
+        let mut stream = response.bytes_stream();
+
+        on_progress(0, total_size, Some("Starting...".to_string()));
+
+        while let Some(item) = stream.next().await {
+            let chunk = item.map_err(|e| format!("Stream error: {e}"))?;
+            recieved_bytes.append(&mut chunk.to_vec());
+            downloaded += chunk.len() as u64;     
+            on_progress(downloaded, total_size, None);
+
+            if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                return Err("Cancelled".to_string());
+            }
+        }
+
+        on_progress(downloaded, total_size, Some("Done!".to_string()));
+
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return Err("Cancelled".to_string());
+        }
+    } else {
+        log::warn!("download_app_patcher_with_progress: Couldn't recieve Content-Length header! Won't be able to report download progress.");
+
+        on_progress(0, 1, Some("Starting...".to_string()));
+        recieved_bytes.append(&mut response.bytes().map_err(|e| format!("Error reading bytes from UnityApplicationPatcher download. Error: {e}").to_string()).await?.to_vec());
+        on_progress(1, 1, Some("Done!".to_string()));
+
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return Err("Cancelled".to_string());
+        }
+
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(output_dir).map_err(|e|format!("Couldn't create the install directories for the Unity Application Patcher. Error: {e}").to_string())?;
+
+    let final_path = Path::new(output_dir).join("UnityApplicationPatcher.zip");
+
+    std::fs::write(&final_path, recieved_bytes).map_err(|e|format!("Error writing UnityApplicationPatcher.zip to disk: {e}").to_string())?;
+
+    {
+        use std::io::Read as _;
+        let mut f = std::fs::File::open(&final_path).map_err(|e| e.to_string())?;
+        let mut header = [0u8; 4];
+        let n = f.read(&mut header).map_err(|e| e.to_string())?;
+        if n < 2 || header[0] != b'P' || header[1] != b'K' {
+            let _ = std::fs::remove_file(final_path);
+            return Err("UnityApplicationPatcher download is not a valid zip (got non-zip response). Please retry.".to_string(),);
+        }
+    }
+
+    Ok(())
 }
 
 fn delete_config_files_for_mod(shared_config: &Path, dev: &str, name: &str) -> Result<u64, String> {
@@ -1505,8 +1747,8 @@ pub async fn download_and_setup(
         }
         let extract_dir = partial_dir.clone();
 
-        // Download -> Extract Game -> Install BepInEx -> Install Config -> Install Mods
-        const STEPS_TOTAL: u32 = 5;
+        // Download -> Extract Game -> Patch Pre-v73 Instances -> Install BepInEx -> Install Config -> Install Mods
+        const STEPS_TOTAL: u32 = 6;
 
         // Step 1: Steam 로그인 확인
         emit_progress(
@@ -1626,16 +1868,59 @@ pub async fn download_and_setup(
             },
         );
 
-        // Step 3: BepInEx 다운로드 및 설치
+        // Step 3: Patch security flaw (for older versions)
+        emit_progress(&app, TaskProgressPayload { 
+            version: version, 
+            steps_total: STEPS_TOTAL, 
+            step: 3, 
+            step_name: "Patching".to_string(), 
+            step_progress: 0.0, 
+            overall_percent: overall_from_step(3, 0.0, STEPS_TOTAL), 
+            detail: Some(format!("Downloading the Unity Application Patcher from URL: {UNITY_APP_PATCHER_URL}")),
+            downloaded_bytes: None, 
+            total_bytes: None, 
+            extracted_files: None, 
+            total_files: None 
+        });
+
+        if version < 73 {
+            patch_single_instance(&app, Some(&cancel), &extract_dir, Some(DownloadTaskContext {
+                version: version,
+                steps_total: STEPS_TOTAL,
+                step: 3,
+                step_name: "Patching".to_string()
+            })).await?;
+        } else {
+            log::info!("Skipping applying patch, version is above v72.");
+        }
+
+        emit_progress(
+            &app,
+            TaskProgressPayload {
+                version: version,
+                steps_total: STEPS_TOTAL,
+                step: 3,
+                step_name: "Patching".to_string(),
+                step_progress: 1.0,
+                overall_percent: overall_from_step(3, 1.0, STEPS_TOTAL),
+                detail: Some(format!("Done Patching!").to_string()),
+                downloaded_bytes: None,
+                total_bytes: None,
+                extracted_files: None,
+                total_files: None,
+            },
+        );
+
+        // Step 4: BepInEx 다운로드 및 설치
         emit_progress(
             &app,
             TaskProgressPayload {
                 version,
                 steps_total: STEPS_TOTAL,
-                step: 3,
+                step: 4,
                 step_name: "Install BepInEx".to_string(),
                 step_progress: 0.0,
-                overall_percent: overall_from_step(3, 0.0, STEPS_TOTAL),
+                overall_percent: overall_from_step(4, 0.0, STEPS_TOTAL),
                 detail: Some("Downloading BepInEx...".to_string()),
                 downloaded_bytes: Some(0),
                 total_bytes: None,
@@ -1696,10 +1981,10 @@ pub async fn download_and_setup(
                 TaskProgressPayload {
                     version,
                     steps_total: STEPS_TOTAL,
-                    step: 3,
+                    step: 4,
                     step_name: "Install BepInEx".to_string(),
                     step_progress: step_progress * 0.5, // download = 0~50%
-                    overall_percent: overall_from_step(3, step_progress * 0.5, STEPS_TOTAL),
+                    overall_percent: overall_from_step(4, step_progress * 0.5, STEPS_TOTAL),
                     detail: Some(format!(
                         "Downloading BepInExPack... {} MB",
                         downloaded / 1024 / 1024
@@ -1756,10 +2041,10 @@ pub async fn download_and_setup(
                         TaskProgressPayload {
                             version,
                             steps_total: STEPS_TOTAL,
-                            step: 3,
+                            step: 4,
                             step_name: "Install BepInEx".to_string(),
                             step_progress,
-                            overall_percent: overall_from_step(3, step_progress, STEPS_TOTAL),
+                            overall_percent: overall_from_step(4, step_progress, STEPS_TOTAL),
                             detail: detail.map(|d| format!("Extracting BepInExPack... {d}")),
                             downloaded_bytes: None,
                             total_bytes: None,
@@ -1784,10 +2069,10 @@ pub async fn download_and_setup(
             TaskProgressPayload {
                 version,
                 steps_total: STEPS_TOTAL,
-                step: 3,
+                step: 4,
                 step_name: "Install BepInEx".to_string(),
                 step_progress: 1.0,
-                overall_percent: overall_from_step(3, 1.0, STEPS_TOTAL),
+                overall_percent: overall_from_step(4, 1.0, STEPS_TOTAL),
                 detail: Some(format!("BepInExPack {} installed", BEPINEXPACK_VERSION)),
                 downloaded_bytes: None,
                 total_bytes: None,
@@ -1796,16 +2081,16 @@ pub async fn download_and_setup(
             },
         );
 
-        // Step 4: Config junction 설정 (config 다운로드는 앱 시작 시 별도로 처리)
+        // Step 5: Config junction 설정 (config 다운로드는 앱 시작 시 별도로 처리)
         emit_progress(
             &app,
             TaskProgressPayload {
                 version,
                 steps_total: STEPS_TOTAL,
-                step: 4,
+                step: 5,
                 step_name: "Install Config".to_string(),
                 step_progress: 0.0,
-                overall_percent: overall_from_step(4, 0.0, STEPS_TOTAL),
+                overall_percent: overall_from_step(5, 0.0, STEPS_TOTAL),
                 detail: Some("Setting up config junction...".to_string()),
                 downloaded_bytes: None,
                 total_bytes: None,
@@ -1823,10 +2108,10 @@ pub async fn download_and_setup(
             TaskProgressPayload {
                 version,
                 steps_total: STEPS_TOTAL,
-                step: 4,
+                step: 5,
                 step_name: "Install Config".to_string(),
                 step_progress: 1.0,
-                overall_percent: overall_from_step(4, 1.0, STEPS_TOTAL),
+                overall_percent: overall_from_step(5, 1.0, STEPS_TOTAL),
                 detail: Some("Config junction ready".to_string()),
                 downloaded_bytes: None,
                 total_bytes: None,
@@ -1835,16 +2120,16 @@ pub async fn download_and_setup(
             },
         );
 
-        // Step 5: Mods 설치
+        // Step 6: Mods 설치
         emit_progress(
             &app,
             TaskProgressPayload {
                 version,
                 steps_total: STEPS_TOTAL,
-                step: 5,
+                step: 6,
                 step_name: "Install Mods".to_string(),
                 step_progress: 0.0,
-                overall_percent: overall_from_step(5, 0.0, STEPS_TOTAL),
+                overall_percent: overall_from_step(6, 0.0, STEPS_TOTAL),
                 detail: Some("Installing plugins...".to_string()),
                 downloaded_bytes: None,
                 total_bytes: None,
@@ -1878,10 +2163,10 @@ pub async fn download_and_setup(
                     TaskProgressPayload {
                         version,
                         steps_total: STEPS_TOTAL,
-                        step: 5,
+                        step: 6,
                         step_name: "Install Mods".to_string(),
                         step_progress,
-                        overall_percent: overall_from_step(5, step_progress, STEPS_TOTAL),
+                        overall_percent: overall_from_step(6, step_progress, STEPS_TOTAL),
                         detail: progress_info.detail,
                         downloaded_bytes: progress_info.downloaded_bytes,
                         total_bytes: progress_info.total_bytes,
@@ -1918,10 +2203,10 @@ pub async fn download_and_setup(
             TaskProgressPayload {
                 version,
                 steps_total: STEPS_TOTAL,
-                step: 5,
+                step: 6,
                 step_name: "Install Mods".to_string(),
                 step_progress: 1.0,
-                overall_percent: overall_from_step(5, 1.0, STEPS_TOTAL),
+                overall_percent: overall_from_step(6, 1.0, STEPS_TOTAL),
                 detail: Some("Mods installed".to_string()),
                 downloaded_bytes: None,
                 total_bytes: None,
