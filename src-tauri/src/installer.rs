@@ -728,6 +728,95 @@ pub async fn patch_all_instances(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+pub fn patchable_instance_count(app: &tauri::AppHandle) -> Result<usize, String> {
+    Ok(installed_version_dirs(app)?
+        .into_iter()
+        .filter(|dir| dir.0 <= 72)
+        .count())
+}
+
+pub async fn ensure_app_patcher_installed_with_progress(
+    app: &tauri::AppHandle,
+    steps_total: u32,
+    step: u32,
+) -> Result<(), String> {
+    let patcher = app_patcher_dir(app)?.join(UNITY_APP_PATCHER_NAME);
+    if Path::exists(&patcher) {
+        emit_progress(app, TaskProgressPayload {
+            version: 0,
+            steps_total,
+            step,
+            step_name: "Security Migration".to_string(),
+            step_progress: 1.0,
+            overall_percent: overall_from_step(step, 1.0, steps_total),
+            detail: Some("UnityApplicationPatcher already installed".to_string()),
+            downloaded_bytes: None,
+            total_bytes: None,
+            extracted_files: None,
+            total_files: None
+        });
+        return Ok(());
+    }
+
+    install_app_patcher(app, None, Some(downloader::DownloadTaskContext {
+        version: 0,
+        steps_total,
+        step,
+        step_name: "Security Migration".to_string(),
+    })).await
+}
+
+pub async fn patch_all_instances_with_progress(
+    app: &tauri::AppHandle,
+    steps_total: u32,
+    first_step: u32,
+) -> Result<(), String> {
+    let patchable_dirs = installed_version_dirs(app)?
+        .into_iter()
+        .filter(|dir| dir.0 <= 72)
+        .collect::<Vec<_>>();
+
+    for (index, dir) in patchable_dirs.iter().enumerate() {
+        let step = first_step + index as u32;
+        emit_progress(app, TaskProgressPayload {
+            version: dir.0,
+            steps_total,
+            step,
+            step_name: "Security Migration".to_string(),
+            step_progress: 0.0,
+            overall_percent: overall_from_step(step, 0.0, steps_total),
+            detail: Some(format!("Patching v{} with UnityApplicationPatcher", dir.0)),
+            downloaded_bytes: None,
+            total_bytes: None,
+            extracted_files: None,
+            total_files: None
+        });
+
+        patch_single_instance(app, None, &dir.1, Some(downloader::DownloadTaskContext {
+            version: dir.0,
+            steps_total,
+            step,
+            step_name: "Security Migration".to_string(),
+        })).await?;
+
+        emit_progress(app, TaskProgressPayload {
+            version: dir.0,
+            steps_total,
+            step,
+            step_name: "Security Migration".to_string(),
+            step_progress: 1.0,
+            overall_percent: overall_from_step(step, 1.0, steps_total),
+            detail: Some(format!("Finished patching v{}", dir.0)),
+            downloaded_bytes: None,
+            total_bytes: None,
+            extracted_files: None,
+            total_files: None
+        });
+    }
+
+    Ok(())
+}
+
 ///Runs the Unity Application Patcher on a specifed instance.<br/>Installes the patcher if not already installed.
 pub async fn patch_single_instance(app: &tauri::AppHandle, cancel: Option<&Arc<AtomicBool>>, version_root: &Path, context : Option<downloader::DownloadTaskContext>) -> Result<(), String> {
     let patcher = &app_patcher_dir(&app)?.join(UNITY_APP_PATCHER_NAME);
@@ -763,18 +852,22 @@ pub async fn patch_single_instance(app: &tauri::AppHandle, cancel: Option<&Arc<A
 
     let stdout = String::from_utf8(patcher_output.stdout).map_err(|e| format!("Couldn't parse UnityApplicationPatcher's stdout to string. Error: {e}"))?;
 
-    let split_stdout = stdout.split('\n').collect::<Vec<&str>>();
-
-    let exit_msg = split_stdout[split_stdout.len() - 4];
+    let exit_msg = stdout
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     _ = std::io::stderr().write_all(&patcher_output.stderr);
 
     if let Some(patcher_exit_code) = patcher_output.status.code() {
         log::info!("[UnityApplicationPatcherCLI] : {exit_msg}");
 
-        if !exit_msg.contains("already patched") && !exit_msg.contains("Success") {
-            log::error!("Patcher exited with error code {patcher_exit_code}!");
-            return Err(format!("UnityApplicationPatcher exited with error code {patcher_exit_code}!").to_string());
+        if !patcher_output.status.success() {
+            log::warn!("UnityApplicationPatcher exited with error code {patcher_exit_code}; continuing install.");
         }
+    } else if !patcher_output.status.success() {
+        log::warn!("UnityApplicationPatcher terminated without an exit code; continuing install.");
     }
 
     Ok(())

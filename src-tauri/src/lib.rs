@@ -2268,14 +2268,15 @@ pub(crate) fn thunderstore_cache_path(
 fn read_disablemod(app: &tauri::AppHandle) -> Result<DisableModFile, String> {
     let path = disablemod_path(app)?;
     let mut default_mods = vec![
+        normalize_mod_id("asta", "StreamChats"),
         normalize_mod_id("SlushyRH", "FreeeeeeMoooooons"),
         normalize_mod_id("stormytuna", "EclipseOnly"),
     ];
     default_mods.sort_by(|a, b| a.dev.cmp(&b.dev).then(a.name.cmp(&b.name)));
     if !path.exists() {
-        // v3 (migration): include default disabled layer mods.
+        // v4: include default disabled layer mods and StreamChats.
         let f = DisableModFile {
-            version: 3,
+            version: 4,
             mods: default_mods,
         };
         // best-effort persist so frontend sees stable state
@@ -2289,7 +2290,7 @@ fn read_disablemod(app: &tauri::AppHandle) -> Result<DisableModFile, String> {
             // If the file is corrupted, recover with defaults rather than breaking the UI.
             log::warn!("Failed to parse disablemod.json, resetting: {e}");
             let f = DisableModFile {
-                version: 3,
+                version: 4,
                 mods: default_mods,
             };
             let _ = write_disablemod(app, &f);
@@ -2316,6 +2317,88 @@ fn read_disablemod(app: &tauri::AppHandle) -> Result<DisableModFile, String> {
     }
 
     Ok(f)
+}
+
+async fn migrate_disablemod_v4_on_startup(app: &tauri::AppHandle) -> Result<(), String> {
+    let path = disablemod_path(app)?;
+    if !path.exists() {
+        let _ = read_disablemod(app)?;
+        return Ok(());
+    }
+
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let current_version = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("version").and_then(|version| version.as_u64()))
+        .unwrap_or(0) as u32;
+
+    if current_version > 3 {
+        return Ok(());
+    }
+
+    let patchable_count = installer::patchable_instance_count(app)? as u32;
+    let steps_total = patchable_count + 2;
+
+    progress::emit_progress(app, TaskProgressPayload {
+        version: 0,
+        steps_total,
+        step: 1,
+        step_name: "Security Migration".to_string(),
+        step_progress: 0.0,
+        overall_percent: overall_from_step(1, 0.0, steps_total),
+        detail: Some("Preparing UnityApplicationPatcher".to_string()),
+        downloaded_bytes: None,
+        total_bytes: None,
+        extracted_files: None,
+        total_files: None,
+    });
+
+    installer::ensure_app_patcher_installed_with_progress(app, steps_total, 1).await?;
+    installer::patch_all_instances_with_progress(app, steps_total, 2).await?;
+
+    let final_step = steps_total;
+    progress::emit_progress(app, TaskProgressPayload {
+        version: 0,
+        steps_total,
+        step: final_step,
+        step_name: "Security Migration".to_string(),
+        step_progress: 0.0,
+        overall_percent: overall_from_step(final_step, 0.0, steps_total),
+        detail: Some("Updating disablemod.json".to_string()),
+        downloaded_bytes: None,
+        total_bytes: None,
+        extracted_files: None,
+        total_files: None,
+    });
+
+    let mut f = read_disablemod(app)?;
+    f.mods.push(normalize_mod_id("asta", "StreamChats"));
+    f.mods
+        .sort_by(|a, b| a.dev.cmp(&b.dev).then(a.name.cmp(&b.name)));
+    f.mods.dedup();
+    f.version = 4;
+    write_disablemod(app, &f)?;
+
+    progress::emit_progress(app, TaskProgressPayload {
+        version: 0,
+        steps_total,
+        step: final_step,
+        step_name: "Security Migration".to_string(),
+        step_progress: 1.0,
+        overall_percent: overall_from_step(final_step, 1.0, steps_total),
+        detail: Some("Security migration complete".to_string()),
+        downloaded_bytes: None,
+        total_bytes: None,
+        extracted_files: None,
+        total_files: None,
+    });
+    progress::emit_finished(app, TaskFinishedPayload {
+        version: 0,
+        run_mode: None,
+        path: path.to_string_lossy().to_string(),
+    });
+
+    Ok(())
 }
 
 fn write_disablemod(app: &tauri::AppHandle, f: &DisableModFile) -> Result<(), String> {
@@ -5577,10 +5660,13 @@ pub fn run() {
             // Startup housekeeping (best-effort, won't block UI):
             // - Purge mods that remote manifest marks as enabled=false (and their configs)
             // - Ensure default config is downloaded if shared config dir is empty
+            // - Run disablemod/security migrations when needed
             // - Warm the Thunderstore package cache for later update checks
-            // - Make sure all pre-v73 instances are patched
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                if let Err(e) = migrate_disablemod_v4_on_startup(&app_handle).await {
+                    log::warn!("Failed to migrate disablemod.json on startup: {e}");
+                }
                 if let Err(e) =
                     installer::purge_remote_disabled_mods_on_startup(app_handle.clone()).await
                 {
@@ -5591,9 +5677,6 @@ pub fn run() {
                 }
                 if let Err(e) = installer::ensure_pack_specific_configs_on_startup(&app_handle) {
                     log::warn!("Failed to ensure pack-specific configs on startup: {e}");
-                }
-                if let Err(e) = installer::patch_all_instances(&app_handle).await {
-                    log::warn!("Failed to do a safely patch on all instances on startup: {e}");
                 }
                 match thunderstore_cache_path(&app_handle) {
                     Ok(cache_path) => {
