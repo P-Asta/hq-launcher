@@ -2194,7 +2194,6 @@ pub async fn download_and_setup(
                 total_files: None,
             },
         );
-
         // Config directory is a junction to AppData/config/shared.
         // Config files are downloaded separately on app startup if needed.
         let _shared = ensure_config_junction(&app, &extract_dir)?;
