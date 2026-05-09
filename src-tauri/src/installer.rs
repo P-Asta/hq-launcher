@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -73,7 +73,7 @@ fn base_mods_config_for_version(mods_cfg: ModsConfig, game_version: u32) -> Mods
             .into_iter()
             .filter(|mod_entry| {
                 (!mod_has_run_mode_affinity(mod_entry) || mod_entry.tags.is_empty())
-                    && mod_entry.is_compatible(game_version)
+                    && mod_entry.is_install_compatible(game_version)
             })
             .collect(),
     }
@@ -630,77 +630,105 @@ fn app_patcher_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .join("UnityApplicationPatcher"))
 }
 
-fn plugins_dir_for_version_root(version_root: &Path) -> PathBuf {
-    version_root.join("BepInEx").join("plugins")
-}
-
-async fn install_app_patcher(app: &tauri::AppHandle, cancel: Option<&Arc<AtomicBool>>, context: Option<downloader::DownloadTaskContext>) -> Result<(), String>{
+async fn install_app_patcher(
+    app: &tauri::AppHandle,
+    cancel: Option<&Arc<AtomicBool>>,
+    context: Option<downloader::DownloadTaskContext>,
+) -> Result<(), String> {
     let patcher_output_dir = app_patcher_dir(app)?;
 
-    download_app_patcher_with_progress(&patcher_output_dir, cancel, |done, total, _progress_info| {
-        let Some(context_value) = context.clone() else {
-            return;
-        };
-        let step_progress = if total == 0 {
-            1.0
+    download_app_patcher_with_progress(
+        &patcher_output_dir,
+        cancel,
+        |done, total, _progress_info| {
+            let Some(context_value) = context.clone() else {
+                return;
+            };
+            let step_progress = if total == 0 {
+                1.0
+            } else {
+                (done as f64 / total as f64).clamp(0.0, 1.0)
+            };
+            emit_progress(
+                &app,
+                TaskProgressPayload {
+                    version: context_value.version,
+                    steps_total: context_value.steps_total,
+                    step: context_value.step,
+                    step_name: (&context_value.step_name).to_owned(),
+                    step_progress: 1.0,
+                    overall_percent: overall_from_step(
+                        context_value.step,
+                        step_progress * 0.5,
+                        context_value.steps_total,
+                    ),
+                    detail: Some("Downloading UnityApplicationPatcher.zip".to_string()),
+                    downloaded_bytes: Some(done),
+                    total_bytes: Some(total),
+                    extracted_files: None,
+                    total_files: None,
+                },
+            );
+        },
+    )
+    .await
+    .map_err(|e| {
+        if e != "Cancelled" {
+            return format!(
+                "There was an error while downloading the Unity Application Patcher! Error: {e}"
+            )
+            .to_string();
         } else {
-            (done as f64 / total as f64).clamp(0.0, 1.0)
-        };
-        emit_progress(
-            &app,
-            TaskProgressPayload {
-                version: context_value.version,
-                steps_total: context_value.steps_total,
-                step: context_value.step,
-                step_name: (&context_value.step_name).to_owned(),
-                step_progress: 1.0,
-                overall_percent: overall_from_step(context_value.step, step_progress * 0.5, context_value.steps_total),
-                detail: Some("Downloading UnityApplicationPatcher.zip".to_string()),
-                downloaded_bytes: Some(done),
-                total_bytes: Some(total),
-                extracted_files: None,
-                total_files: None,
-            },
-        );
-    }).await.map_err(|e| {if e != "Cancelled" { return format!("There was an error while downloading the Unity Application Patcher! Error: {e}").to_string(); } else { return "Cancelled".to_string(); }})?;
-        
+            return "Cancelled".to_string();
+        }
+    })?;
+
     let mut wants_stop = false;
 
-    extract_zip_with_progress(&patcher_output_dir.join("UnityApplicationPatcher.zip"), &patcher_output_dir, |done, total, _progress_info| {
-        let Some(context_value) = context.clone() else {
-            return;
-        };
-        
-        let step_progress = if total == 0 {
-            1.0
-        } else {
-            (done as f64 / total as f64).clamp(0.0, 1.0)
-        };
+    extract_zip_with_progress(
+        &patcher_output_dir.join("UnityApplicationPatcher.zip"),
+        &patcher_output_dir,
+        |done, total, _progress_info| {
+            let Some(context_value) = context.clone() else {
+                return;
+            };
 
-        let mut detail: Option<String> = Some("Extracting UnityApplicationPatcher.zip".to_string());
+            let step_progress = if total == 0 {
+                1.0
+            } else {
+                (done as f64 / total as f64).clamp(0.0, 1.0)
+            };
 
-        if cancel.is_some_and(|c|c.load(Ordering::Relaxed)) {
-            detail = Some("Stopping...".to_string());
-            wants_stop = true;
-        }
+            let mut detail: Option<String> =
+                Some("Extracting UnityApplicationPatcher.zip".to_string());
 
-        emit_progress(
-            &app,
-            TaskProgressPayload {
-                version: context_value.version,
-                steps_total: context_value.steps_total,
-                step: context_value.step,
-                step_name: (&context_value.step_name).to_owned(),
-                step_progress: 1.0,
-                overall_percent: overall_from_step(context_value.step, step_progress * 0.5 + 0.5, context_value.steps_total),
-                detail: detail,
-                downloaded_bytes: None,
-                total_bytes: None,
-                extracted_files: Some(done),
-                total_files: Some(total),
-            },
-        );
-    })?;
+            if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                detail = Some("Stopping...".to_string());
+                wants_stop = true;
+            }
+
+            emit_progress(
+                &app,
+                TaskProgressPayload {
+                    version: context_value.version,
+                    steps_total: context_value.steps_total,
+                    step: context_value.step,
+                    step_name: (&context_value.step_name).to_owned(),
+                    step_progress: 1.0,
+                    overall_percent: overall_from_step(
+                        context_value.step,
+                        step_progress * 0.5 + 0.5,
+                        context_value.steps_total,
+                    ),
+                    detail: detail,
+                    downloaded_bytes: None,
+                    total_bytes: None,
+                    extracted_files: Some(done),
+                    total_files: Some(total),
+                },
+            );
+        },
+    )?;
 
     let _ = std::fs::remove_file(&patcher_output_dir.join("UnityApplicationPatcher.zip"));
 
@@ -742,28 +770,36 @@ pub async fn ensure_app_patcher_installed_with_progress(
 ) -> Result<(), String> {
     let patcher = app_patcher_dir(app)?.join(UNITY_APP_PATCHER_NAME);
     if Path::exists(&patcher) {
-        emit_progress(app, TaskProgressPayload {
+        emit_progress(
+            app,
+            TaskProgressPayload {
+                version: 0,
+                steps_total,
+                step,
+                step_name: "Security Migration".to_string(),
+                step_progress: 1.0,
+                overall_percent: overall_from_step(step, 1.0, steps_total),
+                detail: Some("UnityApplicationPatcher already installed".to_string()),
+                downloaded_bytes: None,
+                total_bytes: None,
+                extracted_files: None,
+                total_files: None,
+            },
+        );
+        return Ok(());
+    }
+
+    install_app_patcher(
+        app,
+        None,
+        Some(downloader::DownloadTaskContext {
             version: 0,
             steps_total,
             step,
             step_name: "Security Migration".to_string(),
-            step_progress: 1.0,
-            overall_percent: overall_from_step(step, 1.0, steps_total),
-            detail: Some("UnityApplicationPatcher already installed".to_string()),
-            downloaded_bytes: None,
-            total_bytes: None,
-            extracted_files: None,
-            total_files: None
-        });
-        return Ok(());
-    }
-
-    install_app_patcher(app, None, Some(downloader::DownloadTaskContext {
-        version: 0,
-        steps_total,
-        step,
-        step_name: "Security Migration".to_string(),
-    })).await
+        }),
+    )
+    .await
 }
 
 pub async fn patch_all_instances_with_progress(
@@ -778,47 +814,64 @@ pub async fn patch_all_instances_with_progress(
 
     for (index, dir) in patchable_dirs.iter().enumerate() {
         let step = first_step + index as u32;
-        emit_progress(app, TaskProgressPayload {
-            version: dir.0,
-            steps_total,
-            step,
-            step_name: "Security Migration".to_string(),
-            step_progress: 0.0,
-            overall_percent: overall_from_step(step, 0.0, steps_total),
-            detail: Some(format!("Patching v{} with UnityApplicationPatcher", dir.0)),
-            downloaded_bytes: None,
-            total_bytes: None,
-            extracted_files: None,
-            total_files: None
-        });
+        emit_progress(
+            app,
+            TaskProgressPayload {
+                version: dir.0,
+                steps_total,
+                step,
+                step_name: "Security Migration".to_string(),
+                step_progress: 0.0,
+                overall_percent: overall_from_step(step, 0.0, steps_total),
+                detail: Some(format!("Patching v{} with UnityApplicationPatcher", dir.0)),
+                downloaded_bytes: None,
+                total_bytes: None,
+                extracted_files: None,
+                total_files: None,
+            },
+        );
 
-        patch_single_instance(app, None, &dir.1, Some(downloader::DownloadTaskContext {
-            version: dir.0,
-            steps_total,
-            step,
-            step_name: "Security Migration".to_string(),
-        })).await?;
+        patch_single_instance(
+            app,
+            None,
+            &dir.1,
+            Some(downloader::DownloadTaskContext {
+                version: dir.0,
+                steps_total,
+                step,
+                step_name: "Security Migration".to_string(),
+            }),
+        )
+        .await?;
 
-        emit_progress(app, TaskProgressPayload {
-            version: dir.0,
-            steps_total,
-            step,
-            step_name: "Security Migration".to_string(),
-            step_progress: 1.0,
-            overall_percent: overall_from_step(step, 1.0, steps_total),
-            detail: Some(format!("Finished patching v{}", dir.0)),
-            downloaded_bytes: None,
-            total_bytes: None,
-            extracted_files: None,
-            total_files: None
-        });
+        emit_progress(
+            app,
+            TaskProgressPayload {
+                version: dir.0,
+                steps_total,
+                step,
+                step_name: "Security Migration".to_string(),
+                step_progress: 1.0,
+                overall_percent: overall_from_step(step, 1.0, steps_total),
+                detail: Some(format!("Finished patching v{}", dir.0)),
+                downloaded_bytes: None,
+                total_bytes: None,
+                extracted_files: None,
+                total_files: None,
+            },
+        );
     }
 
     Ok(())
 }
 
 ///Runs the Unity Application Patcher on a specifed instance.<br/>Installes the patcher if not already installed.
-pub async fn patch_single_instance(app: &tauri::AppHandle, cancel: Option<&Arc<AtomicBool>>, version_root: &Path, context : Option<downloader::DownloadTaskContext>) -> Result<(), String> {
+pub async fn patch_single_instance(
+    app: &tauri::AppHandle,
+    cancel: Option<&Arc<AtomicBool>>,
+    version_root: &Path,
+    context: Option<downloader::DownloadTaskContext>,
+) -> Result<(), String> {
     let patcher = &app_patcher_dir(&app)?.join(UNITY_APP_PATCHER_NAME);
 
     if !Path::exists(patcher) {
@@ -831,26 +884,44 @@ pub async fn patch_single_instance(app: &tauri::AppHandle, cancel: Option<&Arc<A
     };
 
     if let Some(context_value) = &context {
-        emit_progress(&app, TaskProgressPayload { 
-            version: context_value.version, 
-            steps_total: context_value.steps_total, 
-            step: context_value.step, 
-            step_name: context_value.step_name.to_owned(), 
-            step_progress: 1.0, 
-            overall_percent: overall_from_step(context_value.step, 1.0, context_value.steps_total), 
-            detail: Some("Running UnityApplicationPatcherCLI...".to_string()), 
-            downloaded_bytes: None, 
-            total_bytes: None, 
-            extracted_files: None, 
-            total_files: None 
-        });
+        emit_progress(
+            &app,
+            TaskProgressPayload {
+                version: context_value.version,
+                steps_total: context_value.steps_total,
+                step: context_value.step,
+                step_name: context_value.step_name.to_owned(),
+                step_progress: 1.0,
+                overall_percent: overall_from_step(
+                    context_value.step,
+                    1.0,
+                    context_value.steps_total,
+                ),
+                detail: Some("Running UnityApplicationPatcherCLI...".to_string()),
+                downloaded_bytes: None,
+                total_bytes: None,
+                extracted_files: None,
+                total_files: None,
+            },
+        );
     }
 
     log::info!("Patching {unity_player_location}...");
 
-    let patcher_output = std::process::Command::new(patcher).arg("-windows").arg("-unityPlayerLibrary").arg(unity_player_location).stdout(Stdio::piped()).output().map_err(|e| format!("There was an error running the the Unity Application Patcher! Error: {e}").to_string())?;
+    let patcher_output = std::process::Command::new(patcher)
+        .arg("-windows")
+        .arg("-unityPlayerLibrary")
+        .arg(unity_player_location)
+        .stdout(Stdio::piped())
+        .output()
+        .map_err(|e| {
+            format!("There was an error running the the Unity Application Patcher! Error: {e}")
+                .to_string()
+        })?;
 
-    let stdout = String::from_utf8(patcher_output.stdout).map_err(|e| format!("Couldn't parse UnityApplicationPatcher's stdout to string. Error: {e}"))?;
+    let stdout = String::from_utf8(patcher_output.stdout).map_err(|e| {
+        format!("Couldn't parse UnityApplicationPatcher's stdout to string. Error: {e}")
+    })?;
 
     let exit_msg = stdout
         .lines()
@@ -877,11 +948,11 @@ pub async fn patch_single_instance(app: &tauri::AppHandle, cancel: Option<&Arc<A
 async fn download_app_patcher_with_progress<F>(
     output_dir: &Path,
     cancel: Option<&Arc<AtomicBool>>,
-    mut on_progress: F
+    mut on_progress: F,
 ) -> Result<(), String>
 where
-    F: FnMut(u64, u64, Option<String>), {
-
+    F: FnMut(u64, u64, Option<String>),
+{
     let response = reqwest::Client::builder().build()
         .map_err(|e| format!("download_app_patcher: Error while building client: {e}"))?
         .get(UNITY_APP_PATCHER_URL)
@@ -899,7 +970,7 @@ where
         while let Some(item) = stream.next().await {
             let chunk = item.map_err(|e| format!("Stream error: {e}"))?;
             recieved_bytes.append(&mut chunk.to_vec());
-            downloaded += chunk.len() as u64;     
+            downloaded += chunk.len() as u64;
             on_progress(downloaded, total_size, None);
 
             if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
@@ -916,7 +987,16 @@ where
         log::warn!("download_app_patcher_with_progress: Couldn't recieve Content-Length header! Won't be able to report download progress.");
 
         on_progress(0, 1, Some("Starting...".to_string()));
-        recieved_bytes.append(&mut response.bytes().map_err(|e| format!("Error reading bytes from UnityApplicationPatcher download. Error: {e}").to_string()).await?.to_vec());
+        recieved_bytes.append(
+            &mut response
+                .bytes()
+                .map_err(|e| {
+                    format!("Error reading bytes from UnityApplicationPatcher download. Error: {e}")
+                        .to_string()
+                })
+                .await?
+                .to_vec(),
+        );
         on_progress(1, 1, Some("Done!".to_string()));
 
         if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
@@ -926,11 +1006,18 @@ where
         return Ok(());
     }
 
-    std::fs::create_dir_all(output_dir).map_err(|e|format!("Couldn't create the install directories for the Unity Application Patcher. Error: {e}").to_string())?;
+    std::fs::create_dir_all(output_dir).map_err(|e| {
+        format!(
+            "Couldn't create the install directories for the Unity Application Patcher. Error: {e}"
+        )
+        .to_string()
+    })?;
 
     let final_path = Path::new(output_dir).join("UnityApplicationPatcher.zip");
 
-    std::fs::write(&final_path, recieved_bytes).map_err(|e|format!("Error writing UnityApplicationPatcher.zip to disk: {e}").to_string())?;
+    std::fs::write(&final_path, recieved_bytes).map_err(|e| {
+        format!("Error writing UnityApplicationPatcher.zip to disk: {e}").to_string()
+    })?;
 
     {
         use std::io::Read as _;
@@ -946,59 +1033,8 @@ where
     Ok(())
 }
 
-fn delete_config_files_for_mod(shared_config: &Path, dev: &str, name: &str) -> Result<u64, String> {
-    if !shared_config.exists() {
-        return Ok(0);
-    }
-    let dev_l = dev.to_lowercase();
-    let name_l = name.to_lowercase();
-
-    let mut deleted: u64 = 0;
-    let mut stack: Vec<PathBuf> = vec![shared_config.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for e in rd.flatten() {
-            let path = e.path();
-            let Ok(ty) = e.file_type() else { continue };
-            if ty.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if !ty.is_file() {
-                continue;
-            }
-
-            // Match on relative path (lowercased) to catch nested config layouts too.
-            let rel = path
-                .strip_prefix(shared_config)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .to_lowercase();
-            if !(rel.contains(&dev_l) || rel.contains(&name_l)) {
-                continue;
-            }
-
-            match std::fs::remove_file(&path) {
-                Ok(()) => {
-                    deleted = deleted.saturating_add(1);
-                }
-                Err(e) => {
-                    log::warn!(
-                        "Failed to delete config file {}: {e}",
-                        path.to_string_lossy()
-                    );
-                }
-            }
-        }
-    }
-
-    Ok(deleted)
-}
-
-/// On app startup: if a mod is installed but remote manifest marks it `enabled=false`,
-/// remove the plugin folder and its related config files.
+/// On app startup: if an installed base mod is marked `enabled=false` by the remote manifest,
+/// keep it installed but make sure it is disabled locally.
 ///
 /// This is best-effort: failures are logged but won't break startup.
 pub async fn purge_remote_disabled_mods_on_startup(app: tauri::AppHandle) -> Result<(), String> {
@@ -1013,54 +1049,16 @@ pub async fn purge_remote_disabled_mods_on_startup(app: tauri::AppHandle) -> Res
     let (_remote_manifest_version, mods_cfg, _chain_config, _manifests, _preset_tag_constraints) =
         remote;
 
-    // Only purge "truly disabled" base mods.
-    //
-    // Taggable/optional mods (e.g. Brutal/Wesley preset mods) may be represented in the manifest
-    // with `enabled=false` so they are not installed by default, but they should NOT be purged
-    // if the user installed them via a preset run.
-    let disabled: Vec<_> = mods_cfg
-        .mods
-        .into_iter()
-        .filter(|m| !m.enabled && m.tags.is_empty())
-        .collect();
-    if disabled.is_empty() {
-        return Ok(());
-    }
-
     let versions = installed_version_dirs(&app)?;
     if versions.is_empty() {
         return Ok(());
     }
 
-    let shared_config = shared_config_dir(&app)?;
-
-    for m in disabled {
-        let mod_label = format!("{}-{}", m.dev, m.name);
-
-        // Remove plugin folders for all installed versions.
-        for (v, root) in &versions {
-            let plugins = plugins_dir_for_version_root(root);
-            let dir = plugins.join(&mod_label);
-            if !dir.exists() {
-                continue;
-            }
-            match std::fs::remove_dir_all(&dir) {
-                Ok(()) => log::info!("Purged disabled mod {mod_label} from v{v}"),
-                Err(e) => log::warn!(
-                    "Failed to purge disabled mod {mod_label} from v{v} ({}): {e}",
-                    dir.to_string_lossy()
-                ),
-            }
-        }
-
-        // Remove matching config files from shared config dir.
-        match delete_config_files_for_mod(&shared_config, &m.dev, &m.name) {
-            Ok(n) => {
-                if n > 0 {
-                    log::info!("Purged {n} config files for disabled mod {mod_label}");
-                }
-            }
-            Err(e) => log::warn!("Failed to purge config for disabled mod {mod_label}: {e}"),
+    for (version, _) in versions {
+        if let Err(e) =
+            crate::ensure_manifest_disabled_mods_disabled_for_version(&app, version, &mods_cfg)
+        {
+            log::warn!("Failed to disable remote-disabled mods for v{version}: {e}");
         }
     }
 
@@ -1688,6 +1686,11 @@ pub async fn sync_install_from_manifest_for_version(
             .await?;
 
             crate::ensure_reverb_trigger_fix_cfg(&app, game_version)?;
+            crate::ensure_manifest_disabled_mods_disabled_for_version(
+                &app,
+                game_version,
+                &mods_cfg,
+            )?;
 
             progress::emit_progress(
                 &app,
@@ -2285,6 +2288,7 @@ pub async fn download_and_setup(
         std::fs::rename(&extract_dir, &final_dir)
             .map_err(|e| format!("Failed to finalize install: {e}"))?;
         finalized.store(true, Ordering::Relaxed);
+        crate::ensure_manifest_disabled_mods_disabled_for_version(&app, version, &mods_cfg)?;
 
         let mut manifest_state = read_manifest_state(&app)?;
         manifest_state.manifest_version = remote_manifest_version;

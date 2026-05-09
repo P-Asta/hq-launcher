@@ -283,11 +283,37 @@ impl ModEntry {
         Self::matches_caps(game_version, self.low_cap, self.high_cap)
     }
 
+    pub fn is_install_compatible(&self, game_version: u32) -> bool {
+        Self::matches_caps(game_version, self.low_cap, self.high_cap)
+    }
+
     pub fn is_compatible_for_tags(&self, game_version: u32, active_tags: &[String]) -> bool {
         if !self.enabled {
             return false;
         }
 
+        for active_tag in active_tags {
+            if !self.applies_to_tag(active_tag) {
+                continue;
+            }
+
+            let constraint = self.constraint_for_tag(active_tag);
+            let low_cap = constraint.and_then(|rule| rule.low_cap).or(self.low_cap);
+            let high_cap = constraint.and_then(|rule| rule.high_cap).or(self.high_cap);
+
+            if Self::matches_caps(game_version, low_cap, high_cap) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pub fn is_install_compatible_for_tags(
+        &self,
+        game_version: u32,
+        active_tags: &[String],
+    ) -> bool {
         for active_tag in active_tags {
             if !self.applies_to_tag(active_tag) {
                 continue;

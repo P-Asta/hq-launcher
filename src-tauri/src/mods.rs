@@ -90,10 +90,10 @@ fn install_compatibility_matches(
             .iter()
             .any(|active_tag| spec.applies_to_tag(active_tag))
     {
-        return spec.is_compatible_for_tags(game_version, active_tags);
+        return spec.is_install_compatible_for_tags(game_version, active_tags);
     }
 
-    spec.is_compatible(game_version)
+    spec.is_install_compatible(game_version)
 }
 
 fn compatibility_caps_for_tags(

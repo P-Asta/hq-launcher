@@ -186,6 +186,14 @@
             "version_config": {}
         },
         {
+            "name": "LCStatsTracker",
+            "dev": "MikuOreo",
+            "enabled": true,
+            "low_cap": null,
+            "high_cap": null,
+            "version_config": {}
+        },
+        {
             "name": "FreeeeeeMoooooons",
             "tags": [
                 "SMHQ"

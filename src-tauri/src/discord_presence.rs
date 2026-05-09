@@ -195,6 +195,7 @@ fn receive_stream_overlays_data() -> Option<StreamOverlaysEnvelope> {
             Message::Text(text) => {
                 let parsed = serde_json::from_str::<StreamOverlaysEnvelope>(&text).ok()?;
                 if parsed.message_type.as_deref() == Some("data") {
+                    let _ = socket.close(None);
                     return Some(parsed);
                 }
             }
@@ -202,6 +203,7 @@ fn receive_stream_overlays_data() -> Option<StreamOverlaysEnvelope> {
                 let text = String::from_utf8(bytes.to_vec()).ok()?;
                 let parsed = serde_json::from_str::<StreamOverlaysEnvelope>(&text).ok()?;
                 if parsed.message_type.as_deref() == Some("data") {
+                    let _ = socket.close(None);
                     return Some(parsed);
                 }
             }

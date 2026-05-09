@@ -1729,11 +1729,13 @@ dependencies = [
 name = "hq-launcher"
 version = "1.5.1"
 dependencies = [
+ "base64 0.22.1",
  "dirs",
  "discord-rich-presence",
  "expectrl",
  "flate2",
  "futures-util",
+ "getrandom 0.3.4",
  "libc",
  "log",
  "log4rs",
@@ -1743,6 +1745,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "sha2",
  "shlex",
  "tar",
  "tauri",

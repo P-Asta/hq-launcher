@@ -1,7 +1,9 @@
 mod bepinex_cfg;
 mod discord_presence;
 mod downloader;
+mod google_oauth;
 mod installer;
+mod lcstats_autosheet;
 mod logger;
 mod mod_config;
 mod mods;
@@ -2301,7 +2303,8 @@ fn read_disablemod(app: &tauri::AppHandle) -> Result<DisableModFile, String> {
     // Migration: v1 -> v2
     if f.version == 1 {
         f.version = 2;
-        f.mods.push(normalize_mod_id("SlushyRH", "FreeeeeeMoooooons"));
+        f.mods
+            .push(normalize_mod_id("SlushyRH", "FreeeeeeMoooooons"));
         f.mods
             .sort_by(|a, b| a.dev.cmp(&b.dev).then(a.name.cmp(&b.name)));
         f.mods.dedup();
@@ -2339,37 +2342,43 @@ async fn migrate_disablemod_v4_on_startup(app: &tauri::AppHandle) -> Result<(), 
     let patchable_count = installer::patchable_instance_count(app)? as u32;
     let steps_total = patchable_count + 2;
 
-    progress::emit_progress(app, TaskProgressPayload {
-        version: 0,
-        steps_total,
-        step: 1,
-        step_name: "Security Migration".to_string(),
-        step_progress: 0.0,
-        overall_percent: overall_from_step(1, 0.0, steps_total),
-        detail: Some("Preparing UnityApplicationPatcher".to_string()),
-        downloaded_bytes: None,
-        total_bytes: None,
-        extracted_files: None,
-        total_files: None,
-    });
+    progress::emit_progress(
+        app,
+        TaskProgressPayload {
+            version: 0,
+            steps_total,
+            step: 1,
+            step_name: "Security Migration".to_string(),
+            step_progress: 0.0,
+            overall_percent: overall_from_step(1, 0.0, steps_total),
+            detail: Some("Preparing UnityApplicationPatcher".to_string()),
+            downloaded_bytes: None,
+            total_bytes: None,
+            extracted_files: None,
+            total_files: None,
+        },
+    );
 
     installer::ensure_app_patcher_installed_with_progress(app, steps_total, 1).await?;
     installer::patch_all_instances_with_progress(app, steps_total, 2).await?;
 
     let final_step = steps_total;
-    progress::emit_progress(app, TaskProgressPayload {
-        version: 0,
-        steps_total,
-        step: final_step,
-        step_name: "Security Migration".to_string(),
-        step_progress: 0.0,
-        overall_percent: overall_from_step(final_step, 0.0, steps_total),
-        detail: Some("Updating disablemod.json".to_string()),
-        downloaded_bytes: None,
-        total_bytes: None,
-        extracted_files: None,
-        total_files: None,
-    });
+    progress::emit_progress(
+        app,
+        TaskProgressPayload {
+            version: 0,
+            steps_total,
+            step: final_step,
+            step_name: "Security Migration".to_string(),
+            step_progress: 0.0,
+            overall_percent: overall_from_step(final_step, 0.0, steps_total),
+            detail: Some("Updating disablemod.json".to_string()),
+            downloaded_bytes: None,
+            total_bytes: None,
+            extracted_files: None,
+            total_files: None,
+        },
+    );
 
     let mut f = read_disablemod(app)?;
     f.mods.push(normalize_mod_id("asta", "StreamChats"));
@@ -2379,24 +2388,30 @@ async fn migrate_disablemod_v4_on_startup(app: &tauri::AppHandle) -> Result<(), 
     f.version = 4;
     write_disablemod(app, &f)?;
 
-    progress::emit_progress(app, TaskProgressPayload {
-        version: 0,
-        steps_total,
-        step: final_step,
-        step_name: "Security Migration".to_string(),
-        step_progress: 1.0,
-        overall_percent: overall_from_step(final_step, 1.0, steps_total),
-        detail: Some("Security migration complete".to_string()),
-        downloaded_bytes: None,
-        total_bytes: None,
-        extracted_files: None,
-        total_files: None,
-    });
-    progress::emit_finished(app, TaskFinishedPayload {
-        version: 0,
-        run_mode: None,
-        path: path.to_string_lossy().to_string(),
-    });
+    progress::emit_progress(
+        app,
+        TaskProgressPayload {
+            version: 0,
+            steps_total,
+            step: final_step,
+            step_name: "Security Migration".to_string(),
+            step_progress: 1.0,
+            overall_percent: overall_from_step(final_step, 1.0, steps_total),
+            detail: Some("Security migration complete".to_string()),
+            downloaded_bytes: None,
+            total_bytes: None,
+            extracted_files: None,
+            total_files: None,
+        },
+    );
+    progress::emit_finished(
+        app,
+        TaskFinishedPayload {
+            version: 0,
+            run_mode: None,
+            path: path.to_string_lossy().to_string(),
+        },
+    );
 
     Ok(())
 }
@@ -2465,6 +2480,58 @@ fn disabled_mod_keys(disabled_mods: &[DisabledMod]) -> HashSet<String> {
         .iter()
         .map(|m| normalize_mod_key(&m.dev, &m.name))
         .collect()
+}
+
+fn add_disabled_mod(list: &mut DisableModFile, dev: &str, name: &str) -> bool {
+    let id = normalize_mod_id(dev, name);
+    if list.mods.iter().any(|m| m == &id) {
+        return false;
+    }
+    list.mods.push(id);
+    list.mods
+        .sort_by(|a, b| a.dev.cmp(&b.dev).then(a.name.cmp(&b.name)));
+    list.mods.dedup();
+    true
+}
+
+fn manifest_disabled_base_mods_for_version(
+    mods_cfg: &ModsConfig,
+    version: u32,
+) -> Vec<(String, String)> {
+    mods_cfg
+        .mods
+        .iter()
+        .filter(|m| !m.enabled && m.tags.is_empty() && m.is_install_compatible(version))
+        .map(|m| (m.dev.clone(), m.name.clone()))
+        .collect()
+}
+
+pub(crate) fn ensure_manifest_disabled_mods_disabled_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+    mods_cfg: &ModsConfig,
+) -> Result<(), String> {
+    let disabled_mods = manifest_disabled_base_mods_for_version(mods_cfg, version);
+    if !disabled_mods.is_empty() {
+        let mut list = read_disablemod(app)?;
+        let mut changed = false;
+        for (dev, name) in &disabled_mods {
+            let id = normalize_mod_id(dev, name);
+            if list.mods.iter().any(|m| m == &id) {
+                continue;
+            }
+            list.mods.push(id);
+            changed = true;
+        }
+        if changed {
+            list.mods
+                .sort_by(|a, b| a.dev.cmp(&b.dev).then(a.name.cmp(&b.name)));
+            list.mods.dedup();
+            write_disablemod(app, &list)?;
+        }
+    }
+
+    apply_effective_mod_states_for_version(app, version, &[], &[])
 }
 
 fn collect_mod_entries_recursive(
@@ -2646,6 +2713,7 @@ fn describe_mode_file_changes(practice: bool, tags: &[String]) -> String {
 // (intentionally no "is_disabled"/"is_mod_enabled" helpers; frontend uses disablemod list as source of truth)
 
 fn apply_disabled_mods_for_version(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
+    ensure_lcstats_disabled_when_vlog_disabled(app)?;
     apply_effective_mod_states_for_version(app, version, &[], &[])
 }
 
@@ -2697,7 +2765,38 @@ fn sync_vlog_with_disablemod_for_version(
     app: &tauri::AppHandle,
     version: u32,
 ) -> Result<(), String> {
+    ensure_lcstats_disabled_when_vlog_disabled(app)?;
     sync_named_mod_with_disablemod_for_version(app, version, "HQHQTeam", "VLog")
+}
+
+fn sync_lcstats_with_disablemod_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<(), String> {
+    sync_named_mod_with_disablemod_for_version(app, version, "MikuOreo", "LCStatsTracker")
+}
+
+fn ensure_lcstats_disabled_when_vlog_disabled(app: &tauri::AppHandle) -> Result<bool, String> {
+    let mut list = read_disablemod(app)?;
+    let vlog_id = normalize_mod_id("HQHQTeam", "VLog");
+    if !list.mods.iter().any(|m| m == &vlog_id) {
+        return Ok(false);
+    }
+    let changed = add_disabled_mod(&mut list, "MikuOreo", "LCStatsTracker");
+    if changed {
+        write_disablemod(app, &list)?;
+    }
+    Ok(changed)
+}
+
+fn disable_lcstats_for_version(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
+    let mut list = read_disablemod(app)?;
+    let changed = add_disabled_mod(&mut list, "MikuOreo", "LCStatsTracker");
+    if changed {
+        write_disablemod(app, &list)?;
+    }
+    let _ = sync_lcstats_with_disablemod_for_version(app, version);
+    Ok(())
 }
 
 fn practice_mode_mod_ids() -> Vec<(String, String)> {
@@ -2710,13 +2809,14 @@ fn practice_mode_mod_ids() -> Vec<(String, String)> {
 fn practice_mode_forced_disabled_ids() -> Vec<(String, String)> {
     let mut mods = practice_mode_mod_ids();
     mods.push(("HQHQTeam".to_string(), "VLog".to_string()));
+    mods.push(("MikuOreo".to_string(), "LCStatsTracker".to_string()));
     mods
 }
 
 fn sync_practice_locked_mods_for_version(
     version_plugins_dir: &std::path::Path,
 ) -> Result<(), String> {
-    for (dev, name) in [("HQHQTeam", "VLog")] {
+    for (dev, name) in [("HQHQTeam", "VLog"), ("MikuOreo", "LCStatsTracker")] {
         if let Some(dir) = mod_dir_for(version_plugins_dir, dev, name) {
             let _ = set_mod_files_old_suffix(&dir, false);
         }
@@ -2759,6 +2859,7 @@ fn ensure_practice_mods_disabled_for_version(
             let _ = set_mod_files_old_suffix(&dir, false);
         }
     }
+    let _ = disable_lcstats_for_version(app, version);
 
     Ok(())
 }
@@ -2883,7 +2984,7 @@ async fn prepare_practice_mods_for_version(
             rename_ops.push((dir, true, format!("{}-{}", m.dev, m.name)));
         }
     }
-    for (dev, name) in [("HQHQTeam", "VLog")] {
+    for (dev, name) in [("HQHQTeam", "VLog"), ("MikuOreo", "LCStatsTracker")] {
         if let Some(dir) = mod_dir_for(&plugins, dev, name) {
             rename_ops.push((dir, false, format!("{dev}-{name}")));
         }
@@ -2891,6 +2992,7 @@ async fn prepare_practice_mods_for_version(
     for (dir, enabled, _label) in rename_ops {
         let _ = set_mod_files_old_suffix(&dir, enabled);
     }
+    let _ = disable_lcstats_for_version(app, version);
 
     Ok(practice_ids)
 }
@@ -3175,13 +3277,7 @@ fn open_path_with_fallbacks(path: &Path, is_folder: bool) -> Result<(), String> 
         }
 
         for program in [
-            "kate",
-            "kwrite",
-            "gedit",
-            "mousepad",
-            "xed",
-            "code",
-            "codium",
+            "kate", "kwrite", "gedit", "mousepad", "xed", "code", "codium",
         ] {
             if spawn_open_command(program, path) {
                 return Ok(());
@@ -3269,7 +3365,11 @@ fn delete_installed_version(
             .map_err(|_| "game state lock poisoned".to_string())?;
         for active in guard.iter_mut() {
             if active.version == version
-                && active.child.try_wait().map_err(|e| e.to_string())?.is_none()
+                && active
+                    .child
+                    .try_wait()
+                    .map_err(|e| e.to_string())?
+                    .is_none()
             {
                 return Err("Cannot delete a version while the game is running.".to_string());
             }
@@ -3775,14 +3875,22 @@ fn resolve_game_launch_paths(
     Ok((dir, exe_path, exe_dir))
 }
 
-fn ensure_game_not_running(app: &tauri::AppHandle, state: &State<'_, GameState>) -> Result<(), String> {
+fn ensure_game_not_running(
+    app: &tauri::AppHandle,
+    state: &State<'_, GameState>,
+) -> Result<(), String> {
     let mut guard = state
         .active
         .lock()
         .map_err(|_| "game state lock poisoned".to_string())?;
     let mut has_running = false;
     for active in guard.iter_mut() {
-        if active.child.try_wait().map_err(|e| e.to_string())?.is_none() {
+        if active
+            .child
+            .try_wait()
+            .map_err(|e| e.to_string())?
+            .is_none()
+        {
             has_running = true;
         } else if linux_lingering_game_pid(app, active.version).is_some() {
             has_running = true;
@@ -3982,14 +4090,15 @@ fn collect_linux_game_processes(app: &tauri::AppHandle, version: u32) -> Vec<lib
         let cmdline = read_proc_bytes(pid, "cmdline").unwrap_or_default();
         let environ = read_proc_bytes(pid, "environ").unwrap_or_default();
 
-        let matches_version = bytes_contain(&cmdline, &game_root)
-            || bytes_contain(&environ, &game_root);
-        let matches_prefix = compat_prefix
-            .as_ref()
-            .is_some_and(|prefix| bytes_contain(&cmdline, prefix) || bytes_contain(&environ, prefix))
-            || compat_env
-                .as_ref()
-                .is_some_and(|env| environ.windows(env.len()).any(|window| window == env.as_bytes()));
+        let matches_version =
+            bytes_contain(&cmdline, &game_root) || bytes_contain(&environ, &game_root);
+        let matches_prefix = compat_prefix.as_ref().is_some_and(|prefix| {
+            bytes_contain(&cmdline, prefix) || bytes_contain(&environ, prefix)
+        }) || compat_env.as_ref().is_some_and(|env| {
+            environ
+                .windows(env.len())
+                .any(|window| window == env.as_bytes())
+        });
 
         if matches_version || matches_prefix {
             pids.push(pid);
@@ -4289,11 +4398,13 @@ async fn launch_game(
     launch_options: Option<Vec<String>>,
     launch_command_template: Option<String>,
     allow_multiple: Option<bool>,
+    lcstats_state: State<'_, lcstats_autosheet::LcStatsAutosheetState>,
     state: State<'_, GameState>,
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
     wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
     let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
+    ensure_lcstats_disabled_without_google_auth(&app)?;
 
     let mut forced_disabled_ids = practice_mode_mod_ids();
     forced_disabled_ids.extend(run_mode_tagged_mod_ids(version, None).await?);
@@ -4339,6 +4450,8 @@ async fn launch_game(
         launch_options,
         launch_command_template: launch_command_template_for_state,
     });
+    let lcstats_enabled = is_lcstats_enabled(&app)?;
+    lcstats_autosheet::start_for_launch(app.clone(), lcstats_enabled, &lcstats_state);
     Ok(pid)
 }
 
@@ -4349,11 +4462,13 @@ async fn launch_game_practice(
     launch_options: Option<Vec<String>>,
     launch_command_template: Option<String>,
     allow_multiple: Option<bool>,
+    lcstats_state: State<'_, lcstats_autosheet::LcStatsAutosheetState>,
     state: State<'_, GameState>,
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
     wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
     let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
+    ensure_lcstats_disabled_without_google_auth(&app)?;
 
     // Practice run: install + enable practice mods (compatible with this game version).
     let practice_ids = prepare_practice_mods_for_version(&app, version, None).await?;
@@ -4401,6 +4516,8 @@ async fn launch_game_practice(
         launch_options,
         launch_command_template: launch_command_template_for_state,
     });
+    let lcstats_enabled = is_lcstats_enabled(&app)?;
+    lcstats_autosheet::start_for_launch(app.clone(), lcstats_enabled, &lcstats_state);
     Ok(pid)
 }
 
@@ -4413,6 +4530,7 @@ async fn launch_game_preset(
     launch_options: Option<Vec<String>>,
     launch_command_template: Option<String>,
     allow_multiple: Option<bool>,
+    lcstats_state: State<'_, lcstats_autosheet::LcStatsAutosheetState>,
     state: State<'_, GameState>,
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
@@ -4440,6 +4558,7 @@ async fn launch_game_preset(
     }
 
     let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
+    ensure_lcstats_disabled_without_google_auth(&app)?;
 
     if !practice {
         // Non-practice run: force-disable practice mods.
@@ -4526,6 +4645,8 @@ async fn launch_game_preset(
         launch_options,
         launch_command_template: launch_command_template_for_state,
     });
+    let lcstats_enabled = is_lcstats_enabled(&app)?;
+    lcstats_autosheet::start_for_launch(app.clone(), lcstats_enabled, &lcstats_state);
     Ok(pid)
 }
 
@@ -4780,7 +4901,9 @@ fn stop_game_instance(
     if guard.is_empty() {
         terminate_linux_game_processes_for_version(&app, active.version);
         if let Err(e) = restore_hqol_wesley_dont_store_backup_if_present(&app) {
-            log::warn!("Failed to restore HQoL Wesley dont-store backup after stopping instance: {e}");
+            log::warn!(
+                "Failed to restore HQoL Wesley dont-store backup after stopping instance: {e}"
+            );
         }
     }
 
@@ -4826,7 +4949,73 @@ fn stop_game(app: tauri::AppHandle, state: State<'_, GameState>) -> Result<bool,
 
 #[tauri::command]
 fn get_disabled_mods(app: tauri::AppHandle) -> Result<Vec<DisabledMod>, String> {
+    ensure_lcstats_disabled_without_google_auth(&app)?;
     Ok(read_disablemod(&app)?.mods)
+}
+
+fn ensure_lcstats_disabled_without_google_auth(app: &tauri::AppHandle) -> Result<(), String> {
+    if google_oauth::auth_status(app.clone())?.authenticated {
+        return Ok(());
+    }
+    let mut list = read_disablemod(app)?;
+    if add_disabled_mod(&mut list, "MikuOreo", "LCStatsTracker") {
+        write_disablemod(app, &list)?;
+    }
+    Ok(())
+}
+
+fn is_lcstats_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
+    let disabled_keys = disabled_mod_keys(&read_disablemod(app)?.mods);
+    Ok(!disabled_keys.contains(&normalize_mod_key("MikuOreo", "LCStatsTracker")))
+}
+
+#[tauri::command]
+fn google_lcstats_auth_status(
+    app: tauri::AppHandle,
+) -> Result<google_oauth::GoogleLcStatsAuthState, String> {
+    google_oauth::auth_status(app)
+}
+
+#[tauri::command]
+async fn google_lcstats_start_oauth(
+    app: tauri::AppHandle,
+) -> Result<google_oauth::GoogleLcStatsAuthState, String> {
+    google_oauth::start_oauth(app).await
+}
+
+#[tauri::command]
+fn google_lcstats_logout(app: tauri::AppHandle) -> Result<bool, String> {
+    google_oauth::logout(app.clone())?;
+    ensure_lcstats_disabled_without_google_auth(&app)?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn get_lcstats_settings(app: tauri::AppHandle) -> Result<google_oauth::LcStatsSettings, String> {
+    google_oauth::get_settings(app)
+}
+
+#[tauri::command]
+fn set_lcstats_settings(
+    app: tauri::AppHandle,
+    settings: google_oauth::LcStatsSettings,
+) -> Result<bool, String> {
+    google_oauth::set_settings(app, settings)
+}
+
+#[tauri::command]
+async fn list_lcstats_sheet_names(
+    app: tauri::AppHandle,
+    spreadsheet_id: String,
+) -> Result<Vec<String>, String> {
+    google_oauth::list_sheet_names(app, spreadsheet_id).await
+}
+
+#[tauri::command]
+async fn list_lcstats_spreadsheets(
+    app: tauri::AppHandle,
+) -> Result<Vec<google_oauth::GoogleSpreadsheetFile>, String> {
+    google_oauth::list_spreadsheets(app).await
 }
 
 #[tauri::command]
@@ -4843,16 +5032,32 @@ async fn set_mod_enabled(
     name: String,
     enabled: bool,
 ) -> Result<bool, String> {
+    if enabled
+        && dev.eq_ignore_ascii_case("MikuOreo")
+        && name.eq_ignore_ascii_case("LCStatsTracker")
+    {
+        let disabled_keys = disabled_mod_keys(&read_disablemod(&app)?.mods);
+        if disabled_keys.contains(&normalize_mod_key("HQHQTeam", "VLog")) {
+            return Err(
+                "VLog must be enabled before enabling MikuOreo-LCStatsTracker.".to_string(),
+            );
+        }
+        let status = google_oauth::auth_status(app.clone())?;
+        if !status.authenticated {
+            return Err("Google login is required to enable MikuOreo-LCStatsTracker.".to_string());
+        }
+    }
+
     let mut list = read_disablemod(&app)?;
 
     // Use normalized ids in the file.
     let id = normalize_mod_id(&dev, &name);
     list.mods.retain(|m| m != &id);
     if !enabled {
-        list.mods.push(id);
-        list.mods
-            .sort_by(|a, b| a.dev.cmp(&b.dev).then(a.name.cmp(&b.name)));
-        list.mods.dedup();
+        add_disabled_mod(&mut list, &dev, &name);
+        if dev.eq_ignore_ascii_case("HQHQTeam") && name.eq_ignore_ascii_case("VLog") {
+            add_disabled_mod(&mut list, "MikuOreo", "LCStatsTracker");
+        }
     }
     write_disablemod(&app, &list)?;
 
@@ -4934,6 +5139,9 @@ async fn set_mod_enabled(
     }
     if let Some(dir) = mod_dir_for(&patchers, &dev, &name) {
         let _ = set_mod_files_old_suffix(&dir, enabled);
+    }
+    if !enabled && dev.eq_ignore_ascii_case("HQHQTeam") && name.eq_ignore_ascii_case("VLog") {
+        let _ = sync_lcstats_with_disablemod_for_version(&app, version);
     }
     Ok(true)
 }
@@ -5652,13 +5860,14 @@ pub fn run() {
         .manage(DownloadState::default())
         .manage(PrepareState::default())
         .manage(discord_presence::DiscordPresenceState::default())
+        .manage(lcstats_autosheet::LcStatsAutosheetState::default())
         .manage(downloader::DepotLoginState::default())
         .setup(|app| {
             // File logging (AppDataDir/logs/hq-launcher.log)
             logger::init(&app.handle()).map_err(|e| tauri::Error::Setup(e.into()))?;
 
             // Startup housekeeping (best-effort, won't block UI):
-            // - Purge mods that remote manifest marks as enabled=false (and their configs)
+            // - Disable installed base mods that remote manifest marks as enabled=false
             // - Ensure default config is downloaded if shared config dir is empty
             // - Run disablemod/security migrations when needed
             // - Warm the Thunderstore package cache for later update checks
@@ -5670,7 +5879,7 @@ pub fn run() {
                 if let Err(e) =
                     installer::purge_remote_disabled_mods_on_startup(app_handle.clone()).await
                 {
-                    log::warn!("Failed to purge remote-disabled mods on startup: {e}");
+                    log::warn!("Failed to disable remote-disabled mods on startup: {e}");
                 }
                 if let Err(e) = installer::ensure_default_config(app_handle.clone()).await {
                     log::warn!("Failed to ensure default config on startup: {e}");
@@ -5719,6 +5928,13 @@ pub fn run() {
             stop_game,
             stop_game_instance,
             get_disabled_mods,
+            google_lcstats_auth_status,
+            google_lcstats_start_oauth,
+            google_lcstats_logout,
+            get_lcstats_settings,
+            set_lcstats_settings,
+            list_lcstats_sheet_names,
+            list_lcstats_spreadsheets,
             apply_disabled_mods,
             set_mod_enabled,
             list_installed_mod_versions,

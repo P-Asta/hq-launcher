@@ -22,6 +22,9 @@ tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"
+getrandom = "0.3"
+sha2 = "0.10"
 # Stream download chunks (for progress updates).
 futures-util = "0.3"
 # Unzip downloaded versions.

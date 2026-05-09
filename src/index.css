@@ -29,6 +29,20 @@ body {
   display: none !important;
 }
 
+.oauth-expand {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transform: translateY(-6px);
+  transition: max-height 180ms ease, opacity 160ms ease, transform 180ms ease;
+}
+
+.oauth-expand-open {
+  max-height: 180px;
+  opacity: 1;
+  transform: translateY(0);
+}
+
 * {
   user-select: none;
   -webkit-user-select: none;

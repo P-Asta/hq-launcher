@@ -7,9 +7,11 @@ import {
   CheckCircle2,
   ChevronDown,
   Download,
+  Info,
   LogOut,
   LoaderCircle,
   Play,
+  RefreshCw,
   Search,
   Settings2,
   Trash2,
@@ -209,6 +211,57 @@ const ECLIPSED_FORCED_MOD_KEYS = new Set([
   "stormytuna::eclipseonly",
   "stormytuna::eclipsedonly",
 ]);
+
+const GOOGLE_OAUTH_MOD_KEYS = new Set([
+  "mikuoreo::lcstatstracker",
+]);
+
+const LCSTATS_LAYOUTS = [
+  "AutoSheetModel",
+  "WafrodyAutoSheet",
+  "MakuSheet 1.0",
+];
+
+const LCSTATS_LAYOUT_COLUMN_FIELDS = new Set([
+  "AutoSheetModel",
+]);
+
+const DEFAULT_LCSTATS_SETTINGS = {
+  spreadsheetId: "",
+  activeSheetName: "",
+  startColumn: "D",
+  quotaColumn: "B",
+  sellColumn: "AB",
+  layout: "AutoSheetModel",
+  googleClientId: "",
+  googleClientSecret: "",
+};
+
+function requiresGoogleOauthForMod(mod) {
+  return GOOGLE_OAUTH_MOD_KEYS.has(modKeyLower(mod));
+}
+
+function isLcStatsTrackerMod(mod) {
+  return requiresGoogleOauthForMod(mod);
+}
+
+function lcstatsLayoutUsesColumnFields(layout) {
+  return LCSTATS_LAYOUT_COLUMN_FIELDS.has(layout);
+}
+
+function extractSpreadsheetId(value) {
+  const text = String(value ?? "").trim();
+  const match = text.match(/\/spreadsheets\/d\/([^/?#]+)/);
+  return match?.[1] ?? text;
+}
+
+function normalizeSheetColumn(value, fallback) {
+  const text = String(value ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z]/g, "");
+  return text || fallback;
+}
 
 function valueLabel(v) {
   if (!v) return "";
@@ -846,6 +899,27 @@ export default function LauncherPage({
   });
   const [steamOverlayDialogOpen, setSteamOverlayDialogOpen] = useState(false);
   const [launchOptionsDialogOpen, setLaunchOptionsDialogOpen] = useState(false);
+  const [googleOauthDialogOpen, setGoogleOauthDialogOpen] = useState(false);
+  const [googleOauthBusy, setGoogleOauthBusy] = useState(false);
+  const [googleOauthError, setGoogleOauthError] = useState("");
+  const [customGoogleOauthOpen, setCustomGoogleOauthOpen] = useState(false);
+  const [googleOauthStatus, setGoogleOauthStatus] = useState({
+    authenticated: false,
+    scope: null,
+    expires_at: null,
+  });
+  const [pendingGoogleOauthToggle, setPendingGoogleOauthToggle] = useState(null);
+  const [lcstatsSettings, setLcstatsSettings] = useState(DEFAULT_LCSTATS_SETTINGS);
+  const [lcstatsSpreadsheets, setLcstatsSpreadsheets] = useState([]);
+  const [lcstatsSheets, setLcstatsSheets] = useState([]);
+  const [lcstatsBusy, setLcstatsBusy] = useState(false);
+  const [lcstatsRefreshBusy, setLcstatsRefreshBusy] = useState(false);
+  const lcstatsSaveTimerRef = useRef(null);
+  const lcstatsAutoBrowseKeyRef = useRef("");
+  const lcstatsAutoSheetKeyRef = useRef("");
+  const googleOauthRequestIdRef = useRef(0);
+  const [lcstatsSaved, setLcstatsSaved] = useState("");
+  const [lcstatsError, setLcstatsError] = useState("");
   const [steamOverlayConfig, setSteamOverlayConfig] = useState({
     enabled: false,
     steam_path: "",
@@ -1028,6 +1102,74 @@ export default function LauncherPage({
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    invoke("google_lcstats_auth_status")
+      .then((status) => {
+        if (cancelled) return;
+        setGoogleOauthStatus({
+          authenticated: !!status?.authenticated,
+          scope: status?.scope ?? null,
+          expires_at: status?.expires_at ?? null,
+        });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error(error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    invoke("get_lcstats_settings")
+      .then((settings) => {
+        if (cancelled) return;
+        setLcstatsSettings({
+          ...DEFAULT_LCSTATS_SETTINGS,
+          ...(settings ?? {}),
+        });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error(error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isLcStatsTrackerMod(selectedMod)) return;
+    if (lcstatsSaveTimerRef.current) {
+      window.clearTimeout(lcstatsSaveTimerRef.current);
+    }
+    lcstatsSaveTimerRef.current = window.setTimeout(() => {
+      persistLcstatsSettings(lcstatsSettings, { quiet: true }).catch(console.error);
+      lcstatsSaveTimerRef.current = null;
+    }, 350);
+
+    return () => {
+      if (lcstatsSaveTimerRef.current) {
+        window.clearTimeout(lcstatsSaveTimerRef.current);
+        lcstatsSaveTimerRef.current = null;
+      }
+    };
+  }, [selectedMod, lcstatsSettings]);
+
+  useEffect(() => {
+    if (!isLcStatsTrackerMod(selectedMod)) return;
+    if (!googleOauthStatus.authenticated) return;
+    const key = `${selectedVersion ?? ""}::${googleOauthStatus.expires_at ?? ""}`;
+    if (lcstatsAutoBrowseKeyRef.current === key) return;
+    lcstatsAutoBrowseKeyRef.current = key;
+    refreshLcstatsGoogleLists({ quiet: true }).catch(console.error);
+  }, [selectedMod, selectedVersion, googleOauthStatus.authenticated, googleOauthStatus.expires_at]);
 
   useEffect(() => {
     let unlisten = null;
@@ -2322,6 +2464,17 @@ export default function LauncherPage({
       return;
     }
 
+    if (isLcStatsTrackerMod(selectedMod)) {
+      const key = modKeyLower(selectedMod);
+      setConfigFiles([]);
+      setActiveConfigPath("");
+      setCfgFile(null);
+      setActiveSection("");
+      setCfgError("");
+      setModEnabled(!disabledSet.has(key));
+      return;
+    }
+
     (async () => {
       // enabled state is global (disablemod file) and applies to all versions
       const key = `${String(selectedMod.dev).toLowerCase()}::${String(
@@ -2730,6 +2883,519 @@ export default function LauncherPage({
     return confirmed.filter(Boolean);
   }
 
+  async function refreshGoogleOauthStatus() {
+    const status = await invoke("google_lcstats_auth_status");
+    const nextStatus = {
+      authenticated: !!status?.authenticated,
+      scope: status?.scope ?? null,
+      expires_at: status?.expires_at ?? null,
+    };
+    setGoogleOauthStatus(nextStatus);
+    return nextStatus;
+  }
+
+  function requestGoogleOauthForToggle(mod, nextEnabled, opts) {
+    setPendingGoogleOauthToggle({ mod, nextEnabled: !!nextEnabled, opts });
+    setGoogleOauthError("");
+    setGoogleOauthDialogOpen(true);
+  }
+
+  function cancelGoogleOauthLogin() {
+    googleOauthRequestIdRef.current += 1;
+    setGoogleOauthBusy(false);
+    setGoogleOauthDialogOpen(false);
+    setGoogleOauthError("");
+    setPendingGoogleOauthToggle(null);
+  }
+
+  async function startGoogleOauthLogin() {
+    const requestId = googleOauthRequestIdRef.current + 1;
+    googleOauthRequestIdRef.current = requestId;
+    setGoogleOauthBusy(true);
+    setGoogleOauthError("");
+    try {
+      await persistLcstatsSettings(lcstatsSettings, { quiet: true });
+      if (googleOauthRequestIdRef.current !== requestId) return;
+      const status = await invoke("google_lcstats_start_oauth");
+      if (googleOauthRequestIdRef.current !== requestId) return;
+      const nextStatus = {
+        authenticated: !!status?.authenticated,
+        scope: status?.scope ?? null,
+        expires_at: status?.expires_at ?? null,
+      };
+      setGoogleOauthStatus(nextStatus);
+      if (!nextStatus.authenticated) {
+        setGoogleOauthError("Google Sheets permission was not granted.");
+        return;
+      }
+
+      const pending = pendingGoogleOauthToggle;
+      setPendingGoogleOauthToggle(null);
+      setGoogleOauthDialogOpen(false);
+      if (pending?.mod) {
+        await toggleModEnabledForMod(pending.mod, pending.nextEnabled, {
+          ...(pending.opts ?? {}),
+          skipGoogleOauthGate: true,
+        });
+      }
+    } catch (e) {
+      console.error(e);
+      if (googleOauthRequestIdRef.current !== requestId) return;
+      setGoogleOauthError(e?.message ?? String(e));
+    } finally {
+      if (googleOauthRequestIdRef.current === requestId) {
+        setGoogleOauthBusy(false);
+      }
+    }
+  }
+
+  async function logoutGoogleOauth() {
+    setGoogleOauthBusy(true);
+    setGoogleOauthError("");
+    try {
+      await invoke("google_lcstats_logout");
+      await refreshGoogleOauthStatus();
+      const dm = await invoke("get_disabled_mods");
+      setDisabledMods(Array.isArray(dm) ? dm : []);
+    } catch (e) {
+      console.error(e);
+      setGoogleOauthError(e?.message ?? String(e));
+    } finally {
+      setGoogleOauthBusy(false);
+    }
+  }
+
+  function updateLcstatsSettings(patch) {
+    setLcstatsSettings((prev) => ({ ...prev, ...patch }));
+    setLcstatsSaved("");
+    setLcstatsError("");
+  }
+
+  function normalizeLcstatsSettings(settings) {
+    const layout = LCSTATS_LAYOUTS.includes(settings?.layout)
+      ? settings.layout
+      : LCSTATS_LAYOUTS[0];
+    return {
+      ...DEFAULT_LCSTATS_SETTINGS,
+      ...(settings ?? {}),
+      spreadsheetId: extractSpreadsheetId(settings?.spreadsheetId ?? ""),
+      startColumn: lcstatsLayoutUsesColumnFields(layout)
+        ? normalizeSheetColumn(settings?.startColumn, "D")
+        : "",
+      quotaColumn: lcstatsLayoutUsesColumnFields(layout)
+        ? normalizeSheetColumn(settings?.quotaColumn, "B")
+        : "",
+      sellColumn: lcstatsLayoutUsesColumnFields(layout)
+        ? normalizeSheetColumn(settings?.sellColumn, "AB")
+        : "",
+      layout,
+      googleClientId: String(settings?.googleClientId ?? "").trim(),
+      googleClientSecret: String(settings?.googleClientSecret ?? "").trim(),
+    };
+  }
+
+  async function persistLcstatsSettings(settings, { quiet = false } = {}) {
+    if (!quiet) {
+      setLcstatsBusy(true);
+      setLcstatsError("");
+      setLcstatsSaved("");
+    }
+    try {
+      const normalized = normalizeLcstatsSettings(settings);
+      await invoke("set_lcstats_settings", { settings: normalized });
+      if (!quiet) {
+        setLcstatsSettings(normalized);
+        setLcstatsSaved("Saved.");
+      }
+    } catch (e) {
+      console.error(e);
+      setLcstatsError(e?.message ?? String(e));
+    } finally {
+      if (!quiet) setLcstatsBusy(false);
+    }
+  }
+
+  async function loadLcstatsSheetNames(spreadsheetIdOverride = null, opts = {}) {
+    const spreadsheetId = extractSpreadsheetId(
+      spreadsheetIdOverride ?? lcstatsSettings.spreadsheetId
+    );
+    if (!opts.partOfRefresh) setLcstatsRefreshBusy(true);
+    if (!opts.quiet) {
+      setLcstatsError("");
+      setLcstatsSaved("");
+    }
+    try {
+      if (!googleOauthStatus.authenticated) {
+        const status = await refreshGoogleOauthStatus();
+        if (!status.authenticated) {
+          requestGoogleOauthForToggle(selectedMod, true, {
+            skipGoogleOauthGate: true,
+          });
+          return;
+        }
+      }
+      const sheets = await invoke("list_lcstats_sheet_names", {
+        spreadsheetId,
+      });
+      const list = Array.isArray(sheets) ? sheets : [];
+      setLcstatsSheets(list);
+      setLcstatsSettings((prev) => ({
+        ...prev,
+        spreadsheetId,
+        activeSheetName: list.includes(prev.activeSheetName)
+          ? prev.activeSheetName
+          : list[0] || "",
+      }));
+      if (!opts.quiet) {
+        setLcstatsSaved(list.length > 0 ? "Sheet list loaded." : "No sheets found.");
+      }
+    } catch (e) {
+      console.error(e);
+      setLcstatsError(e?.message ?? String(e));
+    } finally {
+      if (!opts.partOfRefresh) setLcstatsRefreshBusy(false);
+    }
+  }
+
+  function handleLcstatsSpreadsheetChange(value) {
+    const nextSettings = {
+      ...lcstatsSettings,
+      spreadsheetId: value,
+      activeSheetName: "",
+    };
+    setLcstatsSettings(nextSettings);
+    setLcstatsSaved("");
+    setLcstatsError("");
+    setLcstatsSheets([]);
+    lcstatsAutoSheetKeyRef.current = value;
+    loadLcstatsSheetNames(value).catch(console.error);
+  }
+
+  async function loadLcstatsSpreadsheets(opts = {}) {
+    await refreshLcstatsGoogleLists(opts);
+  }
+
+  async function refreshLcstatsGoogleLists(opts = {}) {
+    setLcstatsRefreshBusy(true);
+    if (!opts.quiet) {
+      setLcstatsError("");
+      setLcstatsSaved("");
+    }
+    try {
+      if (!googleOauthStatus.authenticated) {
+        const status = await refreshGoogleOauthStatus();
+        if (!status.authenticated) {
+          setGoogleOauthError("");
+          setGoogleOauthDialogOpen(true);
+          return;
+        }
+      }
+      const files = await invoke("list_lcstats_spreadsheets");
+      const spreadsheets = Array.isArray(files) ? files : [];
+      setLcstatsSpreadsheets(spreadsheets);
+
+      const spreadsheetId = extractSpreadsheetId(lcstatsSettings.spreadsheetId);
+      if (spreadsheetId && spreadsheets.some((file) => file.id === spreadsheetId)) {
+        await loadLcstatsSheetNames(spreadsheetId, {
+          quiet: true,
+          partOfRefresh: true,
+        });
+      } else {
+        setLcstatsSheets([]);
+      }
+
+      if (!opts.quiet) {
+        setLcstatsSaved(
+          spreadsheets.length > 0 ? "Spreadsheet list loaded." : "No spreadsheets found."
+        );
+      }
+    } catch (e) {
+      console.error(e);
+      setLcstatsError(e?.message ?? String(e));
+    } finally {
+      setLcstatsRefreshBusy(false);
+    }
+  }
+
+  async function saveLcstatsSettings() {
+    await persistLcstatsSettings(lcstatsSettings);
+  }
+
+  function renderCustomGoogleOauthFields({ compact = false } = {}) {
+    const hasCustomOauth =
+      String(lcstatsSettings.googleClientId ?? "").trim() ||
+      String(lcstatsSettings.googleClientSecret ?? "").trim();
+    return (
+      <div className={compact ? "mt-5" : ""}>
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            className="flex min-w-0 items-center gap-2 text-left text-sm font-semibold text-white/75 transition hover:text-white"
+            onClick={() => setCustomGoogleOauthOpen((open) => !open)}
+            aria-expanded={customGoogleOauthOpen}
+          >
+            <ChevronDown
+              className={cn(
+                "h-4 w-4 shrink-0 text-white/45",
+                customGoogleOauthOpen ? "rotate-180" : ""
+              )}
+            />
+            <span>Custom Google OAuth</span>
+            <span className="text-xs font-medium text-white/35">
+              {hasCustomOauth ? "Override enabled" : "Off, using launcher default"}
+            </span>
+          </button>
+
+          <a
+            href="https://youtu.be/6j4YYn5_mO8"
+            target="_blank"
+            rel="noreferrer"
+            className="group relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-panel-outline bg-white/5 text-white/55 transition hover:bg-white/10 hover:text-white"
+            aria-label="Custom Google OAuth setup guide"
+          >
+            <Info className="h-4 w-4" />
+            <span className="pointer-events-none absolute right-0 top-[calc(100%+0.5rem)] z-20 hidden w-56 rounded-lg border border-panel-outline bg-[#151821] px-3 py-2 text-left text-xs font-medium leading-5 text-white/75 shadow-xl group-hover:block">
+              Custom Google OAuth setup guide
+            </span>
+          </a>
+        </div>
+
+        <div
+          className={cn(
+            "oauth-expand mt-3",
+            customGoogleOauthOpen ? "oauth-expand-open" : ""
+          )}
+        >
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="space-y-2">
+              <label className="block text-xs font-semibold text-white/50">
+                Client ID
+              </label>
+              <Input
+                value={lcstatsSettings.googleClientId}
+                disabled={lcstatsBusy || lcstatsRefreshBusy || googleOauthBusy}
+                onChange={(event) =>
+                  updateLcstatsSettings({ googleClientId: event.target.value })
+                }
+                placeholder="Use launcher default"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="block text-xs font-semibold text-white/50">
+                Client Secret
+              </label>
+              <Input
+                type="password"
+                value={lcstatsSettings.googleClientSecret}
+                disabled={lcstatsBusy || lcstatsRefreshBusy || googleOauthBusy}
+                onChange={(event) =>
+                  updateLcstatsSettings({ googleClientSecret: event.target.value })
+                }
+                placeholder="Use launcher default"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderLcStatsSettingsPanel() {
+    return (
+      <div className="min-h-0 flex flex-1 overflow-hidden">
+        <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-panel-outline bg-black/10 p-4">
+          <div className="space-y-5">
+            {renderCustomGoogleOauthFields()}
+
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2.5rem] gap-3">
+              <div className="min-w-0 space-y-2">
+                <label className="block text-xs font-semibold text-white/50">
+                  Spreadsheet
+                </label>
+                {lcstatsSpreadsheets.length > 0 ? (
+                  <Select
+                    value={extractSpreadsheetId(lcstatsSettings.spreadsheetId)}
+                    onValueChange={handleLcstatsSpreadsheetChange}
+                    disabled={lcstatsRefreshBusy}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select spreadsheet" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {lcstatsSpreadsheets.map((file) => (
+                        <SelectItem key={file.id} value={file.id}>
+                          {file.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                <Input
+                  value={lcstatsSettings.spreadsheetId}
+                  disabled={lcstatsRefreshBusy}
+                  onChange={(event) =>
+                    updateLcstatsSettings({ spreadsheetId: event.target.value })
+                  }
+                  placeholder="https://docs.google.com/spreadsheets/d/..."
+                />
+                )}
+              </div>
+              <div className="min-w-0 space-y-2">
+                <label className="block text-xs font-semibold text-white/50">
+                  Sheet
+                </label>
+                {lcstatsSheets.length > 0 ? (
+                  <Select
+                    value={lcstatsSettings.activeSheetName}
+                    onValueChange={(value) =>
+                      updateLcstatsSettings({ activeSheetName: value })
+                    }
+                    disabled={lcstatsRefreshBusy}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select sheet" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {lcstatsSheets.map((name) => (
+                        <SelectItem key={name} value={name}>
+                          {name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input
+                    value={lcstatsSettings.activeSheetName}
+                    disabled={lcstatsRefreshBusy}
+                    onChange={(event) =>
+                      updateLcstatsSettings({ activeSheetName: event.target.value })
+                    }
+                    placeholder="Sheet1"
+                  />
+                )}
+              </div>
+              <div className="flex items-end">
+                <Button
+                  variant="secondary"
+                  className="h-10 w-10 shrink-0 px-0"
+                  disabled={lcstatsRefreshBusy}
+                  onClick={() => {
+                    refreshLcstatsGoogleLists().catch(console.error);
+                  }}
+                  title="Refresh Google Sheets"
+                  aria-label="Refresh Google Sheets"
+                >
+                  <RefreshCw
+                    className={cn(
+                      "h-4 w-4",
+                      lcstatsRefreshBusy ? "animate-spin" : ""
+                    )}
+                  />
+                </Button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div className="space-y-2">
+                <label className="block text-xs font-semibold text-white/50">
+                  Layout
+                </label>
+                <Select
+                  value={lcstatsSettings.layout}
+                  onValueChange={(value) =>
+                    updateLcstatsSettings(
+                      lcstatsLayoutUsesColumnFields(value)
+                        ? {
+                            layout: value,
+                            startColumn: lcstatsSettings.startColumn || "D",
+                            quotaColumn: lcstatsSettings.quotaColumn || "B",
+                            sellColumn: lcstatsSettings.sellColumn || "AB",
+                          }
+                        : {
+                            layout: value,
+                            startColumn: "",
+                            quotaColumn: "",
+                            sellColumn: "",
+                          }
+                    )
+                  }
+                  disabled={lcstatsBusy || lcstatsRefreshBusy}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select layout" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {LCSTATS_LAYOUTS.map((layout) => (
+                      <SelectItem key={layout} value={layout}>
+                        {layout}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            {lcstatsLayoutUsesColumnFields(lcstatsSettings.layout) ? (
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              {[
+                ["Start column", "startColumn", "D"],
+                ["Quota column", "quotaColumn", "B"],
+                ["Sell column", "sellColumn", "AB"],
+              ].map(([label, key, placeholder]) => (
+                <div key={key} className="space-y-2">
+                  <label className="block text-xs font-semibold text-white/50">
+                    {label}
+                  </label>
+                  <Input
+                    value={lcstatsSettings[key]}
+                    disabled={lcstatsBusy || lcstatsRefreshBusy}
+                    onChange={(event) =>
+                      updateLcstatsSettings({
+                        [key]: normalizeSheetColumn(event.target.value, ""),
+                      })
+                    }
+                    placeholder={placeholder}
+                  />
+                </div>
+              ))}
+            </div>
+            ) : null}
+
+            {lcstatsError ? (
+              <div className="rounded-2xl border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm text-red-200">
+                {lcstatsError}
+              </div>
+            ) : null}
+
+            {lcstatsSaved ? (
+              <div className="rounded-2xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-200">
+                {lcstatsSaved}
+              </div>
+            ) : null}
+
+            <div className="flex items-center justify-end gap-2">
+              <Button
+                variant="secondary"
+                className="h-10"
+                disabled={googleOauthBusy}
+                onClick={() => {
+                  if (googleOauthStatus.authenticated) {
+                    logoutGoogleOauth().catch(console.error);
+                  } else {
+                    setGoogleOauthError("");
+                    setGoogleOauthDialogOpen(true);
+                  }
+                }}
+              >
+                {googleOauthStatus.authenticated ? "Google Logout" : "Google Login"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   async function toggleModEnabledForMod(mod, nextEnabled, opts) {
     if (!mod) return;
     if (isPresetSummaryMod(mod)) return;
@@ -2750,6 +3416,19 @@ export default function LauncherPage({
     }
     if (isEclipsedRunMode(runMode) && !nextEnabled && eclipsedForcedModKeys.has(baseKey)) {
       return;
+    }
+    if (
+      nextEnabled &&
+      !opts?.skipGoogleOauthGate &&
+      requiresGoogleOauthForMod(mod)
+    ) {
+      const status = googleOauthStatus.authenticated
+        ? googleOauthStatus
+        : await refreshGoogleOauthStatus().catch(() => googleOauthStatus);
+      if (!status.authenticated) {
+        requestGoogleOauthForToggle(mod, nextEnabled, opts);
+        return;
+      }
     }
 
     // If the mod has a chained config file, toggle linked mods too.
@@ -2909,6 +3588,7 @@ export default function LauncherPage({
     ? `v${selectedVersion}`
     : "Select version";
   const selectedPresetSummary = isPresetSummaryMod(selectedMod) ? selectedMod : null;
+  const selectedLcStatsTracker = isLcStatsTrackerMod(selectedMod) ? selectedMod : null;
   const showResizablePanels = !!selectedMod;
   const promptVersion = downloadPrompt.version;
   const promptIsWorking =
@@ -4085,6 +4765,7 @@ export default function LauncherPage({
                     isPracticeRunMode(runMode) && practiceModKeys.has(keyLower);
                   const practiceEnableLocked =
                     isPracticeRunMode(runMode) && practiceLockedModKeys.has(keyLower);
+                  const needsGoogleOauth = requiresGoogleOauthForMod(m);
                   return (
                     <div
                       key={listEntryKey(m)}
@@ -4136,6 +4817,11 @@ export default function LauncherPage({
                           {eclipsedEnableLocked ? (
                             <div className="rounded-full border border-violet-400/30 bg-violet-400/10 px-2 py-0.5 text-[11px] font-medium text-violet-200">
                               Eclipsed
+                            </div>
+                          ) : null}
+                          {needsGoogleOauth ? (
+                            <div className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[11px] font-medium text-amber-200">
+                              Google
                             </div>
                           ) : null}
                         </div>
@@ -4384,6 +5070,8 @@ export default function LauncherPage({
                       </div>
                     </div>
                   </>
+                ) : selectedLcStatsTracker ? (
+                  renderLcStatsSettingsPanel()
                 ) : (
                   <>
                 {configLinkState?.is_installed && configLinkState?.is_linked === false && (
@@ -5816,6 +6504,99 @@ export default function LauncherPage({
               >
                 Close
               </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={googleOauthDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            cancelGoogleOauthLogin();
+          } else {
+            setGoogleOauthDialogOpen(true);
+          }
+        }}
+      >
+        <DialogContent className="w-[min(640px,92vw)] p-0">
+          <div className="rounded-3xl border border-panel-outline bg-[#0f1116] p-6 text-white">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-lg font-semibold tracking-[-0.02em]">
+                  Google Login
+                </div>
+                <div className="mt-1 text-sm text-white/55">
+                  LCStatsTracker needs Google Sheets read/write permission.
+                </div>
+              </div>
+              <button
+                type="button"
+                className="rounded-xl border border-panel-outline bg-white/5 p-2 text-white/70 transition hover:bg-white/10 hover:text-white"
+                onClick={cancelGoogleOauthLogin}
+                aria-label="Close Google login"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {renderCustomGoogleOauthFields({ compact: true })}
+
+            <div className="mt-6 rounded-2xl border border-panel-outline bg-white/[0.04] px-4 py-3">
+              <div className="text-sm font-medium text-white">
+                {googleOauthStatus.authenticated ? "Connected" : "Not connected"}
+              </div>
+              <div className="mt-1 text-xs text-white/50">
+                {pendingGoogleOauthToggle?.mod
+                  ? `${pendingGoogleOauthToggle.mod.dev}-${pendingGoogleOauthToggle.mod.name}`
+                  : "LCStatsTracker-MikuOreo"}
+              </div>
+            </div>
+
+            {googleOauthError ? (
+              <div className="mt-4 rounded-2xl border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm text-red-200">
+                {googleOauthError}
+              </div>
+            ) : null}
+
+            <div className="mt-6 flex items-center justify-between gap-2">
+              <Button
+                variant="secondary"
+                className="h-10"
+                disabled={googleOauthBusy || !googleOauthStatus.authenticated}
+                onClick={() => {
+                  logoutGoogleOauth().catch(console.error);
+                }}
+              >
+                <LogOut className="h-4 w-4" />
+                Logout
+              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  className="h-10 min-w-[96px]"
+                  onClick={cancelGoogleOauthLogin}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="default"
+                  className="h-10 min-w-[132px]"
+                  disabled={googleOauthBusy}
+                  onClick={() => {
+                    startGoogleOauthLogin().catch(console.error);
+                  }}
+                >
+                  {googleOauthBusy ? (
+                    <>
+                      <LoaderCircle className="h-4 w-4 animate-spin" />
+                      Waiting...
+                    </>
+                  ) : (
+                    "Login with Google"
+                  )}
+                </Button>
+              </div>
             </div>
           </div>
         </DialogContent>
