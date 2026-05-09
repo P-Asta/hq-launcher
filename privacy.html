@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="./assets/logo.svg" type="image/svg+xml" />
+    <title>Privacy Policy - HQ Launcher</title>
+    <style>
+      :root {
+        --bg: #090b10;
+        --panel: rgba(255, 255, 255, 0.05);
+        --border: rgba(255, 255, 255, 0.1);
+        --text: #f6f7fb;
+        --muted: rgba(246, 247, 251, 0.66);
+        --accent: #f97316;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        color-scheme: dark;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: Inter, "Segoe UI", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top center, rgba(249, 115, 22, 0.14), transparent 22rem),
+          linear-gradient(180deg, #111318 0%, #090b10 48%, #06070a 100%);
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .page {
+        width: min(900px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 28px 0 64px;
+      }
+
+      .nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 48px;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        text-decoration: none;
+      }
+
+      .brand-mark {
+        width: 44px;
+        height: 44px;
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.04);
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+      }
+
+      .brand-mark img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+        transform: scale(0.92);
+      }
+
+      .brand-copy strong {
+        display: block;
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      .brand-copy span {
+        display: block;
+        margin-top: 2px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .nav-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      .nav-link {
+        padding: 10px 14px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.03);
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 13px;
+      }
+
+      .document {
+        padding: 34px;
+        border: 1px solid var(--border);
+        border-radius: 24px;
+        background: var(--panel);
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(38px, 7vw, 64px);
+        line-height: 0.98;
+        letter-spacing: -0.04em;
+      }
+
+      .updated {
+        margin: 14px 0 30px;
+        color: var(--muted);
+      }
+
+      h2 {
+        margin: 34px 0 10px;
+        font-size: 20px;
+      }
+
+      p,
+      li {
+        color: var(--muted);
+        line-height: 1.72;
+      }
+
+      ul {
+        padding-left: 22px;
+      }
+
+      .inline-link {
+        color: #fdba74;
+      }
+
+      @media (max-width: 640px) {
+        .nav {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .document {
+          padding: 24px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <header class="nav">
+        <a class="brand" href="./index.html">
+          <span class="brand-mark">
+            <img src="./assets/logo.svg" alt="HQ Launcher logo" />
+          </span>
+          <span class="brand-copy">
+            <strong>HQ Launcher</strong>
+            <span>High Quota Launcher</span>
+          </span>
+        </a>
+
+        <nav class="nav-links">
+          <a class="nav-link" href="./index.html">Home</a>
+          <a class="nav-link" href="./terms.html">Terms</a>
+          <a class="nav-link" href="https://github.com/p-asta/hq-launcher">GitHub</a>
+        </nav>
+      </header>
+
+      <article class="document">
+        <h1>Privacy Policy</h1>
+        <p class="updated">Last updated: May 10, 2026</p>
+
+        <p>hq-launcher respects your privacy. This Privacy Policy explains what information the application uses and how it is handled.</p>
+
+        <h2>Information We Collect</h2>
+        <p>hq-launcher does not operate its own user account system and does not sell or share personal information.</p>
+        <p>The application may process the following information locally on your device:</p>
+        <ul>
+          <li>Application settings</li>
+          <li>Installed mod configuration</li>
+          <li>Launcher state and preferences</li>
+          <li>Game-related statistics provided by supported local tools or mods</li>
+          <li>Google OAuth authentication tokens, if you choose to connect Google Sheets</li>
+        </ul>
+
+        <h2>Google Account and Google Sheets</h2>
+        <p>If you use the Google Sheets integration, hq-launcher may request permission to access Google Sheets.</p>
+        <p>This access is used only to read spreadsheet or sheet information required for the selected feature and write supported game statistics to the spreadsheet you configure.</p>
+        <p>hq-launcher does not use Google account data for advertising, analytics, resale, or unrelated purposes.</p>
+        <p>Google OAuth tokens are stored locally on your device and are used only to perform the Google Sheets actions you request through the application.</p>
+        <p>You may revoke access at any time from your <a class="inline-link" href="https://myaccount.google.com/permissions">Google Account permissions page</a>.</p>
+
+        <h2>Local Data Storage</h2>
+        <p>hq-launcher stores configuration and authentication data locally on your device. This may include launcher settings, disabled mod lists, and Google authentication tokens.</p>
+        <p>Uninstalling the application or deleting its local configuration files may remove this data.</p>
+
+        <h2>Third-Party Services</h2>
+        <p>hq-launcher may interact with third-party services, including GitHub, Google APIs, Thunderstore, and other mod distribution sources.</p>
+        <p>Use of those services may be subject to their own privacy policies.</p>
+
+        <h2>Data Sharing</h2>
+        <p>hq-launcher does not sell personal information. The application only sends data to third-party services when required for a feature you choose to use, such as writing data to Google Sheets.</p>
+
+        <h2>Security</h2>
+        <p>We take reasonable steps to protect locally stored data. However, no software can guarantee absolute security. You are responsible for keeping your device and Google account secure.</p>
+
+        <h2>Children's Privacy</h2>
+        <p>hq-launcher is not directed toward children under the age required by applicable law. We do not knowingly collect personal information from children.</p>
+
+        <h2>Changes to This Policy</h2>
+        <p>This Privacy Policy may be updated from time to time. Updates will be reflected by changing the "Last updated" date above.</p>
+
+        <h2>Contact</h2>
+        <p>If you have questions about this Privacy Policy, please contact the project maintainer through the <a class="inline-link" href="https://github.com/P-Asta/hq-launcher">GitHub repository</a>.</p>
+      </article>
+    </main>
+  </body>
+</html>

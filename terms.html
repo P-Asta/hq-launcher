@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="./assets/logo.svg" type="image/svg+xml" />
+    <title>Terms of Service - HQ Launcher</title>
+    <style>
+      :root {
+        --bg: #090b10;
+        --panel: rgba(255, 255, 255, 0.05);
+        --border: rgba(255, 255, 255, 0.1);
+        --text: #f6f7fb;
+        --muted: rgba(246, 247, 251, 0.66);
+        --accent: #f97316;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        color-scheme: dark;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: Inter, "Segoe UI", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top center, rgba(249, 115, 22, 0.14), transparent 22rem),
+          linear-gradient(180deg, #111318 0%, #090b10 48%, #06070a 100%);
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .page {
+        width: min(900px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 28px 0 64px;
+      }
+
+      .nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 48px;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        text-decoration: none;
+      }
+
+      .brand-mark {
+        width: 44px;
+        height: 44px;
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.04);
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+      }
+
+      .brand-mark img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+        transform: scale(0.92);
+      }
+
+      .brand-copy strong {
+        display: block;
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      .brand-copy span {
+        display: block;
+        margin-top: 2px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .nav-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      .nav-link {
+        padding: 10px 14px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.03);
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 13px;
+      }
+
+      .document {
+        padding: 34px;
+        border: 1px solid var(--border);
+        border-radius: 24px;
+        background: var(--panel);
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(38px, 7vw, 64px);
+        line-height: 0.98;
+        letter-spacing: -0.04em;
+      }
+
+      .updated {
+        margin: 14px 0 30px;
+        color: var(--muted);
+      }
+
+      h2 {
+        margin: 34px 0 10px;
+        font-size: 20px;
+      }
+
+      p,
+      li {
+        color: var(--muted);
+        line-height: 1.72;
+      }
+
+      ul {
+        padding-left: 22px;
+      }
+
+      .inline-link {
+        color: #fdba74;
+      }
+
+      @media (max-width: 640px) {
+        .nav {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .document {
+          padding: 24px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <header class="nav">
+        <a class="brand" href="./index.html">
+          <span class="brand-mark">
+            <img src="./assets/logo.svg" alt="HQ Launcher logo" />
+          </span>
+          <span class="brand-copy">
+            <strong>HQ Launcher</strong>
+            <span>High Quota Launcher</span>
+          </span>
+        </a>
+
+        <nav class="nav-links">
+          <a class="nav-link" href="./index.html">Home</a>
+          <a class="nav-link" href="./privacy.html">Privacy</a>
+          <a class="nav-link" href="https://github.com/p-asta/hq-launcher">GitHub</a>
+        </nav>
+      </header>
+
+      <article class="document">
+        <h1>Terms of Service</h1>
+        <p class="updated">Last updated: May 10, 2026</p>
+
+        <p>These Terms of Service govern your use of hq-launcher. By using hq-launcher, you agree to these Terms.</p>
+
+        <h2>Use of the Application</h2>
+        <p>hq-launcher is provided as a launcher and utility tool for managing supported game-related features, mods, and integrations.</p>
+        <p>You are responsible for using the application in accordance with applicable laws, platform rules, game terms, and third-party service terms.</p>
+
+        <h2>Open Source Software</h2>
+        <p>hq-launcher may be distributed as open source software. Your use, copying, modification, or distribution of the source code may also be governed by the license included in the project repository.</p>
+
+        <h2>Third-Party Mods and Services</h2>
+        <p>hq-launcher may help install, configure, or launch third-party mods or tools.</p>
+        <p>We do not own or control third-party mods, services, APIs, or websites. We are not responsible for their content, availability, behavior, security, or compatibility.</p>
+        <p>Use of third-party services such as Google APIs, GitHub, Thunderstore, or game-related services may be subject to their own terms and policies.</p>
+
+        <h2>Google Sheets Integration</h2>
+        <p>If you connect Google Sheets, hq-launcher will use the permission you grant only for the application features you choose to use.</p>
+        <p>You are responsible for selecting the correct Google account, spreadsheet, and sheet configuration.</p>
+        <p>You may revoke Google access at any time from your <a class="inline-link" href="https://myaccount.google.com/permissions">Google Account permissions page</a>.</p>
+
+        <h2>User Configuration</h2>
+        <p>You are responsible for any custom configuration you provide, including OAuth credentials, spreadsheet IDs, mod settings, local paths, and other application settings.</p>
+        <p>Incorrect configuration may cause features to fail or produce unintended results.</p>
+
+        <h2>No Warranty</h2>
+        <p>hq-launcher is provided "as is" and "as available" without warranties of any kind.</p>
+        <p>We do not guarantee that the application will be error-free, secure, uninterrupted, compatible with every system, or suitable for every purpose.</p>
+
+        <h2>Limitation of Liability</h2>
+        <p>To the maximum extent permitted by law, the project maintainers are not liable for any indirect, incidental, special, consequential, or punitive damages, including data loss, configuration loss, account issues, game issues, or service interruptions arising from your use of hq-launcher.</p>
+
+        <h2>Updates and Changes</h2>
+        <p>hq-launcher may change over time. Features may be added, changed, removed, or disabled.</p>
+        <p>These Terms may also be updated from time to time. Continued use of the application after changes means you accept the updated Terms.</p>
+
+        <h2>Termination</h2>
+        <p>You may stop using hq-launcher at any time. We may stop providing or maintaining the application at any time.</p>
+
+        <h2>Contact</h2>
+        <p>If you have questions about these Terms, please contact the project maintainer through the <a class="inline-link" href="https://github.com/P-Asta/hq-launcher">GitHub repository</a>.</p>
+      </article>
+    </main>
+  </body>
+</html>
