@@ -1,6 +1,14 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+
+# 1.10.2 (2026-05-11)
+- Added sheet auto fill feature
+  - MakuSheet 1.0
+  - AutoSheetModel
+  - WafrodyAutoSheet (WIP)
+- Fixed a bug that prevented Freemoons from working on Eclipse HQ
+
 ## 1.9.8 (2026-05-02)
 - Added the ability to toggle FreeMoons in Eclipsed HQ (it turns off when switching to another mode and back)
 - Partially resolved the login issue mentioned in [#8](https://github.com/P-Asta/hq-launcher/issues/8)

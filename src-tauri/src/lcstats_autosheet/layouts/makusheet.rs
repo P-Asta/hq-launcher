@@ -3,13 +3,14 @@ use std::collections::HashMap;
 
 use crate::lcstats_autosheet::layouts::MAKUSHEET_LAYOUT;
 use crate::lcstats_autosheet::sheets::{
-    batch_write_cells_user_entered, first_empty_row_from, quote_sheet_name, read_range,
+    batch_update_spreadsheet, batch_write_cells_user_entered, first_empty_row_from, get_sheet_id,
+    quote_sheet_name, read_range,
 };
 use crate::lcstats_autosheet::stats::{
     array_at, int_at, object_at, string_at, strip_moon_number,
 };
 
-const CHECK_COLUMN: &str = "F";
+const CHECK_COLUMN: &str = "K";
 const START_ROW: usize = 3;
 const PLAYER_COLUMN_PAIRS: [(&str, &str); 4] = [("V", "W"), ("X", "Y"), ("Z", "AA"), ("AB", "AC")];
 const PLAYER_ID_ROW: usize = 199;
@@ -37,7 +38,17 @@ pub async fn write(
     let player_columns =
         setup_or_match_player_columns(client, &token, spreadsheet_id, sheet_name, stats).await?;
     let values = build_values(stats, &player_columns, row);
-    batch_write_cells_user_entered(client, &token, spreadsheet_id, sheet_name, values).await
+    batch_write_cells_user_entered(client, &token, spreadsheet_id, sheet_name, values).await?;
+    write_death_notes(
+        client,
+        &token,
+        spreadsheet_id,
+        sheet_name,
+        stats,
+        &player_columns,
+        row,
+    )
+    .await
 }
 
 async fn setup_or_match_player_columns(
@@ -231,4 +242,108 @@ fn death_status(player: &Value) -> String {
         return "S".to_string();
     }
     "X".to_string()
+}
+
+async fn write_death_notes(
+    client: &reqwest::Client,
+    token: &str,
+    spreadsheet_id: &str,
+    sheet_name: &str,
+    stats: &Value,
+    player_columns: &HashMap<String, String>,
+    row: usize,
+) -> Result<(), String> {
+    let sheet_id = get_sheet_id(client, token, spreadsheet_id, sheet_name).await?;
+    let requests = object_at(stats, &["Players"])
+        .into_iter()
+        .filter_map(|(steam_id, player)| {
+            if death_status(&player) != "X" {
+                return None;
+            }
+            let column = player_columns.get(&steam_id)?;
+            let note = death_note(&player);
+            Some(value_with_note_request(
+                sheet_id,
+                column,
+                row,
+                json!("X"),
+                &note,
+            ))
+        })
+        .collect::<Vec<_>>();
+    batch_update_spreadsheet(client, token, spreadsheet_id, requests).await
+}
+
+fn death_note(player: &Value) -> String {
+    let name = player
+        .get("Name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    let time_of_death = player
+        .get("TimeOfDeath")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    let cause_of_death = player
+        .get("CauseOfDeath")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+
+    let mut parts = vec![];
+    if !name.is_empty() {
+        parts.push(name.to_string());
+    }
+    if !time_of_death.is_empty() {
+        parts.push(format!("Time of Death: {time_of_death}"));
+    }
+    if !cause_of_death.is_empty() {
+        parts.push(format!("Cause of Death: {cause_of_death}"));
+    }
+    parts.join("\n")
+}
+
+fn value_with_note_request(
+    sheet_id: i64,
+    column: &str,
+    row: usize,
+    value: Value,
+    note: &str,
+) -> Value {
+    let column_index = column_to_index(column);
+    json!({
+        "updateCells": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": row.saturating_sub(1),
+                "endRowIndex": row,
+                "startColumnIndex": column_index,
+                "endColumnIndex": column_index + 1
+            },
+            "rows": [{
+                "values": [{
+                    "userEnteredValue": google_user_value(value),
+                    "note": note
+                }]
+            }],
+            "fields": "userEnteredValue,note"
+        }
+    })
+}
+
+fn google_user_value(value: Value) -> Value {
+    if let Some(value) = value.as_i64() {
+        json!({ "numberValue": value })
+    } else if let Some(value) = value.as_f64() {
+        json!({ "numberValue": value })
+    } else {
+        json!({ "stringValue": value.as_str().unwrap_or_default() })
+    }
+}
+
+fn column_to_index(column: &str) -> usize {
+    column.chars().fold(0, |index, ch| {
+        index * 26 + (ch.to_ascii_uppercase() as usize - 'A' as usize + 1)
+    }) - 1
 }

@@ -8,8 +8,9 @@ use crate::lcstats_autosheet::sheets::{
 use crate::lcstats_autosheet::stats::{object_at, string_at, strip_moon_number, value_at};
 
 const TARGET_SHEET_CELL: &str = "A1";
-const CHECK_COLUMN: &str = "G";
+const CHECK_COLUMN: &str = "X";
 const START_ROW: usize = 4;
+const PLAYER_NAME_ROW: usize = 3;
 const PLAYER_COLUMNS: [&str; 4] = ["AD", "AE", "AF", "AG"];
 
 const MOON_COLUMN: &str = "G";
@@ -105,6 +106,7 @@ async fn read_target_sheet(
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        .filter(|value| !value.eq_ignore_ascii_case("R"))
         .map(ToOwned::to_owned))
 }
 
@@ -131,6 +133,7 @@ async fn resolve_target_sheet(
 
 #[derive(Debug, Clone)]
 struct NormalizedPlayer {
+    name: String,
     status: String,
     note: String,
 }
@@ -164,7 +167,7 @@ impl NormalizedStats {
             .unwrap_or(0);
         Self {
             moon_name: strip_apostrophe(&string_at(stats, &["MoonInfo", "Name"])),
-            weather: strip_apostrophe(&string_at(stats, &["MoonInfo", "Weather"])),
+            weather: wafrody_weather(&string_at(stats, &["MoonInfo", "Weather"])),
             interior: strip_apostrophe(&string_at(stats, &["DungeonInfo", "Interior"])),
             item_count: intish_at(stats, &["DungeonInfo", "ItemCount"]),
             collected_total: intish_at(stats, &["CollectedTotal"]),
@@ -226,7 +229,7 @@ fn normalize_players(stats: &Value) -> Vec<NormalizedPlayer> {
             }
             .to_string();
 
-            let mut note_parts = vec![name];
+            let mut note_parts = vec![name.clone()];
             if !time_of_death.is_empty() {
                 note_parts.push(format!("Time of Death: {time_of_death}"));
             }
@@ -235,6 +238,7 @@ fn normalize_players(stats: &Value) -> Vec<NormalizedPlayer> {
             }
 
             NormalizedPlayer {
+                name: name.clone(),
                 status,
                 note: note_parts.join("\n"),
             }
@@ -275,6 +279,13 @@ fn build_value_updates(stats: &NormalizedStats, row: usize) -> Vec<(String, usiz
     }
     if stats.new_quota != 0 {
         values.push((NEW_QUOTA_COLUMN.to_string(), row, json!(stats.new_quota)));
+    }
+    for (index, player) in stats.players.iter().take(PLAYER_COLUMNS.len()).enumerate() {
+        values.push((
+            PLAYER_COLUMNS[index].to_string(),
+            PLAYER_NAME_ROW,
+            json!(player.name),
+        ));
     }
 
     values
@@ -398,6 +409,15 @@ fn google_user_value(value: Value) -> Value {
 
 fn strip_apostrophe(value: &str) -> String {
     value.trim_start_matches('\'').to_string()
+}
+
+fn wafrody_weather(value: &str) -> String {
+    let weather = strip_apostrophe(value);
+    if weather.eq_ignore_ascii_case("Mild") {
+        "Clear".to_string()
+    } else {
+        weather
+    }
 }
 
 fn intish_at(stats: &Value, path: &[&str]) -> i64 {

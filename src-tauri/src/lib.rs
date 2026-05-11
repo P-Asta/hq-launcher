@@ -56,6 +56,7 @@ use crate::{
 };
 
 const INSTALL_COMPLETE_MARKER: &str = ".hq_install_complete";
+const DISABLEMOD_FILE_VERSION: u32 = 5;
 
 fn manifest_state_has_version(app: &tauri::AppHandle, version: u32) -> bool {
     let Ok(app_data) = app.path().app_data_dir() else {
@@ -150,6 +151,26 @@ fn is_run_mode_tag(tag: &str) -> bool {
 fn mod_has_run_mode_affinity(spec: &mod_config::ModEntry) -> bool {
     spec.tags.iter().any(|tag| is_run_mode_tag(tag))
         || spec.tag_constraints.keys().any(|tag| is_run_mode_tag(tag))
+}
+
+fn is_eclipsed_hq_preset(preset: &str) -> bool {
+    let p = preset.trim().to_lowercase();
+    matches!(p.as_str(), "eclipsed" | "eclipsed_hq" | "eclipsed-hq")
+}
+
+fn is_eclipsed_hq_optional_mod(dev: &str, name: &str) -> bool {
+    dev.eq_ignore_ascii_case("SlushyRH") && name.eq_ignore_ascii_case("FreeeeeeMoooooons")
+}
+
+fn allow_eclipsed_hq_optional_mods(
+    preset: &str,
+    forced_disabled_ids: &mut Vec<(String, String)>,
+) {
+    if !is_eclipsed_hq_preset(preset) {
+        return;
+    }
+
+    forced_disabled_ids.retain(|(dev, name)| !is_eclipsed_hq_optional_mod(dev, name));
 }
 
 fn is_wesley_base_run(tags: &[String], practice: bool) -> bool {
@@ -2278,7 +2299,7 @@ fn read_disablemod(app: &tauri::AppHandle) -> Result<DisableModFile, String> {
     if !path.exists() {
         // v4: include default disabled layer mods and StreamChats.
         let f = DisableModFile {
-            version: 4,
+            version: DISABLEMOD_FILE_VERSION,
             mods: default_mods,
         };
         // best-effort persist so frontend sees stable state
@@ -2292,7 +2313,7 @@ fn read_disablemod(app: &tauri::AppHandle) -> Result<DisableModFile, String> {
             // If the file is corrupted, recover with defaults rather than breaking the UI.
             log::warn!("Failed to parse disablemod.json, resetting: {e}");
             let f = DisableModFile {
-                version: 4,
+                version: DISABLEMOD_FILE_VERSION,
                 mods: default_mods,
             };
             let _ = write_disablemod(app, &f);
@@ -2316,6 +2337,12 @@ fn read_disablemod(app: &tauri::AppHandle) -> Result<DisableModFile, String> {
         f.mods
             .sort_by(|a, b| a.dev.cmp(&b.dev).then(a.name.cmp(&b.name)));
         f.mods.dedup();
+        let _ = write_disablemod(app, &f);
+    }
+    if f.version == 4 {
+        f.mods
+            .retain(|m| m != &normalize_mod_id("MikuOreo", "LCStatsTracker"));
+        f.version = DISABLEMOD_FILE_VERSION;
         let _ = write_disablemod(app, &f);
     }
 
@@ -2713,7 +2740,6 @@ fn describe_mode_file_changes(practice: bool, tags: &[String]) -> String {
 // (intentionally no "is_disabled"/"is_mod_enabled" helpers; frontend uses disablemod list as source of truth)
 
 fn apply_disabled_mods_for_version(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
-    ensure_lcstats_disabled_when_vlog_disabled(app)?;
     apply_effective_mod_states_for_version(app, version, &[], &[])
 }
 
@@ -2765,38 +2791,7 @@ fn sync_vlog_with_disablemod_for_version(
     app: &tauri::AppHandle,
     version: u32,
 ) -> Result<(), String> {
-    ensure_lcstats_disabled_when_vlog_disabled(app)?;
     sync_named_mod_with_disablemod_for_version(app, version, "HQHQTeam", "VLog")
-}
-
-fn sync_lcstats_with_disablemod_for_version(
-    app: &tauri::AppHandle,
-    version: u32,
-) -> Result<(), String> {
-    sync_named_mod_with_disablemod_for_version(app, version, "MikuOreo", "LCStatsTracker")
-}
-
-fn ensure_lcstats_disabled_when_vlog_disabled(app: &tauri::AppHandle) -> Result<bool, String> {
-    let mut list = read_disablemod(app)?;
-    let vlog_id = normalize_mod_id("HQHQTeam", "VLog");
-    if !list.mods.iter().any(|m| m == &vlog_id) {
-        return Ok(false);
-    }
-    let changed = add_disabled_mod(&mut list, "MikuOreo", "LCStatsTracker");
-    if changed {
-        write_disablemod(app, &list)?;
-    }
-    Ok(changed)
-}
-
-fn disable_lcstats_for_version(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
-    let mut list = read_disablemod(app)?;
-    let changed = add_disabled_mod(&mut list, "MikuOreo", "LCStatsTracker");
-    if changed {
-        write_disablemod(app, &list)?;
-    }
-    let _ = sync_lcstats_with_disablemod_for_version(app, version);
-    Ok(())
 }
 
 fn practice_mode_mod_ids() -> Vec<(String, String)> {
@@ -2859,7 +2854,6 @@ fn ensure_practice_mods_disabled_for_version(
             let _ = set_mod_files_old_suffix(&dir, false);
         }
     }
-    let _ = disable_lcstats_for_version(app, version);
 
     Ok(())
 }
@@ -2992,7 +2986,6 @@ async fn prepare_practice_mods_for_version(
     for (dir, enabled, _label) in rename_ops {
         let _ = set_mod_files_old_suffix(&dir, enabled);
     }
-    let _ = disable_lcstats_for_version(app, version);
 
     Ok(practice_ids)
 }
@@ -4404,7 +4397,6 @@ async fn launch_game(
 ) -> Result<u32, String> {
     wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
     let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
-    ensure_lcstats_disabled_without_google_auth(&app)?;
 
     let mut forced_disabled_ids = practice_mode_mod_ids();
     forced_disabled_ids.extend(run_mode_tagged_mod_ids(version, None).await?);
@@ -4468,7 +4460,6 @@ async fn launch_game_practice(
 ) -> Result<u32, String> {
     wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
     let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
-    ensure_lcstats_disabled_without_google_auth(&app)?;
 
     // Practice run: install + enable practice mods (compatible with this game version).
     let practice_ids = prepare_practice_mods_for_version(&app, version, None).await?;
@@ -4558,7 +4549,6 @@ async fn launch_game_preset(
     }
 
     let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
-    ensure_lcstats_disabled_without_google_auth(&app)?;
 
     if !practice {
         // Non-practice run: force-disable practice mods.
@@ -4567,7 +4557,8 @@ async fn launch_game_preset(
         let _ = force_enable_mods_for_version(&app, version, &preset_ids);
     }
 
-    let tagged_disabled_ids = run_mode_tagged_mod_ids(version, None).await?;
+    let mut tagged_disabled_ids = run_mode_tagged_mod_ids(version, None).await?;
+    allow_eclipsed_hq_optional_mods(&preset, &mut tagged_disabled_ids);
     let mut forced_enabled_ids = preset_ids.clone();
     forced_enabled_ids.extend(practice_ids.clone());
     let forced_disabled_ids = if practice {
@@ -4704,7 +4695,8 @@ async fn prepare_preset_for_version(
         return Err("Cancelled".to_string());
     }
 
-    let tagged_disabled_ids = run_mode_tagged_mod_ids(version, Some(&cancel)).await?;
+    let mut tagged_disabled_ids = run_mode_tagged_mod_ids(version, Some(&cancel)).await?;
+    allow_eclipsed_hq_optional_mods(preset, &mut tagged_disabled_ids);
     let mut forced_enabled_ids = preset_ids.clone();
     forced_enabled_ids.extend(practice_ids.clone());
     let forced_disabled_ids = if practice {
@@ -4953,10 +4945,12 @@ fn get_disabled_mods(app: tauri::AppHandle) -> Result<Vec<DisabledMod>, String> 
     Ok(read_disablemod(&app)?.mods)
 }
 
-fn ensure_lcstats_disabled_without_google_auth(app: &tauri::AppHandle) -> Result<(), String> {
-    if google_oauth::auth_status(app.clone())?.authenticated {
-        return Ok(());
-    }
+fn is_lcstats_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
+    let disabled_keys = disabled_mod_keys(&read_disablemod(app)?.mods);
+    Ok(!disabled_keys.contains(&normalize_mod_key("MikuOreo", "LCStatsTracker")))
+}
+
+fn disable_lcstats_in_disablemod(app: &tauri::AppHandle) -> Result<(), String> {
     let mut list = read_disablemod(app)?;
     if add_disabled_mod(&mut list, "MikuOreo", "LCStatsTracker") {
         write_disablemod(app, &list)?;
@@ -4964,9 +4958,11 @@ fn ensure_lcstats_disabled_without_google_auth(app: &tauri::AppHandle) -> Result
     Ok(())
 }
 
-fn is_lcstats_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
-    let disabled_keys = disabled_mod_keys(&read_disablemod(app)?.mods);
-    Ok(!disabled_keys.contains(&normalize_mod_key("MikuOreo", "LCStatsTracker")))
+fn ensure_lcstats_disabled_without_google_auth(app: &tauri::AppHandle) -> Result<(), String> {
+    if google_oauth::auth_status(app.clone())?.authenticated {
+        return Ok(());
+    }
+    disable_lcstats_in_disablemod(app)
 }
 
 #[tauri::command]
@@ -4986,7 +4982,7 @@ async fn google_lcstats_start_oauth(
 #[tauri::command]
 fn google_lcstats_logout(app: tauri::AppHandle) -> Result<bool, String> {
     google_oauth::logout(app.clone())?;
-    ensure_lcstats_disabled_without_google_auth(&app)?;
+    disable_lcstats_in_disablemod(&app)?;
     Ok(true)
 }
 
@@ -5036,12 +5032,6 @@ async fn set_mod_enabled(
         && dev.eq_ignore_ascii_case("MikuOreo")
         && name.eq_ignore_ascii_case("LCStatsTracker")
     {
-        let disabled_keys = disabled_mod_keys(&read_disablemod(&app)?.mods);
-        if disabled_keys.contains(&normalize_mod_key("HQHQTeam", "VLog")) {
-            return Err(
-                "VLog must be enabled before enabling MikuOreo-LCStatsTracker.".to_string(),
-            );
-        }
         let status = google_oauth::auth_status(app.clone())?;
         if !status.authenticated {
             return Err("Google login is required to enable MikuOreo-LCStatsTracker.".to_string());
@@ -5055,9 +5045,6 @@ async fn set_mod_enabled(
     list.mods.retain(|m| m != &id);
     if !enabled {
         add_disabled_mod(&mut list, &dev, &name);
-        if dev.eq_ignore_ascii_case("HQHQTeam") && name.eq_ignore_ascii_case("VLog") {
-            add_disabled_mod(&mut list, "MikuOreo", "LCStatsTracker");
-        }
     }
     write_disablemod(&app, &list)?;
 
@@ -5139,9 +5126,6 @@ async fn set_mod_enabled(
     }
     if let Some(dir) = mod_dir_for(&patchers, &dev, &name) {
         let _ = set_mod_files_old_suffix(&dir, enabled);
-    }
-    if !enabled && dev.eq_ignore_ascii_case("HQHQTeam") && name.eq_ignore_ascii_case("VLog") {
-        let _ = sync_lcstats_with_disablemod_for_version(&app, version);
     }
     Ok(true)
 }

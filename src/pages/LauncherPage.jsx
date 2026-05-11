@@ -115,6 +115,10 @@ function isEclipsedHqRunMode(mode) {
   return String(mode ?? "").toLowerCase() === "eclipsed_hq";
 }
 
+function shouldResetFreeMoonsOnRunModeChange(mode) {
+  return isSmhqRunMode(mode) || isEclipsedHqRunMode(mode);
+}
+
 function isUiHiddenMod(mod) {
   return Array.isArray(mod?.tags)
     ? mod.tags.some((tag) => String(tag).toLowerCase() === "ui_hidden")
@@ -197,6 +201,7 @@ function clampVersionToRange(version, range) {
 
 const PRACTICE_LOCKED_MOD_KEYS = new Set([
   "hqhqteam::vlog",
+  "mikuoreo::lcstatstracker",
 ]);
 
 const SMHQ_FORCED_MOD_KEYS = new Set([
@@ -3512,7 +3517,7 @@ export default function LauncherPage({
     return toggleModEnabledForMod(selectedMod, nextEnabled);
   }
 
-  async function resetEclipsedHqOptionalMods(version) {
+  async function resetFreeMoonsMod(version) {
     const v = Number(version);
     if (!Number.isFinite(v)) return;
 
@@ -4383,13 +4388,14 @@ export default function LauncherPage({
     const prevVer = selectedVersion;
     const range = getPresetVersionRange(manifest, nextRunMode);
     const effectiveV = clampVersionToRange(selectedVersion, range);
-    const shouldResetEclipsedHqOptionalMods =
+    const shouldResetFreeMoonsMod =
       prevRun !== nextRunMode &&
-      (isEclipsedHqRunMode(prevRun) || isEclipsedHqRunMode(nextRunMode));
+      (shouldResetFreeMoonsOnRunModeChange(prevRun) ||
+        shouldResetFreeMoonsOnRunModeChange(nextRunMode));
 
     setRunMode(nextRunMode);
-    if (shouldResetEclipsedHqOptionalMods) {
-      await resetEclipsedHqOptionalMods(effectiveV);
+    if (shouldResetFreeMoonsMod) {
+      await resetFreeMoonsMod(effectiveV);
     }
     if (effectiveV !== selectedVersion) {
       setSelectedVersion(effectiveV);
