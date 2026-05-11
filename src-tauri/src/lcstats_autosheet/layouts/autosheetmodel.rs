@@ -1,7 +1,9 @@
 use serde_json::{json, Value};
 
 use crate::lcstats_autosheet::layouts::AUTOSHEETMODEL_LAYOUT;
-use crate::lcstats_autosheet::sheets::{first_empty_row, number_value, read_number, value_as_f64, write_cells};
+use crate::lcstats_autosheet::sheets::{
+    first_empty_row, number_value, read_number, value_as_f64, write_cells,
+};
 use crate::lcstats_autosheet::stats::{
     array_at, bool_at, enemy_count, int_at, missed_item_count, normalize_column, string_at,
     strip_moon_number, sum_array,

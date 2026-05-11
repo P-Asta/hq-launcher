@@ -2,8 +2,8 @@
 - Content
 
 
-# 1.10.2 (2026-05-11)
-- Added sheet auto fill feature
+# 1.10.3 (2026-05-11)
+- Added **sheet auto fill ✨** feature
   - MakuSheet 1.0
   - AutoSheetModel
   - WafrodyAutoSheet (WIP)

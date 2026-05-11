@@ -162,10 +162,7 @@ fn is_eclipsed_hq_optional_mod(dev: &str, name: &str) -> bool {
     dev.eq_ignore_ascii_case("SlushyRH") && name.eq_ignore_ascii_case("FreeeeeeMoooooons")
 }
 
-fn allow_eclipsed_hq_optional_mods(
-    preset: &str,
-    forced_disabled_ids: &mut Vec<(String, String)>,
-) {
+fn allow_eclipsed_hq_optional_mods(preset: &str, forced_disabled_ids: &mut Vec<(String, String)>) {
     if !is_eclipsed_hq_preset(preset) {
         return;
     }

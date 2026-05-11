@@ -5,7 +5,9 @@ use crate::lcstats_autosheet::sheets::{
     batch_update_spreadsheet, batch_write_cells_user_entered, first_empty_row_from, get_sheet_id,
     read_range, write_cells,
 };
-use crate::lcstats_autosheet::stats::{object_at, string_at, strip_moon_number, value_at};
+use crate::lcstats_autosheet::stats::{
+    array_at, object_at, string_at, strip_moon_number, value_at,
+};
 
 const TARGET_SHEET_CELL: &str = "A1";
 const CHECK_COLUMN: &str = "X";
@@ -17,8 +19,17 @@ const MOON_COLUMN: &str = "G";
 const WEATHER_COLUMN: &str = "H";
 const INTERIOR_COLUMN: &str = "I";
 const ITEM_COUNT_COLUMN: &str = "K";
+const REGULAR_ITEMS_COLUMN: &str = "M";
+const BEEHIVE_COUNT_COLUMN: &str = "N";
+const EGG_VALUE_COLUMN: &str = "P";
+const METEOR_SHOWER_TIME_COLUMN: &str = "S";
+const SHOTGUNS_COLLECTED_COLUMN: &str = "T";
+const NUTCRACKER_COUNT_COLUMN: &str = "U";
+const KNIVES_COLLECTED_COLUMN: &str = "V";
+const BUTLER_COUNT_COLUMN: &str = "W";
 const COLLECTED_TOTAL_COLUMN: &str = "X";
 const BOTTOM_LINE_COLUMN: &str = "Y";
+const EGG_BEEHIVE_VALUE_COLUMN: &str = "Z";
 const VALUE_SOLD_COLUMN: &str = "AJ";
 const NEW_QUOTA_COLUMN: &str = "C";
 const EXTRA_NUMBER_COLUMN: &str = "L";
@@ -144,8 +155,17 @@ struct NormalizedStats {
     weather: String,
     interior: String,
     item_count: i64,
+    regular_items: i64,
+    beehive_count: i64,
+    egg_value: i64,
+    meteor_shower_time: String,
+    shotguns_collected: i64,
+    nutcracker_count: usize,
+    knives_collected: i64,
+    butler_count: usize,
     collected_total: i64,
     bottom_line: i64,
+    egg_beehive_value: i64,
     value_sold: i64,
     new_quota: i64,
     extra_number: usize,
@@ -157,21 +177,39 @@ struct NormalizedStats {
 
 impl NormalizedStats {
     fn from_stats(stats: &Value) -> Self {
-        let bee_count = value_at(stats, &["BeeInfo", "Values"])
-            .and_then(Value::as_array)
-            .map(Vec::len)
-            .unwrap_or(0);
-        let egg_count = value_at(stats, &["BirdInfo", "EggValues"])
-            .and_then(Value::as_array)
-            .map(Vec::len)
-            .unwrap_or(0);
+        let item_count = intish_at(stats, &["DungeonInfo", "ItemCount"]);
+        let bee_count = array_at(stats, &["BeeInfo", "Values"]).len();
+        let egg_count = array_at(stats, &["BirdInfo", "EggValues"]).len();
+        let missed_beehive_count = missed_item_type_count(stats, "Bee hive");
+        let bee_value = sum_intish_array(stats, &["BeeInfo", "Values"]);
+        let egg_value = sum_intish_array(stats, &["BirdInfo", "EggValues"]);
+        let missed_regular_item_count = array_at(stats, &["MissedItems"])
+            .iter()
+            .filter(|item| {
+                let item_type = item
+                    .get("ItemType")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                !item_type.eq_ignore_ascii_case("Egg")
+                    && !item_type.eq_ignore_ascii_case("Bee hive")
+            })
+            .count() as i64;
         Self {
             moon_name: strip_apostrophe(&string_at(stats, &["MoonInfo", "Name"])),
             weather: wafrody_weather(&string_at(stats, &["MoonInfo", "Weather"])),
             interior: strip_apostrophe(&string_at(stats, &["DungeonInfo", "Interior"])),
-            item_count: intish_at(stats, &["DungeonInfo", "ItemCount"]),
+            item_count,
+            regular_items: missed_regular_item_count,
+            beehive_count: missed_beehive_count as i64,
+            egg_value,
+            meteor_shower_time: strip_apostrophe(&string_at(stats, &["MeteorShowerTime"])),
+            shotguns_collected: intish_at(stats, &["ShotgunsCollected"]),
+            nutcracker_count: indoor_enemy_count(stats, "Nutcracker"),
+            knives_collected: intish_at(stats, &["KnivesCollected"]),
+            butler_count: indoor_enemy_count(stats, "Butler"),
             collected_total: intish_at(stats, &["CollectedTotal"]),
             bottom_line: intish_at(stats, &["BottomLine"]),
+            egg_beehive_value: egg_value + bee_value,
             value_sold: intish_at(stats, &["ValueSold"]),
             new_quota: intish_at(stats, &["NewQuota"]),
             extra_number: bee_count + egg_count,
@@ -257,6 +295,42 @@ fn build_value_updates(stats: &NormalizedStats, row: usize) -> Vec<(String, usiz
         (INTERIOR_COLUMN.to_string(), row, json!(stats.interior)),
         (ITEM_COUNT_COLUMN.to_string(), row, json!(stats.item_count)),
         (
+            REGULAR_ITEMS_COLUMN.to_string(),
+            row,
+            json!(stats.regular_items),
+        ),
+        (
+            BEEHIVE_COUNT_COLUMN.to_string(),
+            row,
+            json!(stats.beehive_count),
+        ),
+        (EGG_VALUE_COLUMN.to_string(), row, json!(stats.egg_value)),
+        (
+            METEOR_SHOWER_TIME_COLUMN.to_string(),
+            row,
+            json!(stats.meteor_shower_time),
+        ),
+        (
+            SHOTGUNS_COLLECTED_COLUMN.to_string(),
+            row,
+            json!(stats.shotguns_collected),
+        ),
+        (
+            NUTCRACKER_COUNT_COLUMN.to_string(),
+            row,
+            json!(stats.nutcracker_count),
+        ),
+        (
+            KNIVES_COLLECTED_COLUMN.to_string(),
+            row,
+            json!(stats.knives_collected),
+        ),
+        (
+            BUTLER_COUNT_COLUMN.to_string(),
+            row,
+            json!(stats.butler_count),
+        ),
+        (
             COLLECTED_TOTAL_COLUMN.to_string(),
             row,
             json!(stats.collected_total),
@@ -265,6 +339,11 @@ fn build_value_updates(stats: &NormalizedStats, row: usize) -> Vec<(String, usiz
             BOTTOM_LINE_COLUMN.to_string(),
             row,
             json!(stats.bottom_line),
+        ),
+        (
+            EGG_BEEHIVE_VALUE_COLUMN.to_string(),
+            row,
+            json!(stats.egg_beehive_value),
         ),
         (
             EXTRA_NUMBER_COLUMN.to_string(),
@@ -422,6 +501,35 @@ fn wafrody_weather(value: &str) -> String {
 
 fn intish_at(stats: &Value, path: &[&str]) -> i64 {
     value_at(stats, path).map(value_as_i64).unwrap_or(0)
+}
+
+fn sum_intish_array(stats: &Value, path: &[&str]) -> i64 {
+    array_at(stats, path).iter().map(value_as_i64).sum()
+}
+
+fn missed_item_type_count(stats: &Value, item_type: &str) -> usize {
+    array_at(stats, &["MissedItems"])
+        .iter()
+        .filter(|item| {
+            item.get("ItemType")
+                .and_then(Value::as_str)
+                .map(|value| value.eq_ignore_ascii_case(item_type))
+                .unwrap_or(false)
+        })
+        .count()
+}
+
+fn indoor_enemy_count(stats: &Value, enemy: &str) -> usize {
+    array_at(stats, &["IndoorSpawns"])
+        .iter()
+        .filter(|spawn| {
+            spawn
+                .get("Enemy")
+                .and_then(Value::as_str)
+                .map(|value| value.eq_ignore_ascii_case(enemy))
+                .unwrap_or(false)
+        })
+        .count()
 }
 
 fn value_as_i64(value: &Value) -> i64 {

@@ -6,9 +6,7 @@ use crate::lcstats_autosheet::sheets::{
     batch_update_spreadsheet, batch_write_cells_user_entered, first_empty_row_from, get_sheet_id,
     quote_sheet_name, read_range,
 };
-use crate::lcstats_autosheet::stats::{
-    array_at, int_at, object_at, string_at, strip_moon_number,
-};
+use crate::lcstats_autosheet::stats::{array_at, int_at, object_at, string_at, strip_moon_number};
 
 const CHECK_COLUMN: &str = "K";
 const START_ROW: usize = 3;
@@ -32,9 +30,15 @@ pub async fn write(
     }
 
     let token = crate::google_oauth::access_token(app).await?;
-    let row =
-        first_empty_row_from(client, &token, spreadsheet_id, sheet_name, CHECK_COLUMN, START_ROW)
-            .await?;
+    let row = first_empty_row_from(
+        client,
+        &token,
+        spreadsheet_id,
+        sheet_name,
+        CHECK_COLUMN,
+        START_ROW,
+    )
+    .await?;
     let player_columns =
         setup_or_match_player_columns(client, &token, spreadsheet_id, sheet_name, stats).await?;
     let values = build_values(stats, &player_columns, row);
@@ -106,7 +110,9 @@ async fn setup_or_match_player_columns(
     let mut player_columns = HashMap::new();
     if existing_slots.is_empty() {
         let mut updates = vec![];
-        for (index, (steam_id, player)) in players.iter().take(PLAYER_COLUMN_PAIRS.len()).enumerate() {
+        for (index, (steam_id, player)) in
+            players.iter().take(PLAYER_COLUMN_PAIRS.len()).enumerate()
+        {
             let (column, next_column) = PLAYER_COLUMN_PAIRS[index];
             let column = column.to_string();
             player_columns.insert(steam_id.clone(), column.clone());
@@ -114,7 +120,10 @@ async fn setup_or_match_player_columns(
             updates.push((
                 column.clone(),
                 PLAYER_NAME_ROW,
-                json!(player.get("Name").and_then(Value::as_str).unwrap_or_default()),
+                json!(player
+                    .get("Name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()),
             ));
             updates.push((next_column.to_string(), PLAYER_NAME_ROW, json!("")));
         }
@@ -161,9 +170,21 @@ fn build_values(
     let mut values = vec![
         ("F".to_string(), row, json!(maku_moon_name(stats))),
         ("G".to_string(), row, json!(maku_weather(stats))),
-        ("H".to_string(), row, json!(string_at(stats, &["DungeonInfo", "Interior"]).to_uppercase())),
-        ("I".to_string(), row, json!(int_at(stats, &["DungeonInfo", "ItemCount"]))),
-        ("J".to_string(), row, json!(array_at(stats, &["BeeInfo", "Values"]).len())),
+        (
+            "H".to_string(),
+            row,
+            json!(string_at(stats, &["DungeonInfo", "Interior"]).to_uppercase()),
+        ),
+        (
+            "I".to_string(),
+            row,
+            json!(int_at(stats, &["DungeonInfo", "ItemCount"])),
+        ),
+        (
+            "J".to_string(),
+            row,
+            json!(array_at(stats, &["BeeInfo", "Values"]).len()),
+        ),
         ("K".to_string(), row, json!(collected)),
         ("L".to_string(), row, json!(available)),
     ];
