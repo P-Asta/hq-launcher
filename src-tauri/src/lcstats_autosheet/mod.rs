@@ -81,8 +81,7 @@ async fn run_listener(app: tauri::AppHandle) -> Result<(), String> {
                     );
                     continue;
                 }
-                if let Err(e) =
-                    layouts::write_stats(app.clone(), &client, &settings.layout, &stats).await
+                if let Err(e) = layouts::write_stats(app.clone(), &client, &settings, &stats).await
                 {
                     log::warn!("Failed to write LCStatsTracker stats to Google Sheets: {e}");
                 }

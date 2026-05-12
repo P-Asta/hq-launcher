@@ -1,8 +1,10 @@
 use serde_json::{json, Value};
 
+use crate::google_oauth::LcStatsSettings;
 use crate::lcstats_autosheet::layouts::AUTOSHEETMODEL_LAYOUT;
 use crate::lcstats_autosheet::sheets::{
-    first_empty_row, number_value, read_number, value_as_f64, write_cells,
+    batch_write_cells_user_entered, first_empty_row, number_value, read_number, value_as_f64,
+    write_cells,
 };
 use crate::lcstats_autosheet::stats::{
     array_at, bool_at, enemy_count, int_at, missed_item_count, normalize_column, string_at,
@@ -10,11 +12,11 @@ use crate::lcstats_autosheet::stats::{
 };
 
 pub async fn write(
-    app: tauri::AppHandle,
     client: &reqwest::Client,
+    token: &str,
+    settings: &LcStatsSettings,
     stats: &Value,
 ) -> Result<(), String> {
-    let settings = crate::google_oauth::get_settings(app.clone())?;
     if !settings.layout.eq_ignore_ascii_case(AUTOSHEETMODEL_LAYOUT) {
         return Ok(());
     }
@@ -27,16 +29,15 @@ pub async fn write(
         return Err("spreadsheet or sheet is not set".to_string());
     }
 
-    let token = crate::google_oauth::access_token(app).await?;
     let row = process_stats(stats);
     match row.len() {
         1 => {
             let current_sell_count =
-                first_empty_row(client, &token, spreadsheet_id, sheet_name, &sell_column).await?;
+                first_empty_row(client, token, spreadsheet_id, sheet_name, &sell_column).await?;
             if current_sell_count == 1 {
                 write_cells(
                     client,
-                    &token,
+                    token,
                     spreadsheet_id,
                     sheet_name,
                     &format!("{sell_column}2"),
@@ -47,7 +48,7 @@ pub async fn write(
                 let target_row = current_sell_count + 2;
                 let sell_amount = read_number(
                     client,
-                    &token,
+                    token,
                     spreadsheet_id,
                     sheet_name,
                     &format!("{sell_column}{target_row}"),
@@ -56,7 +57,7 @@ pub async fn write(
                 let value = value_as_f64(&row[0]) + sell_amount;
                 write_cells(
                     client,
-                    &token,
+                    token,
                     spreadsheet_id,
                     sheet_name,
                     &format!("{sell_column}{target_row}"),
@@ -67,42 +68,39 @@ pub async fn write(
         }
         2 => {
             let current_quota_count =
-                first_empty_row(client, &token, spreadsheet_id, sheet_name, &quota_column).await?;
+                first_empty_row(client, token, spreadsheet_id, sheet_name, &quota_column).await?;
             let sell_row = current_quota_count.saturating_sub(1).max(1);
             let sell_this_quota_amount = read_number(
                 client,
-                &token,
+                token,
                 spreadsheet_id,
                 sheet_name,
                 &format!("{sell_column}{sell_row}"),
             )
             .await?;
             let value = value_as_f64(&row[1]) + sell_this_quota_amount;
-            write_cells(
+            batch_write_cells_user_entered(
                 client,
-                &token,
+                token,
                 spreadsheet_id,
                 sheet_name,
-                &format!("{sell_column}{sell_row}"),
-                vec![vec![number_value(value)]],
-            )
-            .await?;
-            write_cells(
-                client,
-                &token,
-                spreadsheet_id,
-                sheet_name,
-                &format!("{quota_column}{}", current_quota_count + 2),
-                vec![vec![row[0].clone()]],
+                vec![
+                    (sell_column.clone(), sell_row, number_value(value)),
+                    (
+                        quota_column.clone(),
+                        current_quota_count + 2,
+                        row[0].clone(),
+                    ),
+                ],
             )
             .await?;
         }
         _ => {
             let first_empty_row =
-                first_empty_row(client, &token, spreadsheet_id, sheet_name, &start_column).await?;
+                first_empty_row(client, token, spreadsheet_id, sheet_name, &start_column).await?;
             write_cells(
                 client,
-                &token,
+                token,
                 spreadsheet_id,
                 sheet_name,
                 &format!("{start_column}{first_empty_row}"),

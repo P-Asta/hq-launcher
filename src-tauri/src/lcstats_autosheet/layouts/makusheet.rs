@@ -1,10 +1,11 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+use crate::google_oauth::LcStatsSettings;
 use crate::lcstats_autosheet::layouts::MAKUSHEET_LAYOUT;
 use crate::lcstats_autosheet::sheets::{
-    batch_update_spreadsheet, batch_write_cells_user_entered, first_empty_row_from, get_sheet_id,
-    quote_sheet_name, read_range,
+    batch_read_ranges, batch_update_spreadsheet, batch_write_cells_user_entered,
+    first_empty_row_from, get_sheet_id, quote_sheet_name,
 };
 use crate::lcstats_autosheet::stats::{array_at, int_at, object_at, string_at, strip_moon_number};
 
@@ -15,11 +16,11 @@ const PLAYER_ID_ROW: usize = 199;
 const PLAYER_NAME_ROW: usize = 2;
 
 pub async fn write(
-    app: tauri::AppHandle,
     client: &reqwest::Client,
+    token: &str,
+    settings: &LcStatsSettings,
     stats: &Value,
 ) -> Result<(), String> {
-    let settings = crate::google_oauth::get_settings(app.clone())?;
     if !settings.layout.eq_ignore_ascii_case(MAKUSHEET_LAYOUT) {
         return Ok(());
     }
@@ -29,10 +30,9 @@ pub async fn write(
         return Err("spreadsheet or sheet is not set".to_string());
     }
 
-    let token = crate::google_oauth::access_token(app).await?;
     let row = first_empty_row_from(
         client,
-        &token,
+        token,
         spreadsheet_id,
         sheet_name,
         CHECK_COLUMN,
@@ -40,12 +40,12 @@ pub async fn write(
     )
     .await?;
     let player_columns =
-        setup_or_match_player_columns(client, &token, spreadsheet_id, sheet_name, stats).await?;
+        setup_or_match_player_columns(client, token, spreadsheet_id, sheet_name, stats).await?;
     let values = build_values(stats, &player_columns, row);
-    batch_write_cells_user_entered(client, &token, spreadsheet_id, sheet_name, values).await?;
+    batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, values).await?;
     write_death_notes(
         client,
-        &token,
+        token,
         spreadsheet_id,
         sheet_name,
         stats,
@@ -78,7 +78,9 @@ async fn setup_or_match_player_columns(
         PLAYER_COLUMN_PAIRS[PLAYER_COLUMN_PAIRS.len() - 1].1,
         PLAYER_NAME_ROW
     );
-    let data = read_range(client, token, spreadsheet_id, &id_range).await?;
+    let ranges =
+        batch_read_ranges(client, token, spreadsheet_id, &[&id_range, &name_range]).await?;
+    let data = ranges.first().cloned().unwrap_or_default();
     let existing_row = data
         .get("values")
         .and_then(Value::as_array)
@@ -86,7 +88,7 @@ async fn setup_or_match_player_columns(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let name_data = read_range(client, token, spreadsheet_id, &name_range).await?;
+    let name_data = ranges.get(1).cloned().unwrap_or_default();
     let existing_name_row = name_data
         .get("values")
         .and_then(Value::as_array)
@@ -274,23 +276,23 @@ async fn write_death_notes(
     player_columns: &HashMap<String, String>,
     row: usize,
 ) -> Result<(), String> {
-    let sheet_id = get_sheet_id(client, token, spreadsheet_id, sheet_name).await?;
-    let requests = object_at(stats, &["Players"])
+    let death_cells = object_at(stats, &["Players"])
         .into_iter()
         .filter_map(|(steam_id, player)| {
             if death_status(&player) != "X" {
                 return None;
             }
-            let column = player_columns.get(&steam_id)?;
-            let note = death_note(&player);
-            Some(value_with_note_request(
-                sheet_id,
-                column,
-                row,
-                json!("X"),
-                &note,
-            ))
+            Some((player_columns.get(&steam_id)?.clone(), death_note(&player)))
         })
+        .collect::<Vec<_>>();
+    if death_cells.is_empty() {
+        return Ok(());
+    }
+
+    let sheet_id = get_sheet_id(client, token, spreadsheet_id, sheet_name).await?;
+    let requests = death_cells
+        .into_iter()
+        .map(|(column, note)| value_with_note_request(sheet_id, &column, row, json!("X"), &note))
         .collect::<Vec<_>>();
     batch_update_spreadsheet(client, token, spreadsheet_id, requests).await
 }
@@ -333,6 +335,13 @@ fn value_with_note_request(
     note: &str,
 ) -> Value {
     let column_index = column_to_index(column);
+    let mut cell = json!({ "userEnteredValue": google_user_value(value) });
+    let fields = if note.is_empty() {
+        "userEnteredValue"
+    } else {
+        cell["note"] = json!(note);
+        "userEnteredValue,note"
+    };
     json!({
         "updateCells": {
             "range": {
@@ -343,12 +352,9 @@ fn value_with_note_request(
                 "endColumnIndex": column_index + 1
             },
             "rows": [{
-                "values": [{
-                    "userEnteredValue": google_user_value(value),
-                    "note": note
-                }]
+                "values": [cell]
             }],
-            "fields": "userEnteredValue,note"
+            "fields": fields
         }
     })
 }

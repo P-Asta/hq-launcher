@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 pub async fn first_empty_row(
     client: &reqwest::Client,
@@ -74,7 +75,7 @@ pub async fn read_range(
     range: &str,
 ) -> Result<Value, String> {
     let url = format!(
-        "https://sheets.googleapis.com/v4/spreadsheets/{}/values/{}",
+        "https://sheets.googleapis.com/v4/spreadsheets/{}/values/{}?fields=values",
         url_encode(spreadsheet_id),
         url_encode(range)
     );
@@ -87,6 +88,39 @@ pub async fn read_range(
     parse_google_response(response, "read Google Sheets range").await
 }
 
+pub async fn batch_read_ranges(
+    client: &reqwest::Client,
+    token: &str,
+    spreadsheet_id: &str,
+    ranges: &[&str],
+) -> Result<Vec<Value>, String> {
+    if ranges.is_empty() {
+        return Ok(vec![]);
+    }
+    let range_query = ranges
+        .iter()
+        .map(|range| format!("ranges={}", url_encode(range)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let url = format!(
+        "https://sheets.googleapis.com/v4/spreadsheets/{}/values:batchGet?{}&fields=valueRanges(values)",
+        url_encode(spreadsheet_id),
+        range_query
+    );
+    let response = client
+        .get(url)
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let data = parse_google_response(response, "read Google Sheets ranges").await?;
+    Ok(data
+        .get("valueRanges")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default())
+}
+
 pub async fn write_cells(
     client: &reqwest::Client,
     token: &str,
@@ -97,7 +131,7 @@ pub async fn write_cells(
 ) -> Result<(), String> {
     let range = format!("{}!{start_cell}", quote_sheet_name(sheet_name));
     let url = format!(
-        "https://sheets.googleapis.com/v4/spreadsheets/{}/values/{}?valueInputOption=RAW",
+        "https://sheets.googleapis.com/v4/spreadsheets/{}/values/{}?valueInputOption=RAW&fields=updatedCells",
         url_encode(spreadsheet_id),
         url_encode(&range)
     );
@@ -122,17 +156,12 @@ pub async fn batch_write_cells_user_entered(
     if values.is_empty() {
         return Ok(());
     }
-    let data = values
-        .into_iter()
-        .map(|(column, row, value)| {
-            json!({
-                "range": format!("{}!{column}{row}", quote_sheet_name(sheet_name)),
-                "values": [[value]]
-            })
-        })
-        .collect::<Vec<_>>();
+    let data = compact_value_ranges(sheet_name, values)?;
+    if data.is_empty() {
+        return Ok(());
+    }
     let url = format!(
-        "https://sheets.googleapis.com/v4/spreadsheets/{}/values:batchUpdate",
+        "https://sheets.googleapis.com/v4/spreadsheets/{}/values:batchUpdate?fields=totalUpdatedCells",
         url_encode(spreadsheet_id)
     );
     let response = client
@@ -156,7 +185,7 @@ pub async fn batch_update_spreadsheet(
         return Ok(());
     }
     let url = format!(
-        "https://sheets.googleapis.com/v4/spreadsheets/{}:batchUpdate",
+        "https://sheets.googleapis.com/v4/spreadsheets/{}:batchUpdate?fields=spreadsheetId",
         url_encode(spreadsheet_id)
     );
     let response = client
@@ -229,6 +258,103 @@ pub fn value_as_f64(value: &Value) -> f64 {
         .as_f64()
         .or_else(|| value.as_str().and_then(|text| text.parse::<f64>().ok()))
         .unwrap_or(0.0)
+}
+
+fn compact_value_ranges(
+    sheet_name: &str,
+    values: Vec<(String, usize, Value)>,
+) -> Result<Vec<Value>, String> {
+    let mut cells = BTreeMap::new();
+    for (column, row, value) in values {
+        let column_index =
+            column_to_index(&column).ok_or_else(|| format!("Invalid sheet column: {column}"))?;
+        cells.insert((row, column_index), value);
+    }
+
+    let mut data = vec![];
+    let mut current_row = 0;
+    let mut start_column = 0;
+    let mut next_column = 0;
+    let mut row_values: Vec<Value> = vec![];
+
+    for ((row, column), value) in cells {
+        if row_values.is_empty() {
+            current_row = row;
+            start_column = column;
+            next_column = column + 1;
+            row_values.push(value);
+            continue;
+        }
+        if row == current_row && column == next_column {
+            next_column += 1;
+            row_values.push(value);
+            continue;
+        }
+        data.push(value_range(
+            sheet_name,
+            current_row,
+            start_column,
+            next_column,
+            std::mem::take(&mut row_values),
+        ));
+        current_row = row;
+        start_column = column;
+        next_column = column + 1;
+        row_values.push(value);
+    }
+
+    if !row_values.is_empty() {
+        data.push(value_range(
+            sheet_name,
+            current_row,
+            start_column,
+            next_column,
+            row_values,
+        ));
+    }
+
+    Ok(data)
+}
+
+fn value_range(
+    sheet_name: &str,
+    row: usize,
+    start_column: usize,
+    next_column: usize,
+    values: Vec<Value>,
+) -> Value {
+    let start = index_to_column(start_column);
+    let range = if next_column == start_column + 1 {
+        format!("{}!{start}{row}", quote_sheet_name(sheet_name))
+    } else {
+        let end = index_to_column(next_column - 1);
+        format!("{}!{start}{row}:{end}{row}", quote_sheet_name(sheet_name))
+    };
+    json!({ "range": range, "values": [values] })
+}
+
+fn column_to_index(column: &str) -> Option<usize> {
+    let mut index = 0usize;
+    let mut seen = false;
+    for ch in column.chars() {
+        if !ch.is_ascii_alphabetic() {
+            return None;
+        }
+        seen = true;
+        index = index * 26 + (ch.to_ascii_uppercase() as usize - 'A' as usize + 1);
+    }
+    seen.then_some(index - 1)
+}
+
+fn index_to_column(mut index: usize) -> String {
+    index += 1;
+    let mut chars = vec![];
+    while index > 0 {
+        let offset = (index - 1) % 26;
+        chars.push((b'A' + offset as u8) as char);
+        index = (index - 1) / 26;
+    }
+    chars.iter().rev().collect()
 }
 
 fn url_encode(value: &str) -> String {

@@ -1,9 +1,10 @@
 use serde_json::{json, Value};
 
+use crate::google_oauth::LcStatsSettings;
 use crate::lcstats_autosheet::layouts::WAFRODY_LAYOUT;
 use crate::lcstats_autosheet::sheets::{
     batch_update_spreadsheet, batch_write_cells_user_entered, first_empty_row_from, get_sheet_id,
-    read_range, write_cells,
+    read_range,
 };
 use crate::lcstats_autosheet::stats::{
     array_at, object_at, string_at, strip_moon_number, value_at,
@@ -29,7 +30,7 @@ const KNIVES_COLLECTED_COLUMN: &str = "V";
 const BUTLER_COUNT_COLUMN: &str = "W";
 const COLLECTED_TOTAL_COLUMN: &str = "X";
 const BOTTOM_LINE_COLUMN: &str = "Y";
-const EGG_BEEHIVE_VALUE_COLUMN: &str = "Z";
+const REAL_LINE_COLUMN: &str = "Z";
 const VALUE_SOLD_COLUMN: &str = "AJ";
 const NEW_QUOTA_COLUMN: &str = "C";
 const EXTRA_NUMBER_COLUMN: &str = "L";
@@ -38,11 +39,11 @@ const SID_COLUMN: &str = "J";
 const INFESTATION_COLUMN: &str = "R";
 
 pub async fn write(
-    app: tauri::AppHandle,
     client: &reqwest::Client,
+    token: &str,
+    settings: &LcStatsSettings,
     stats: &Value,
 ) -> Result<(), String> {
-    let settings = crate::google_oauth::get_settings(app.clone())?;
     if !settings.layout.eq_ignore_ascii_case(WAFRODY_LAYOUT) {
         return Ok(());
     }
@@ -52,13 +53,12 @@ pub async fn write(
         return Err("spreadsheet or sheet is not set".to_string());
     }
 
-    let token = crate::google_oauth::access_token(app).await?;
-    let target_sheet = resolve_target_sheet(client, &token, spreadsheet_id, source_sheet).await?;
+    let target_sheet = resolve_target_sheet(client, token, spreadsheet_id, source_sheet).await?;
     let target_row = first_empty_row_from(
         client,
-        &token,
+        token,
         spreadsheet_id,
-        &target_sheet,
+        &target_sheet.name,
         CHECK_COLUMN,
         START_ROW,
     )
@@ -67,9 +67,9 @@ pub async fn write(
     if string_at(stats, &["MoonInfo", "Name"]).trim() == "71 Gordion" {
         handle_gordion(
             client,
-            &token,
+            token,
             spreadsheet_id,
-            &target_sheet,
+            &target_sheet.name,
             target_row,
             stats,
         )
@@ -80,17 +80,18 @@ pub async fn write(
     let normalized = NormalizedStats::from_stats(stats);
     batch_write_cells_user_entered(
         client,
-        &token,
+        token,
         spreadsheet_id,
-        &target_sheet,
+        &target_sheet.name,
         build_value_updates(&normalized, target_row),
     )
     .await?;
     write_rich_cells(
         client,
-        &token,
+        token,
         spreadsheet_id,
-        &target_sheet,
+        &target_sheet.name,
+        target_sheet.id,
         target_row,
         &normalized,
     )
@@ -121,23 +122,38 @@ async fn read_target_sheet(
         .map(ToOwned::to_owned))
 }
 
+#[derive(Debug, Clone)]
+struct TargetSheet {
+    name: String,
+    id: Option<i64>,
+}
+
 async fn resolve_target_sheet(
     client: &reqwest::Client,
     token: &str,
     spreadsheet_id: &str,
     source_sheet: &str,
-) -> Result<String, String> {
+) -> Result<TargetSheet, String> {
     let Some(candidate) = read_target_sheet(client, token, spreadsheet_id, source_sheet).await?
     else {
-        return Ok(source_sheet.to_string());
+        return Ok(TargetSheet {
+            name: source_sheet.to_string(),
+            id: None,
+        });
     };
     match get_sheet_id(client, token, spreadsheet_id, &candidate).await {
-        Ok(_) => Ok(candidate),
+        Ok(sheet_id) => Ok(TargetSheet {
+            name: candidate,
+            id: Some(sheet_id),
+        }),
         Err(e) => {
             log::warn!(
                 "Wafrody target sheet cell {TARGET_SHEET_CELL} contained '{candidate}', but it is not a valid sheet name ({e}); using '{source_sheet}'"
             );
-            Ok(source_sheet.to_string())
+            Ok(TargetSheet {
+                name: source_sheet.to_string(),
+                id: None,
+            })
         }
     }
 }
@@ -165,7 +181,7 @@ struct NormalizedStats {
     butler_count: usize,
     collected_total: i64,
     bottom_line: i64,
-    egg_beehive_value: i64,
+    real_line: i64,
     value_sold: i64,
     new_quota: i64,
     extra_number: usize,
@@ -181,7 +197,6 @@ impl NormalizedStats {
         let bee_count = array_at(stats, &["BeeInfo", "Values"]).len();
         let egg_count = array_at(stats, &["BirdInfo", "EggValues"]).len();
         let missed_beehive_count = missed_item_type_count(stats, "Bee hive");
-        let bee_value = sum_intish_array(stats, &["BeeInfo", "Values"]);
         let egg_value = sum_intish_array(stats, &["BirdInfo", "EggValues"]);
         let missed_regular_item_count = array_at(stats, &["MissedItems"])
             .iter()
@@ -209,7 +224,7 @@ impl NormalizedStats {
             butler_count: indoor_enemy_count(stats, "Butler"),
             collected_total: intish_at(stats, &["CollectedTotal"]),
             bottom_line: intish_at(stats, &["BottomLine"]),
-            egg_beehive_value: egg_value + bee_value,
+            real_line: intish_at(stats, &["BottomLineTrue"]),
             value_sold: intish_at(stats, &["ValueSold"]),
             new_quota: intish_at(stats, &["NewQuota"]),
             extra_number: bee_count + egg_count,
@@ -340,11 +355,7 @@ fn build_value_updates(stats: &NormalizedStats, row: usize) -> Vec<(String, usiz
             row,
             json!(stats.bottom_line),
         ),
-        (
-            EGG_BEEHIVE_VALUE_COLUMN.to_string(),
-            row,
-            json!(stats.egg_beehive_value),
-        ),
+        (REAL_LINE_COLUMN.to_string(), row, json!(stats.real_line)),
         (
             EXTRA_NUMBER_COLUMN.to_string(),
             row,
@@ -375,22 +386,31 @@ async fn write_rich_cells(
     token: &str,
     spreadsheet_id: &str,
     sheet_name: &str,
+    sheet_id: Option<i64>,
     row: usize,
     stats: &NormalizedStats,
 ) -> Result<(), String> {
-    let sheet_id = get_sheet_id(client, token, spreadsheet_id, sheet_name).await?;
+    let sheet_id = match sheet_id {
+        Some(sheet_id) => sheet_id,
+        None => get_sheet_id(client, token, spreadsheet_id, sheet_name).await?,
+    };
     let mut requests = vec![
         checkbox_with_note_request(sheet_id, SID_COLUMN, row, &stats.sid_type),
         checkbox_with_note_request(sheet_id, INFESTATION_COLUMN, row, &stats.infestation_type),
     ];
 
-    for (index, player) in stats.players.iter().take(PLAYER_COLUMNS.len()).enumerate() {
-        requests.push(value_with_note_request(
+    let player_cells = stats
+        .players
+        .iter()
+        .take(PLAYER_COLUMNS.len())
+        .map(|player| (json!(player.status), player.note.clone()))
+        .collect::<Vec<_>>();
+    if !player_cells.is_empty() {
+        requests.push(row_values_with_notes_request(
             sheet_id,
-            PLAYER_COLUMNS[index],
+            PLAYER_COLUMNS[0],
             row,
-            json!(player.status),
-            &player.note,
+            player_cells,
         ));
     }
 
@@ -410,29 +430,21 @@ async fn handle_gordion(
     if value_sold == 0 || new_quota == 0 {
         return Ok(());
     }
-    if value_sold != 0 {
-        write_cells(
-            client,
-            token,
-            spreadsheet_id,
-            sheet_name,
-            &format!("{VALUE_SOLD_COLUMN}{}", target_row.saturating_sub(3)),
-            vec![vec![json!(value_sold)]],
-        )
-        .await?;
-    }
-    if new_quota != 0 {
-        write_cells(
-            client,
-            token,
-            spreadsheet_id,
-            sheet_name,
-            &format!("{NEW_QUOTA_COLUMN}{target_row}"),
-            vec![vec![json!(new_quota)]],
-        )
-        .await?;
-    }
-    Ok(())
+    batch_write_cells_user_entered(
+        client,
+        token,
+        spreadsheet_id,
+        sheet_name,
+        vec![
+            (
+                VALUE_SOLD_COLUMN.to_string(),
+                target_row.saturating_sub(3),
+                json!(value_sold),
+            ),
+            (NEW_QUOTA_COLUMN.to_string(), target_row, json!(new_quota)),
+        ],
+    )
+    .await
 }
 
 fn checkbox_with_note_request(sheet_id: i64, column: &str, row: usize, note: &str) -> Value {
@@ -453,7 +465,32 @@ fn value_with_note_request(
     value: Value,
     note: &str,
 ) -> Value {
+    row_values_with_notes_request(sheet_id, column, row, vec![(value, note.to_string())])
+}
+
+fn row_values_with_notes_request(
+    sheet_id: i64,
+    column: &str,
+    row: usize,
+    cells: Vec<(Value, String)>,
+) -> Value {
     let column_index = column_to_index(column);
+    let has_notes = cells.iter().any(|(_, note)| !note.is_empty());
+    let values = cells
+        .into_iter()
+        .map(|(value, note)| {
+            let mut cell = json!({ "userEnteredValue": google_user_value(value) });
+            if !note.is_empty() {
+                cell["note"] = json!(note);
+            }
+            cell
+        })
+        .collect::<Vec<_>>();
+    let fields = if has_notes {
+        "userEnteredValue,note"
+    } else {
+        "userEnteredValue"
+    };
     json!({
         "updateCells": {
             "range": {
@@ -461,15 +498,12 @@ fn value_with_note_request(
                 "startRowIndex": row.saturating_sub(1),
                 "endRowIndex": row,
                 "startColumnIndex": column_index,
-                "endColumnIndex": column_index + 1
+                "endColumnIndex": column_index + values.len()
             },
             "rows": [{
-                "values": [{
-                    "userEnteredValue": google_user_value(value),
-                    "note": note
-                }]
+                "values": values
             }],
-            "fields": "userEnteredValue,note"
+            "fields": fields
         }
     })
 }
