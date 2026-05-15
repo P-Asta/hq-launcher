@@ -32,8 +32,28 @@ pub fn array_at<'a>(stats: &'a Value, path: &[&str]) -> &'a [Value] {
         .unwrap_or(&[])
 }
 
-pub fn sum_array(stats: &Value, path: &[&str]) -> i64 {
-    array_at(stats, path).iter().filter_map(Value::as_i64).sum()
+pub fn array_at_any<'a>(stats: &'a Value, paths: &[&[&str]]) -> &'a [Value] {
+    for path in paths {
+        if let Some(values) = value_at(stats, path).and_then(Value::as_array) {
+            return values;
+        }
+    }
+    &[]
+}
+
+pub fn intish_value(value: &Value) -> i64 {
+    value
+        .as_i64()
+        .or_else(|| {
+            value
+                .as_str()
+                .and_then(|text| text.trim_start_matches('\'').trim().parse::<i64>().ok())
+        })
+        .unwrap_or(0)
+}
+
+pub fn sum_array_any(stats: &Value, paths: &[&[&str]]) -> i64 {
+    array_at_any(stats, paths).iter().map(intish_value).sum()
 }
 
 pub fn object_at(stats: &Value, path: &[&str]) -> std::collections::BTreeMap<String, Value> {

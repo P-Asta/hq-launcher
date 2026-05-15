@@ -7,7 +7,9 @@ use crate::lcstats_autosheet::sheets::{
     batch_read_ranges, batch_update_spreadsheet, batch_write_cells_user_entered,
     first_empty_row_from, get_sheet_id, quote_sheet_name,
 };
-use crate::lcstats_autosheet::stats::{array_at, int_at, object_at, string_at, strip_moon_number};
+use crate::lcstats_autosheet::stats::{
+    array_at, array_at_any, int_at, object_at, string_at, strip_moon_number,
+};
 
 const CHECK_COLUMN: &str = "K";
 const START_ROW: usize = 3;
@@ -185,7 +187,11 @@ fn build_values(
         (
             "J".to_string(),
             row,
-            json!(array_at(stats, &["BeeInfo", "Values"]).len()),
+            json!(array_at_any(
+                stats,
+                &[&["BeeInfo", "Available"][..], &["BeeInfo", "Values"][..],],
+            )
+            .len()),
         ),
         ("K".to_string(), row, json!(collected)),
         ("L".to_string(), row, json!(available)),
@@ -373,4 +379,32 @@ fn column_to_index(column: &str) -> usize {
     column.chars().fold(0, |index, ch| {
         index * 26 + (ch.to_ascii_uppercase() as usize - 'A' as usize + 1)
     }) - 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn j_column_uses_new_available_beehive_array() {
+        let stats = json!({
+            "MoonInfo": { "Name": "68 Artifice", "Weather": "Mild" },
+            "DungeonInfo": { "Interior": "Mineshaft", "ItemCount": 34 },
+            "BeeInfo": { "Available": [64, 88, 64] },
+            "CollectedTotal": 926,
+            "BottomLineTrue": 2133
+        });
+
+        let values = build_values(&stats, &HashMap::new(), 7);
+
+        assert_eq!(cell_value(&values, "J"), Some(&json!(3)));
+    }
+
+    fn cell_value<'a>(values: &'a [(String, usize, Value)], column: &str) -> Option<&'a Value> {
+        values
+            .iter()
+            .find(|(value_column, _, _)| value_column == column)
+            .map(|(_, _, value)| value)
+    }
 }

@@ -1,7 +1,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-const OAUTH_ENV_KEYS: [&str; 2] = ["GOOGLE_LCSTATS_CLIENT_ID", "GOOGLE_LCSTATS_CLIENT_SECRET"];
+const OAUTH_ENV_KEYS: [&str; 4] = [
+    "GOOGLE_LCSTATS_CLIENT_ID",
+    "GOOGLE_LCSTATS_CLIENT_SECRET",
+    "GOOGLE_LCSTATS_PICKER_API_KEY",
+    "GOOGLE_LCSTATS_PICKER_APP_ID",
+];
 
 fn parse_env_file(path: &Path) -> HashMap<String, String> {
     let Ok(text) = std::fs::read_to_string(path) else {

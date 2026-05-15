@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Download,
+  FolderOpen,
   Info,
   LogOut,
   LoaderCircle,
@@ -223,6 +224,7 @@ const GOOGLE_OAUTH_MOD_KEYS = new Set([
 
 const LCSTATS_LAYOUTS = [
   "AutoSheetModel",
+  "BreadSheet",
   "WafrodyAutoSheet",
   "MakuSheet 1.0",
 ];
@@ -240,7 +242,14 @@ const DEFAULT_LCSTATS_SETTINGS = {
   layout: "AutoSheetModel",
   googleClientId: "",
   googleClientSecret: "",
+  googlePickerApiKey: "",
+  googlePickerAppId: "",
 };
+
+const GOOGLE_PICKER_SCRIPT_SRC = "https://apis.google.com/js/api.js";
+const GOOGLE_SPREADSHEET_MIME_TYPE = "application/vnd.google-apps.spreadsheet";
+
+let googlePickerApiPromise = null;
 
 function requiresGoogleOauthForMod(mod) {
   return GOOGLE_OAUTH_MOD_KEYS.has(modKeyLower(mod));
@@ -254,10 +263,183 @@ function lcstatsLayoutUsesColumnFields(layout) {
   return LCSTATS_LAYOUT_COLUMN_FIELDS.has(layout);
 }
 
+function hasCustomGoogleOauthSettings(settings) {
+  return Boolean(
+    String(settings?.googleClientId ?? "").trim() ||
+      String(settings?.googleClientSecret ?? "").trim()
+  );
+}
+
 function extractSpreadsheetId(value) {
   const text = String(value ?? "").trim();
   const match = text.match(/\/spreadsheets\/d\/([^/?#]+)/);
   return match?.[1] ?? text;
+}
+
+function decodeUrlPart(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function parseSpreadsheetInput(value) {
+  const text = String(value ?? "").trim();
+  const spreadsheetMatch = text.match(/\/spreadsheets\/d\/([^/?#]+)/);
+  const gidMatch = text.match(/[?&#]gid=([^&#]+)/);
+  return {
+    spreadsheetId: spreadsheetMatch?.[1] ?? text,
+    sheetGid: gidMatch ? decodeUrlPart(gidMatch[1]) : "",
+    hasSpreadsheetUrl: !!spreadsheetMatch,
+  };
+}
+
+function normalizeSheetInfo(info) {
+  if (typeof info === "string") {
+    return info ? { sheetId: "", title: info } : null;
+  }
+  const title = info?.title ?? info?.name;
+  if (title == null || String(title) === "") return null;
+  const sheetId = info?.sheetId ?? info?.sheet_id ?? info?.id ?? "";
+  return {
+    sheetId: sheetId == null ? "" : String(sheetId),
+    title: String(title),
+  };
+}
+
+function normalizeSheetInfos(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map(normalizeSheetInfo).filter(Boolean);
+}
+
+function findSheetTitleByGid(sheetInfos, sheetGid) {
+  const gid = String(sheetGid ?? "").trim();
+  if (!gid) return "";
+  return sheetInfos.find((sheet) => sheet.sheetId === gid)?.title ?? "";
+}
+
+function loadGooglePickerApi() {
+  if (typeof window === "undefined") {
+    return Promise.reject(new Error("Google Picker is unavailable."));
+  }
+  if (window.google?.picker && window.gapi) {
+    return Promise.resolve();
+  }
+  if (googlePickerApiPromise) {
+    return googlePickerApiPromise;
+  }
+  googlePickerApiPromise = new Promise((resolve, reject) => {
+    const loadPicker = () => {
+      if (!window.gapi?.load) {
+        googlePickerApiPromise = null;
+        reject(new Error("Google Picker failed to initialize."));
+        return;
+      }
+      window.gapi.load("picker", {
+        callback: resolve,
+        onerror: () => {
+          googlePickerApiPromise = null;
+          reject(new Error("Google Picker failed to load."));
+        },
+        ontimeout: () => {
+          googlePickerApiPromise = null;
+          reject(new Error("Google Picker load timed out."));
+        },
+        timeout: 10000,
+      });
+    };
+
+    const existing = document.querySelector(
+      `script[src="${GOOGLE_PICKER_SCRIPT_SRC}"]`
+    );
+    if (existing) {
+      existing.addEventListener("load", loadPicker, { once: true });
+      existing.addEventListener(
+        "error",
+        () => {
+          googlePickerApiPromise = null;
+          reject(new Error("Google Picker script failed to load."));
+        },
+        { once: true }
+      );
+      if (window.gapi?.load) loadPicker();
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = GOOGLE_PICKER_SCRIPT_SRC;
+    script.async = true;
+    script.onload = loadPicker;
+    script.onerror = () => {
+      googlePickerApiPromise = null;
+      reject(new Error("Google Picker script failed to load."));
+    };
+    document.head.appendChild(script);
+  });
+  return googlePickerApiPromise;
+}
+
+function pickerDataValue(source, key, fallback) {
+  return source?.[key] ?? source?.[fallback];
+}
+
+function pickGoogleSpreadsheet({ accessToken, apiKey, appId }) {
+  return new Promise((resolve, reject) => {
+    const picker = window.google?.picker;
+    if (!picker) {
+      reject(new Error("Google Picker is unavailable."));
+      return;
+    }
+    const viewId = picker.ViewId.SPREADSHEETS || picker.ViewId.DOCS;
+    const view = new picker.DocsView(viewId);
+    if (typeof view.setMimeTypes === "function") {
+      view.setMimeTypes(GOOGLE_SPREADSHEET_MIME_TYPE);
+    }
+    if (typeof view.setMode === "function" && picker.DocsViewMode?.LIST) {
+      view.setMode(picker.DocsViewMode.LIST);
+    }
+    if (typeof view.setIncludeFolders === "function") {
+      view.setIncludeFolders(false);
+    }
+    if (typeof view.setSelectFolderEnabled === "function") {
+      view.setSelectFolderEnabled(false);
+    }
+
+    try {
+      const builder = new picker.PickerBuilder()
+        .addView(view)
+        .setOAuthToken(accessToken)
+        .setDeveloperKey(apiKey)
+        .setAppId(appId)
+        .setCallback((data) => {
+          const action = pickerDataValue(data, picker.Response.ACTION, "action");
+          if (action === picker.Action.CANCEL) {
+            resolve(null);
+            return;
+          }
+          if (action !== picker.Action.PICKED) return;
+          const docs = pickerDataValue(data, picker.Response.DOCUMENTS, "docs") ?? [];
+          const doc = docs[0];
+          if (!doc) {
+            resolve(null);
+            return;
+          }
+          resolve({
+            id: pickerDataValue(doc, picker.Document.ID, "id") ?? "",
+            name: pickerDataValue(doc, picker.Document.NAME, "name") ?? "",
+            url: pickerDataValue(doc, picker.Document.URL, "url") ?? "",
+          });
+        });
+      const origin = window.location?.origin;
+      if (origin && origin !== "null" && typeof builder.setOrigin === "function") {
+        builder.setOrigin(origin);
+      }
+      builder.build().setVisible(true);
+    } catch (error) {
+      reject(error);
+    }
+  });
 }
 
 function normalizeSheetColumn(value, fallback) {
@@ -916,9 +1098,13 @@ export default function LauncherPage({
   const [pendingGoogleOauthToggle, setPendingGoogleOauthToggle] = useState(null);
   const [lcstatsSettings, setLcstatsSettings] = useState(DEFAULT_LCSTATS_SETTINGS);
   const [lcstatsSpreadsheets, setLcstatsSpreadsheets] = useState([]);
+  const [lcstatsSpreadsheetName, setLcstatsSpreadsheetName] = useState("");
+  const [lcstatsSpreadsheetFocused, setLcstatsSpreadsheetFocused] = useState(false);
   const [lcstatsSheets, setLcstatsSheets] = useState([]);
+  const [lcstatsSheetInfos, setLcstatsSheetInfos] = useState([]);
   const [lcstatsBusy, setLcstatsBusy] = useState(false);
   const [lcstatsRefreshBusy, setLcstatsRefreshBusy] = useState(false);
+  const [lcstatsPickerBusy, setLcstatsPickerBusy] = useState(false);
   const lcstatsSaveTimerRef = useRef(null);
   const lcstatsAutoBrowseKeyRef = useRef("");
   const lcstatsAutoSheetKeyRef = useRef("");
@@ -1134,10 +1320,7 @@ export default function LauncherPage({
     invoke("get_lcstats_settings")
       .then((settings) => {
         if (cancelled) return;
-        setLcstatsSettings({
-          ...DEFAULT_LCSTATS_SETTINGS,
-          ...(settings ?? {}),
-        });
+        setLcstatsSettings(normalizeLcstatsSettings(settings));
       })
       .catch((error) => {
         if (cancelled) return;
@@ -2930,7 +3113,7 @@ export default function LauncherPage({
       };
       setGoogleOauthStatus(nextStatus);
       if (!nextStatus.authenticated) {
-        setGoogleOauthError("Google Sheets permission was not granted.");
+        setGoogleOauthError("Google Sheets file permission was not granted.");
         return;
       }
 
@@ -2996,6 +3179,8 @@ export default function LauncherPage({
       layout,
       googleClientId: String(settings?.googleClientId ?? "").trim(),
       googleClientSecret: String(settings?.googleClientSecret ?? "").trim(),
+      googlePickerApiKey: String(settings?.googlePickerApiKey ?? "").trim(),
+      googlePickerAppId: String(settings?.googlePickerAppId ?? "").trim(),
     };
   }
 
@@ -3020,14 +3205,79 @@ export default function LauncherPage({
     }
   }
 
+  async function openLcstatsSpreadsheetPicker() {
+    if (lcstatsPickerBusy) return;
+    if (hasCustomGoogleOauthSettings(lcstatsSettings)) return;
+    setLcstatsPickerBusy(true);
+    setLcstatsError("");
+    setLcstatsSaved("");
+    try {
+      await persistLcstatsSettings(lcstatsSettings, { quiet: true });
+      const status = googleOauthStatus.authenticated
+        ? googleOauthStatus
+        : await refreshGoogleOauthStatus();
+      if (!status.authenticated) {
+        setGoogleOauthError("");
+        setGoogleOauthDialogOpen(true);
+        return;
+      }
+
+      const selected = await invoke("google_lcstats_pick_spreadsheet", {
+        spreadsheetId: "",
+      });
+      if (!selected?.id) return;
+
+      setLcstatsSpreadsheetName(selected.name ?? "");
+      setLcstatsSpreadsheets((prev) => {
+        const nextFile = { id: selected.id, name: selected.name ?? selected.id };
+        const exists = prev.some((file) => file.id === selected.id);
+        if (exists) {
+          return prev.map((file) => (file.id === selected.id ? nextFile : file));
+        }
+        return [nextFile, ...prev];
+      });
+      setLcstatsSettings((prev) => ({
+        ...prev,
+        spreadsheetId: selected.id,
+        activeSheetName:
+          selected.id === extractSpreadsheetId(prev.spreadsheetId)
+            ? prev.activeSheetName
+            : "",
+      }));
+      lcstatsAutoSheetKeyRef.current = `${selected.id}::`;
+      const sheets = await loadLcstatsSheetNames(selected.id, {
+        quiet: true,
+        sheetGid: "",
+      });
+      if (sheets !== null) {
+        setLcstatsSaved(
+          selected.name ? `Selected ${selected.name}.` : "Spreadsheet selected."
+        );
+      }
+    } catch (e) {
+      console.error(e);
+      setLcstatsError(e?.message ?? String(e));
+    } finally {
+      setLcstatsPickerBusy(false);
+    }
+  }
+
   async function loadLcstatsSheetNames(spreadsheetIdOverride = null, opts = {}) {
-    const spreadsheetId = extractSpreadsheetId(
+    const parsedInput = parseSpreadsheetInput(
       spreadsheetIdOverride ?? lcstatsSettings.spreadsheetId
     );
+    const spreadsheetId = parsedInput.spreadsheetId;
+    const sheetGid = opts.sheetGid ?? parsedInput.sheetGid;
     if (!opts.partOfRefresh) setLcstatsRefreshBusy(true);
     if (!opts.quiet) {
       setLcstatsError("");
       setLcstatsSaved("");
+    }
+    if (!spreadsheetId) {
+      setLcstatsSheets([]);
+      setLcstatsSheetInfos([]);
+      if (!opts.partOfRefresh) setLcstatsRefreshBusy(false);
+      return [];
     }
     try {
       if (!googleOauthStatus.authenticated) {
@@ -3036,44 +3286,82 @@ export default function LauncherPage({
           requestGoogleOauthForToggle(selectedMod, true, {
             skipGoogleOauthGate: true,
           });
-          return;
+          return null;
         }
       }
-      const sheets = await invoke("list_lcstats_sheet_names", {
+      const sheets = await invoke("list_lcstats_sheet_infos", {
         spreadsheetId,
       });
-      const list = Array.isArray(sheets) ? sheets : [];
+      const infos = normalizeSheetInfos(sheets);
+      const list = infos.map((sheet) => sheet.title);
+      const linkedSheetName = findSheetTitleByGid(infos, sheetGid);
+      setLcstatsSheetInfos(infos);
       setLcstatsSheets(list);
       setLcstatsSettings((prev) => ({
         ...prev,
         spreadsheetId,
-        activeSheetName: list.includes(prev.activeSheetName)
-          ? prev.activeSheetName
-          : list[0] || "",
+        activeSheetName:
+          linkedSheetName ||
+          (list.includes(prev.activeSheetName) ? prev.activeSheetName : list[0] || ""),
       }));
       if (!opts.quiet) {
         setLcstatsSaved(list.length > 0 ? "Sheet list loaded." : "No sheets found.");
       }
+      return list;
     } catch (e) {
       console.error(e);
-      setLcstatsError(e?.message ?? String(e));
+      setLcstatsSheets([]);
+      setLcstatsSheetInfos([]);
+      if (!opts.quiet) setLcstatsError(e?.message ?? String(e));
+      return null;
     } finally {
       if (!opts.partOfRefresh) setLcstatsRefreshBusy(false);
     }
   }
 
-  function handleLcstatsSpreadsheetChange(value) {
-    const nextSettings = {
-      ...lcstatsSettings,
-      spreadsheetId: value,
-      activeSheetName: "",
+  function loadLcstatsSheetNamesFromParsedInput(parsedInput) {
+    if (!parsedInput.spreadsheetId) return;
+    const key = `${parsedInput.spreadsheetId}::${parsedInput.sheetGid}`;
+    const currentKey = lcstatsAutoSheetKeyRef.current;
+    if (
+      currentKey === key ||
+      (!parsedInput.sheetGid && currentKey.startsWith(`${parsedInput.spreadsheetId}::`))
+    ) {
+      return;
+    }
+    lcstatsAutoSheetKeyRef.current = key;
+    loadLcstatsSheetNames(parsedInput.spreadsheetId, {
+      sheetGid: parsedInput.sheetGid,
+    }).catch(console.error);
+  }
+
+  function handleLcstatsSpreadsheetInputChange(value) {
+    const parsedInput = parseSpreadsheetInput(value);
+    const currentSpreadsheetId = extractSpreadsheetId(lcstatsSettings.spreadsheetId);
+    const spreadsheetChanged = parsedInput.spreadsheetId !== currentSpreadsheetId;
+    if (spreadsheetChanged) {
+      const matchedFile = lcstatsSpreadsheets.find(
+        (file) => file.id === parsedInput.spreadsheetId
+      );
+      setLcstatsSpreadsheetName(matchedFile?.name ?? "");
+    }
+    const linkedSheetName = spreadsheetChanged
+      ? ""
+      : findSheetTitleByGid(lcstatsSheetInfos, parsedInput.sheetGid);
+    const patch = {
+      spreadsheetId: parsedInput.spreadsheetId,
     };
-    setLcstatsSettings(nextSettings);
-    setLcstatsSaved("");
-    setLcstatsError("");
-    setLcstatsSheets([]);
-    lcstatsAutoSheetKeyRef.current = value;
-    loadLcstatsSheetNames(value).catch(console.error);
+    if (spreadsheetChanged || parsedInput.sheetGid) {
+      patch.activeSheetName = linkedSheetName;
+    }
+    updateLcstatsSettings(patch);
+    if (spreadsheetChanged) {
+      setLcstatsSheets([]);
+      setLcstatsSheetInfos([]);
+    }
+    if (parsedInput.hasSpreadsheetUrl && parsedInput.spreadsheetId) {
+      loadLcstatsSheetNamesFromParsedInput(parsedInput);
+    }
   }
 
   async function loadLcstatsSpreadsheets(opts = {}) {
@@ -3095,24 +3383,53 @@ export default function LauncherPage({
           return;
         }
       }
-      const files = await invoke("list_lcstats_spreadsheets");
-      const spreadsheets = Array.isArray(files) ? files : [];
+      const parsedInput = parseSpreadsheetInput(lcstatsSettings.spreadsheetId);
+      let spreadsheetListError = "";
+      let spreadsheets = [];
+      try {
+        const files = await invoke("list_lcstats_spreadsheets");
+        spreadsheets = Array.isArray(files) ? files : [];
+      } catch (e) {
+        console.error(e);
+        spreadsheetListError = e?.message ?? String(e);
+      }
       setLcstatsSpreadsheets(spreadsheets);
+      if (parsedInput.spreadsheetId) {
+        const matchedFile = spreadsheets.find(
+          (file) => file.id === parsedInput.spreadsheetId
+        );
+        if (matchedFile?.name) {
+          setLcstatsSpreadsheetName(matchedFile.name);
+        }
+      }
 
-      const spreadsheetId = extractSpreadsheetId(lcstatsSettings.spreadsheetId);
-      if (spreadsheetId && spreadsheets.some((file) => file.id === spreadsheetId)) {
-        await loadLcstatsSheetNames(spreadsheetId, {
-          quiet: true,
+      let loadedSheets = null;
+      if (parsedInput.spreadsheetId) {
+        loadedSheets = await loadLcstatsSheetNames(parsedInput.spreadsheetId, {
+          quiet: opts.quiet,
           partOfRefresh: true,
+          sheetGid: parsedInput.sheetGid,
         });
       } else {
         setLcstatsSheets([]);
+        setLcstatsSheetInfos([]);
       }
 
       if (!opts.quiet) {
-        setLcstatsSaved(
-          spreadsheets.length > 0 ? "Spreadsheet list loaded." : "No spreadsheets found."
-        );
+        if (spreadsheetListError) {
+          if (parsedInput.spreadsheetId && loadedSheets !== null) {
+            setLcstatsError("");
+            setLcstatsSaved("Spreadsheet list unavailable; sheet list loaded from link/ID.");
+          } else if (!parsedInput.spreadsheetId) {
+            setLcstatsError(
+              `${spreadsheetListError} Paste a Google Sheets link or ID instead.`
+            );
+          }
+        } else if (!parsedInput.spreadsheetId || loadedSheets !== null) {
+          setLcstatsSaved(
+            spreadsheets.length > 0 ? "Spreadsheet list loaded." : "No spreadsheets found."
+          );
+        }
       }
     } catch (e) {
       console.error(e);
@@ -3127,9 +3444,7 @@ export default function LauncherPage({
   }
 
   function renderCustomGoogleOauthFields({ compact = false } = {}) {
-    const hasCustomOauth =
-      String(lcstatsSettings.googleClientId ?? "").trim() ||
-      String(lcstatsSettings.googleClientSecret ?? "").trim();
+    const hasCustomOauth = hasCustomGoogleOauthSettings(lcstatsSettings);
     return (
       <div className={compact ? "mt-5" : ""}>
         <div className="flex items-center justify-between gap-3">
@@ -3178,7 +3493,12 @@ export default function LauncherPage({
               </label>
               <Input
                 value={lcstatsSettings.googleClientId}
-                disabled={lcstatsBusy || lcstatsRefreshBusy || googleOauthBusy}
+                disabled={
+                  lcstatsBusy ||
+                  lcstatsRefreshBusy ||
+                  lcstatsPickerBusy ||
+                  googleOauthBusy
+                }
                 onChange={(event) =>
                   updateLcstatsSettings({ googleClientId: event.target.value })
                 }
@@ -3192,7 +3512,12 @@ export default function LauncherPage({
               <Input
                 type="password"
                 value={lcstatsSettings.googleClientSecret}
-                disabled={lcstatsBusy || lcstatsRefreshBusy || googleOauthBusy}
+                disabled={
+                  lcstatsBusy ||
+                  lcstatsRefreshBusy ||
+                  lcstatsPickerBusy ||
+                  googleOauthBusy
+                }
                 onChange={(event) =>
                   updateLcstatsSettings({ googleClientSecret: event.target.value })
                 }
@@ -3206,43 +3531,74 @@ export default function LauncherPage({
   }
 
   function renderLcStatsSettingsPanel() {
+    const spreadsheetId = extractSpreadsheetId(lcstatsSettings.spreadsheetId);
+    const listedSpreadsheet = lcstatsSpreadsheets.find(
+      (file) => file.id === spreadsheetId
+    );
+    const spreadsheetName = listedSpreadsheet?.name || lcstatsSpreadsheetName;
+    const spreadsheetDisplayValue = lcstatsSpreadsheetFocused
+      ? lcstatsSettings.spreadsheetId
+      : spreadsheetName || lcstatsSettings.spreadsheetId;
+    const useSpreadsheetPicker = !hasCustomGoogleOauthSettings(lcstatsSettings);
+
     return (
       <div className="min-h-0 flex flex-1 overflow-hidden">
         <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-panel-outline bg-black/10 p-4">
           <div className="space-y-5">
             {renderCustomGoogleOauthFields()}
 
-            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2.5rem] gap-3">
+            <div
+              className={cn(
+                "grid grid-cols-1 gap-3",
+                "md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2.5rem]"
+              )}
+            >
               <div className="min-w-0 space-y-2">
                 <label className="block text-xs font-semibold text-white/50">
                   Spreadsheet
                 </label>
-                {lcstatsSpreadsheets.length > 0 ? (
-                  <Select
-                    value={extractSpreadsheetId(lcstatsSettings.spreadsheetId)}
-                    onValueChange={handleLcstatsSpreadsheetChange}
-                    disabled={lcstatsRefreshBusy}
+                {useSpreadsheetPicker ? (
+                  <button
+                    type="button"
+                    className={cn(
+                      "flex h-10 w-full items-center justify-between gap-3 rounded-xl border border-panel-outline bg-white/5 px-4 text-left text-sm text-white outline-none transition hover:bg-white/10 focus:border-panel-outline focus:ring-2 focus:ring-panel-outline disabled:cursor-not-allowed disabled:opacity-60",
+                      !spreadsheetDisplayValue ? "text-white/40" : ""
+                    )}
+                    disabled={lcstatsRefreshBusy || lcstatsPickerBusy}
+                    onClick={() => {
+                      openLcstatsSpreadsheetPicker().catch(console.error);
+                    }}
+                    title={spreadsheetName && spreadsheetId ? spreadsheetId : undefined}
                   >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select spreadsheet" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {lcstatsSpreadsheets.map((file) => (
-                        <SelectItem key={file.id} value={file.id}>
-                          {file.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    <span className="min-w-0 truncate">
+                      {spreadsheetDisplayValue || "Select spreadsheet"}
+                    </span>
+                    {lcstatsPickerBusy ? (
+                      <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-white/55" />
+                    ) : (
+                      <FolderOpen className="h-4 w-4 shrink-0 text-white/55" />
+                    )}
+                  </button>
                 ) : (
-                <Input
-                  value={lcstatsSettings.spreadsheetId}
-                  disabled={lcstatsRefreshBusy}
-                  onChange={(event) =>
-                    updateLcstatsSettings({ spreadsheetId: event.target.value })
-                  }
-                  placeholder="https://docs.google.com/spreadsheets/d/..."
-                />
+                  <Input
+                    value={spreadsheetDisplayValue}
+                    disabled={lcstatsRefreshBusy || lcstatsPickerBusy}
+                    onFocus={(event) => {
+                      setLcstatsSpreadsheetFocused(true);
+                      window.requestAnimationFrame(() => event.target.select());
+                    }}
+                    onChange={(event) =>
+                      handleLcstatsSpreadsheetInputChange(event.target.value)
+                    }
+                    onBlur={(event) => {
+                      setLcstatsSpreadsheetFocused(false);
+                      loadLcstatsSheetNamesFromParsedInput(
+                        parseSpreadsheetInput(event.target.value)
+                      );
+                    }}
+                    placeholder="Google Sheets link or spreadsheet ID"
+                    title={spreadsheetName && spreadsheetId ? spreadsheetId : undefined}
+                  />
                 )}
               </div>
               <div className="min-w-0 space-y-2">
@@ -3255,7 +3611,7 @@ export default function LauncherPage({
                     onValueChange={(value) =>
                       updateLcstatsSettings({ activeSheetName: value })
                     }
-                    disabled={lcstatsRefreshBusy}
+                    disabled={lcstatsRefreshBusy || lcstatsPickerBusy}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Select sheet" />
@@ -3271,7 +3627,7 @@ export default function LauncherPage({
                 ) : (
                   <Input
                     value={lcstatsSettings.activeSheetName}
-                    disabled={lcstatsRefreshBusy}
+                    disabled={lcstatsRefreshBusy || lcstatsPickerBusy}
                     onChange={(event) =>
                       updateLcstatsSettings({ activeSheetName: event.target.value })
                     }
@@ -3283,7 +3639,7 @@ export default function LauncherPage({
                 <Button
                   variant="secondary"
                   className="h-10 w-10 shrink-0 px-0"
-                  disabled={lcstatsRefreshBusy}
+                  disabled={lcstatsRefreshBusy || lcstatsPickerBusy}
                   onClick={() => {
                     refreshLcstatsGoogleLists().catch(console.error);
                   }}
@@ -3324,7 +3680,7 @@ export default function LauncherPage({
                           }
                     )
                   }
-                  disabled={lcstatsBusy || lcstatsRefreshBusy}
+                  disabled={lcstatsBusy || lcstatsRefreshBusy || lcstatsPickerBusy}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Select layout" />
@@ -3353,7 +3709,7 @@ export default function LauncherPage({
                   </label>
                   <Input
                     value={lcstatsSettings[key]}
-                    disabled={lcstatsBusy || lcstatsRefreshBusy}
+                    disabled={lcstatsBusy || lcstatsRefreshBusy || lcstatsPickerBusy}
                     onChange={(event) =>
                       updateLcstatsSettings({
                         [key]: normalizeSheetColumn(event.target.value, ""),
@@ -6533,7 +6889,7 @@ export default function LauncherPage({
                   Google Login
                 </div>
                 <div className="mt-1 text-sm text-white/55">
-                  LCStatsTracker needs Google Sheets read/write permission.
+                  LCStatsTracker needs access to the selected Google Sheets file.
                 </div>
               </div>
               <button

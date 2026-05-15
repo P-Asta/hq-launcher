@@ -7,10 +7,13 @@ use std::net::TcpListener;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 
+const DRIVE_FILE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
 const SHEETS_SCOPE: &str = "https://www.googleapis.com/auth/spreadsheets";
 const DRIVE_METADATA_SCOPE: &str = "https://www.googleapis.com/auth/drive.metadata.readonly";
 const BUNDLED_OAUTH_CLIENT_ID: Option<&str> = option_env!("GOOGLE_LCSTATS_CLIENT_ID");
 const BUNDLED_OAUTH_CLIENT_SECRET: Option<&str> = option_env!("GOOGLE_LCSTATS_CLIENT_SECRET");
+const BUNDLED_PICKER_API_KEY: Option<&str> = option_env!("GOOGLE_LCSTATS_PICKER_API_KEY");
+const BUNDLED_PICKER_APP_ID: Option<&str> = option_env!("GOOGLE_LCSTATS_PICKER_APP_ID");
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GoogleLcStatsAuthState {
@@ -60,6 +63,10 @@ pub struct LcStatsSettings {
     pub google_client_id: String,
     #[serde(default)]
     pub google_client_secret: String,
+    #[serde(default)]
+    pub google_picker_api_key: String,
+    #[serde(default)]
+    pub google_picker_app_id: String,
 }
 
 impl Default for LcStatsSettings {
@@ -73,6 +80,8 @@ impl Default for LcStatsSettings {
             layout: "AutoSheetModel".to_string(),
             google_client_id: String::new(),
             google_client_secret: String::new(),
+            google_picker_api_key: String::new(),
+            google_picker_app_id: String::new(),
         }
     }
 }
@@ -88,6 +97,21 @@ struct OAuthCredentials {
 pub struct GoogleSpreadsheetFile {
     pub id: String,
     pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoogleSheetInfo {
+    pub sheet_id: i64,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GooglePickerConfig {
+    pub api_key: String,
+    pub app_id: String,
+    pub scope: String,
 }
 
 fn token_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -148,7 +172,23 @@ fn now_epoch_secs() -> u64 {
 
 fn has_required_scope(scope: Option<&str>) -> bool {
     let scopes: std::collections::HashSet<&str> = scope.unwrap_or("").split_whitespace().collect();
-    scopes.contains(SHEETS_SCOPE) && scopes.contains(DRIVE_METADATA_SCOPE)
+    scopes.contains(DRIVE_FILE_SCOPE) || scopes.contains(SHEETS_SCOPE)
+}
+
+fn has_scope(scope: Option<&str>, required: &str) -> bool {
+    scope
+        .unwrap_or("")
+        .split_whitespace()
+        .any(|scope| scope == required)
+}
+
+fn requested_oauth_scope(credentials: &OAuthCredentials) -> String {
+    let bundled_client_id = BUNDLED_OAUTH_CLIENT_ID.unwrap_or_default().trim();
+    if !bundled_client_id.is_empty() && credentials.client_id == bundled_client_id {
+        DRIVE_FILE_SCOPE.to_string()
+    } else {
+        format!("{SHEETS_SCOPE} {DRIVE_METADATA_SCOPE}")
+    }
 }
 
 fn url_encode(value: &str) -> String {
@@ -243,6 +283,379 @@ fn oauth_credentials(app: &tauri::AppHandle) -> Result<OAuthCredentials, String>
     })
 }
 
+fn project_number_from_client_id(client_id: &str) -> Option<String> {
+    let (prefix, _) = client_id.split_once('-')?;
+    if !prefix.is_empty() && prefix.bytes().all(|b| b.is_ascii_digit()) {
+        Some(prefix.to_string())
+    } else {
+        None
+    }
+}
+
+pub fn picker_config(app: tauri::AppHandle) -> Result<GooglePickerConfig, String> {
+    let settings = get_settings(app.clone())?;
+    let credentials = oauth_credentials(&app)?;
+    let custom_oauth = !settings.google_client_id.trim().is_empty();
+    let custom_picker_settings = !settings.google_picker_api_key.trim().is_empty()
+        || !settings.google_picker_app_id.trim().is_empty();
+    let api_key = if settings.google_picker_api_key.trim().is_empty() {
+        if custom_oauth && !custom_picker_settings {
+            String::new()
+        } else {
+            BUNDLED_PICKER_API_KEY
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        }
+    } else {
+        settings.google_picker_api_key.trim().to_string()
+    };
+    if api_key.is_empty() {
+        return Err(
+            "Google Picker API key is required. Add it in LCStatsTracker settings.".to_string(),
+        );
+    }
+    let app_id = if settings.google_picker_app_id.trim().is_empty() {
+        if custom_oauth && !custom_picker_settings {
+            String::new()
+        } else {
+            BUNDLED_PICKER_APP_ID
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .or_else(|| project_number_from_client_id(&credentials.client_id))
+                .unwrap_or_default()
+        }
+    } else {
+        settings.google_picker_app_id.trim().to_string()
+    };
+    if app_id.is_empty() {
+        return Err(
+            "Google Picker App ID is required. Add the Cloud project number in LCStatsTracker settings."
+                .to_string(),
+        );
+    }
+    Ok(GooglePickerConfig {
+        api_key,
+        app_id,
+        scope: DRIVE_FILE_SCOPE.to_string(),
+    })
+}
+
+fn http_response(status: &str, content_type: &str, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.as_bytes().len(),
+        body
+    )
+}
+
+fn picker_page(
+    access_token: &str,
+    api_key: &str,
+    app_id: &str,
+    state: &str,
+) -> Result<String, String> {
+    let access_token = serde_json::to_string(access_token).map_err(|e| e.to_string())?;
+    let api_key = serde_json::to_string(api_key).map_err(|e| e.to_string())?;
+    let app_id = serde_json::to_string(app_id).map_err(|e| e.to_string())?;
+    let state = serde_json::to_string(state).map_err(|e| e.to_string())?;
+    Ok(format!(
+        r#"<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Google Sheets Picker</title>
+  <style>
+    html, body {{ height: 100%; margin: 0; font-family: system-ui, sans-serif; color: #202124; }}
+    body {{ display: grid; place-items: center; }}
+    .box {{ max-width: 520px; padding: 24px; text-align: center; }}
+    button {{ border: 0; border-radius: 999px; background: #1a73e8; color: white; padding: 12px 18px; font-weight: 600; }}
+    p {{ color: #5f6368; }}
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>Select a Google Sheets file</h1>
+    <p>If the picker does not open automatically, click the button below.</p>
+    <button id="open">Open Google Picker</button>
+  </div>
+  <script>
+    const accessToken = {access_token};
+    const apiKey = {api_key};
+    const appId = {app_id};
+    const state = {state};
+
+    function finish(path, params = {{}}) {{
+      const url = new URL(path, window.location.origin);
+      url.searchParams.set("state", state);
+      for (const [key, value] of Object.entries(params)) {{
+        url.searchParams.set(key, value || "");
+      }}
+      window.location.href = url.toString();
+    }}
+
+    function openPicker() {{
+      const picker = window.google && window.google.picker;
+      if (!picker) return;
+      const viewId = picker.ViewId.SPREADSHEETS || picker.ViewId.DOCS;
+      const view = new picker.DocsView(viewId);
+      if (view.setMimeTypes) view.setMimeTypes("application/vnd.google-apps.spreadsheet");
+      if (view.setMode && picker.DocsViewMode && picker.DocsViewMode.LIST) {{
+        view.setMode(picker.DocsViewMode.LIST);
+      }}
+      if (view.setIncludeFolders) view.setIncludeFolders(false);
+      if (view.setSelectFolderEnabled) view.setSelectFolderEnabled(false);
+      new picker.PickerBuilder()
+        .addView(view)
+        .setOAuthToken(accessToken)
+        .setDeveloperKey(apiKey)
+        .setAppId(appId)
+        .setCallback((data) => {{
+          const action = data[picker.Response.ACTION] || data.action;
+          if (action === picker.Action.CANCEL) {{
+            finish("/cancel");
+            return;
+          }}
+          if (action !== picker.Action.PICKED) return;
+          const docs = data[picker.Response.DOCUMENTS] || data.docs || [];
+          const doc = docs[0];
+          if (!doc) {{
+            finish("/cancel");
+            return;
+          }}
+          finish("/picked", {{
+            id: doc[picker.Document.ID] || doc.id || "",
+            name: doc[picker.Document.NAME] || doc.name || "",
+            url: doc[picker.Document.URL] || doc.url || ""
+          }});
+        }})
+        .build()
+        .setVisible(true);
+    }}
+
+    function loadPicker() {{
+      gapi.load("picker", {{ callback: openPicker }});
+    }}
+
+    document.getElementById("open").addEventListener("click", openPicker);
+  </script>
+  <script async defer src="https://apis.google.com/js/api.js" onload="loadPicker()"></script>
+</body>
+</html>"#
+    ))
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn spreadsheet_list_page(files: &[GoogleSpreadsheetFile], state: &str) -> String {
+    let state = html_escape(state);
+    let items = if files.is_empty() {
+        "<p>No editable Google Sheets files were found.</p>".to_string()
+    } else {
+        files
+            .iter()
+            .map(|file| {
+                format!(
+                    r#"<form method="get" action="/picked">
+      <input type="hidden" name="state" value="{state}">
+      <input type="hidden" name="id" value="{id}">
+      <input type="hidden" name="name" value="{name}">
+      <button type="submit">{name}<span>{id}</span></button>
+    </form>"#,
+                    state = state,
+                    id = html_escape(&file.id),
+                    name = html_escape(&file.name),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        r#"<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Select a Google Sheets file</title>
+  <style>
+    * {{ box-sizing: border-box; }}
+    html, body {{ min-height: 100%; margin: 0; font-family: system-ui, sans-serif; color: #f8fafc; background: #111827; }}
+    body {{ display: grid; place-items: center; padding: 32px; }}
+    main {{ width: min(720px, 100%); }}
+    h1 {{ margin: 0 0 8px; font-size: 24px; }}
+    p {{ color: #cbd5e1; }}
+    .list {{ display: grid; gap: 10px; margin-top: 20px; }}
+    button {{ width: 100%; border: 1px solid rgba(148,163,184,.35); border-radius: 8px; background: rgba(255,255,255,.06); color: inherit; padding: 12px 14px; text-align: left; font: inherit; cursor: pointer; }}
+    button:hover, button:focus {{ border-color: rgba(248,250,252,.7); background: rgba(255,255,255,.1); outline: none; }}
+    span {{ display: block; margin-top: 4px; color: #94a3b8; font-size: 12px; overflow-wrap: anywhere; }}
+    a {{ display: inline-block; margin-top: 20px; color: #93c5fd; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Select one Google Sheets file</h1>
+    <p>Only one spreadsheet can be selected for LCStatsTracker.</p>
+    <div class="list">
+      {items}
+    </div>
+    <a href="/cancel?state={state}">Cancel</a>
+  </main>
+</body>
+</html>"#
+    )
+}
+
+enum SpreadsheetPickerUi {
+    GooglePicker {
+        access_token: String,
+        api_key: String,
+        app_id: String,
+    },
+    SpreadsheetList {
+        files: Vec<GoogleSpreadsheetFile>,
+    },
+}
+
+fn listen_for_picker_selection(
+    listener: TcpListener,
+    ui: SpreadsheetPickerUi,
+    expected_state: String,
+) -> Result<Option<GoogleSpreadsheetFile>, String> {
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+    listener.set_ttl(64).map_err(|e| e.to_string())?;
+
+    let started = Instant::now();
+    while started.elapsed() <= Duration::from_secs(180) {
+        let (mut stream, _) = match listener.accept() {
+            Ok(value) => value,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        stream.set_nonblocking(false).map_err(|e| e.to_string())?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .map_err(|e| e.to_string())?;
+        let mut buf = [0_u8; 8192];
+        let n = stream.read(&mut buf).map_err(|e| e.to_string())?;
+        let request = String::from_utf8_lossy(&buf[..n]);
+        let first_line = request.lines().next().unwrap_or("");
+        let target = first_line.split_whitespace().nth(1).unwrap_or("/");
+        let path = target
+            .split_once('?')
+            .map(|(path, _)| path)
+            .unwrap_or(target);
+        let query = target.split_once('?').map(|(_, q)| q).unwrap_or_default();
+        let params = parse_query(query);
+
+        match path {
+            "/" => {
+                let body = match &ui {
+                    SpreadsheetPickerUi::GooglePicker {
+                        access_token,
+                        api_key,
+                        app_id,
+                    } => picker_page(access_token, api_key, app_id, &expected_state)?,
+                    SpreadsheetPickerUi::SpreadsheetList { files } => {
+                        spreadsheet_list_page(files, &expected_state)
+                    }
+                };
+                let _ = stream.write_all(http_response("200 OK", "text/html", &body).as_bytes());
+            }
+            "/picked" => {
+                if params.get("state") != Some(&expected_state) {
+                    let body = "Google Picker failed: invalid state.";
+                    let _ = stream
+                        .write_all(http_response("400 Bad Request", "text/plain", body).as_bytes());
+                    return Err("Google Picker state mismatch".to_string());
+                }
+                let id = params.get("id").cloned().unwrap_or_default();
+                let name = params.get("name").cloned().unwrap_or_default();
+                let body = "Google Sheets file selected. You can close this window.";
+                let _ = stream.write_all(http_response("200 OK", "text/plain", body).as_bytes());
+                if id.trim().is_empty() {
+                    return Ok(None);
+                }
+                return Ok(Some(GoogleSpreadsheetFile { id, name }));
+            }
+            "/cancel" => {
+                let body = "Google Picker was cancelled. You can close this window.";
+                let _ = stream.write_all(http_response("200 OK", "text/plain", body).as_bytes());
+                return Ok(None);
+            }
+            "/favicon.ico" => {
+                let _ = stream.write_all(
+                    "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .as_bytes(),
+                );
+            }
+            _ => {
+                let _ = stream.write_all(
+                    http_response("404 Not Found", "text/plain", "Not found").as_bytes(),
+                );
+            }
+        }
+    }
+
+    Err("Google Picker timed out.".to_string())
+}
+
+async fn open_spreadsheet_picker_ui(
+    ui: SpreadsheetPickerUi,
+) -> Result<Option<GoogleSpreadsheetFile>, String> {
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    let state = format!(
+        "hq-launcher-picker-{}-{}",
+        std::process::id(),
+        now_epoch_secs()
+    );
+    opener::open(format!("http://127.0.0.1:{port}/"))
+        .map_err(|e| format!("failed to open Google Picker: {e}"))?;
+
+    tauri::async_runtime::spawn_blocking(move || listen_for_picker_selection(listener, ui, state))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+pub async fn pick_spreadsheet(
+    app: tauri::AppHandle,
+    _spreadsheet_id: String,
+) -> Result<Option<GoogleSpreadsheetFile>, String> {
+    let token = access_token(app.clone()).await?;
+    let selected = match picker_config(app.clone()) {
+        Ok(picker) => {
+            open_spreadsheet_picker_ui(SpreadsheetPickerUi::GooglePicker {
+                access_token: token.clone(),
+                api_key: picker.api_key,
+                app_id: picker.app_id,
+            })
+            .await
+        }
+        Err(picker_error) => {
+            let files = list_spreadsheets(app).await.map_err(|list_error| {
+                format!("{picker_error} Spreadsheet list unavailable: {list_error}")
+            })?;
+            open_spreadsheet_picker_ui(SpreadsheetPickerUi::SpreadsheetList { files }).await
+        }
+    }?;
+
+    if let Some(file) = &selected {
+        assert_spreadsheet_can_edit_with_token(&reqwest::Client::new(), &token, &file.id).await?;
+    }
+    Ok(selected)
+}
+
 fn listen_for_oauth_code(listener: TcpListener, expected_state: String) -> Result<String, String> {
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     listener.set_ttl(64).map_err(|e| e.to_string())?;
@@ -260,6 +673,7 @@ fn listen_for_oauth_code(listener: TcpListener, expected_state: String) -> Resul
             Err(e) => return Err(e.to_string()),
         }
     };
+    stream.set_nonblocking(false).map_err(|e| e.to_string())?;
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .map_err(|e| e.to_string())?;
@@ -377,8 +791,7 @@ pub async fn access_token(app: tauri::AppHandle) -> Result<String, String> {
     }
     if !has_required_scope(token.scope.as_deref()) {
         return Err(
-            "Google Sheets and Drive metadata permissions were not granted. Please login again."
-                .to_string(),
+            "Google Sheets file permission was not granted. Please login again.".to_string(),
         );
     }
     let expired = token
@@ -390,6 +803,68 @@ pub async fn access_token(app: tauri::AppHandle) -> Result<String, String> {
         token
     };
     Ok(token.access_token)
+}
+
+pub async fn assert_spreadsheet_can_edit(
+    app: tauri::AppHandle,
+    client: &reqwest::Client,
+    spreadsheet_id: &str,
+) -> Result<(), String> {
+    let token = read_token(&app)?.ok_or_else(|| "Google login is required.".to_string())?;
+    if !has_scope(token.scope.as_deref(), DRIVE_FILE_SCOPE)
+        && !has_scope(token.scope.as_deref(), DRIVE_METADATA_SCOPE)
+    {
+        return Ok(());
+    }
+    let access_token = access_token(app).await?;
+    assert_spreadsheet_can_edit_with_token(client, &access_token, spreadsheet_id).await
+}
+
+async fn assert_spreadsheet_can_edit_with_token(
+    client: &reqwest::Client,
+    access_token: &str,
+    spreadsheet_id: &str,
+) -> Result<(), String> {
+    let url = format!(
+        "https://www.googleapis.com/drive/v3/files/{}?fields=id,name,capabilities/canEdit",
+        url_encode(spreadsheet_id.trim())
+    );
+    let response = client
+        .get(url)
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {access_token}"),
+        )
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "Google Drive file grant is missing for this spreadsheet ({status}): {body}. Select this spreadsheet again using the same Google account."
+        ));
+    }
+    let file = response
+        .json::<DriveFile>()
+        .await
+        .map_err(|e| e.to_string())?;
+    let can_edit = file
+        .capabilities
+        .as_ref()
+        .and_then(|capabilities| capabilities.can_edit)
+        .unwrap_or(false);
+    if !can_edit {
+        return Err(format!(
+            "The selected Google account cannot edit this spreadsheet{}. Share the sheet with edit access or choose an editable copy.",
+            file.name
+                .as_deref()
+                .filter(|name| !name.trim().is_empty())
+                .map(|name| format!(" ({name})"))
+                .unwrap_or_default()
+        ));
+    }
+    Ok(())
 }
 
 pub async fn start_oauth(app: tauri::AppHandle) -> Result<GoogleLcStatsAuthState, String> {
@@ -409,7 +884,7 @@ pub async fn start_oauth(app: tauri::AppHandle) -> Result<GoogleLcStatsAuthState
         "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&response_type=code&scope={}&access_type=offline&prompt=consent&state={}&code_challenge={}&code_challenge_method=S256",
         url_encode(&credentials.client_id),
         url_encode(&redirect_uri),
-        url_encode(&format!("{SHEETS_SCOPE} {DRIVE_METADATA_SCOPE}")),
+        url_encode(&requested_oauth_scope(&credentials)),
         url_encode(&state),
         url_encode(&challenge)
     );
@@ -450,7 +925,7 @@ pub async fn start_oauth(app: tauri::AppHandle) -> Result<GoogleLcStatsAuthState
         .map_err(|e| e.to_string())?;
 
     if !has_required_scope(response.scope.as_deref()) {
-        return Err("Google Sheets and Drive metadata permissions were not granted.".to_string());
+        return Err("Google Sheets file permission was not granted.".to_string());
     }
 
     let token = StoredToken {
@@ -513,6 +988,8 @@ struct SheetMetadata {
 
 #[derive(Debug, Deserialize)]
 struct SheetProperties {
+    #[serde(rename = "sheetId")]
+    sheet_id: Option<i64>,
     title: Option<String>,
 }
 
@@ -583,13 +1060,24 @@ pub async fn list_sheet_names(
     app: tauri::AppHandle,
     spreadsheet_id: String,
 ) -> Result<Vec<String>, String> {
+    Ok(list_sheet_infos(app, spreadsheet_id)
+        .await?
+        .into_iter()
+        .map(|sheet| sheet.title)
+        .collect())
+}
+
+pub async fn list_sheet_infos(
+    app: tauri::AppHandle,
+    spreadsheet_id: String,
+) -> Result<Vec<GoogleSheetInfo>, String> {
     let spreadsheet_id = spreadsheet_id.trim();
     if spreadsheet_id.is_empty() {
         return Ok(vec![]);
     }
     let token = access_token(app).await?;
     let url = format!(
-        "https://sheets.googleapis.com/v4/spreadsheets/{}?fields=sheets.properties.title",
+        "https://sheets.googleapis.com/v4/spreadsheets/{}?fields=sheets.properties(sheetId,title)",
         url_encode(spreadsheet_id)
     );
     let data = reqwest::Client::new()
@@ -610,6 +1098,12 @@ pub async fn list_sheet_names(
     Ok(data
         .sheets
         .into_iter()
-        .filter_map(|sheet| sheet.properties.and_then(|props| props.title))
+        .filter_map(|sheet| {
+            let props = sheet.properties?;
+            Some(GoogleSheetInfo {
+                sheet_id: props.sheet_id?,
+                title: props.title?,
+            })
+        })
         .collect())
 }

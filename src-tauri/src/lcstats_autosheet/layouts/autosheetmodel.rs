@@ -7,8 +7,8 @@ use crate::lcstats_autosheet::sheets::{
     write_cells,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, bool_at, enemy_count, int_at, missed_item_count, normalize_column, string_at,
-    strip_moon_number, sum_array,
+    array_at_any, bool_at, enemy_count, int_at, missed_item_count, normalize_column, string_at,
+    strip_moon_number, sum_array_any, value_at,
 };
 
 pub async fn write(
@@ -130,13 +130,34 @@ fn process_stats(stats: &Value) -> Vec<Value> {
         json!(int_at(stats, &["DungeonInfo", "ItemCount"])),
         json!(missed_item_count(stats)),
         json!(bool_at(stats, &["AppSpawned"])),
-        json!(array_at(stats, &["BeeInfo", "Values"]).len()),
-        json!(sum_array(stats, &["BeeInfo", "Values"])),
-        json!(sum_array(stats, &["BirdInfo", "EggValues"])),
+        json!(array_at_any(
+            stats,
+            &[&["BeeInfo", "Available"][..], &["BeeInfo", "Values"][..],],
+        )
+        .len()),
+        json!(sum_array_any(
+            stats,
+            &[&["BeeInfo", "Available"][..], &["BeeInfo", "Values"][..],],
+        )),
+        json!(sum_array_any(
+            stats,
+            &[
+                &["EggInfo", "Available"][..],
+                &["BirdInfo", "EggValues"][..],
+            ],
+        )),
         json!(enemy_count(stats, "Nutcracker")),
         json!(enemy_count(stats, "Butler")),
-        json!(int_at(stats, &["ShotgunsCollected"])),
-        json!(int_at(stats, &["KnivesCollected"])),
+        json!(collected_count_or_legacy_int(
+            stats,
+            &["ShotgunInfo", "Collected"],
+            &["ShotgunsCollected"],
+        )),
+        json!(collected_count_or_legacy_int(
+            stats,
+            &["KnifeInfo", "Collected"],
+            &["KnivesCollected"],
+        )),
         json!(int_at(stats, &["CollectedNoExtra"])),
         json!(int_at(stats, &["BottomLine"])),
         json!(int_at(stats, &["CollectedTotal"])),
@@ -150,4 +171,43 @@ fn process_stats(stats: &Value) -> Vec<Value> {
         json!(string_at(stats, &["InfestationType"])),
         json!(string_at(stats, &["MeteorShowerTime"])),
     ]
+}
+
+fn collected_count_or_legacy_int(
+    stats: &Value,
+    collected_path: &[&str],
+    legacy_path: &[&str],
+) -> i64 {
+    if let Some(collected) = value_at(stats, collected_path).and_then(Value::as_array) {
+        collected.len() as i64
+    } else {
+        int_at(stats, legacy_path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn new_stat_arrays_feed_autosheet_model_values() {
+        let stats = json!({
+            "Seed": 10183014,
+            "MoonInfo": { "Name": "68 Artifice", "Weather": "Eclipsed" },
+            "DungeonInfo": { "Interior": "Mineshaft", "ItemCount": 34 },
+            "BeeInfo": { "Available": [64, 88] },
+            "EggInfo": { "Available": [12, 18] },
+            "ShotgunInfo": { "Collected": [60] },
+            "KnifeInfo": { "Collected": [35, 35] }
+        });
+
+        let row = process_stats(&stats);
+
+        assert_eq!(row[7], json!(2));
+        assert_eq!(row[8], json!(152));
+        assert_eq!(row[9], json!(30));
+        assert_eq!(row[12], json!(1));
+        assert_eq!(row[13], json!(2));
+    }
 }

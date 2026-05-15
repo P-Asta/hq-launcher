@@ -4977,6 +4977,26 @@ async fn google_lcstats_start_oauth(
 }
 
 #[tauri::command]
+async fn google_lcstats_access_token(app: tauri::AppHandle) -> Result<String, String> {
+    google_oauth::access_token(app).await
+}
+
+#[tauri::command]
+fn google_lcstats_picker_config(
+    app: tauri::AppHandle,
+) -> Result<google_oauth::GooglePickerConfig, String> {
+    google_oauth::picker_config(app)
+}
+
+#[tauri::command]
+async fn google_lcstats_pick_spreadsheet(
+    app: tauri::AppHandle,
+    spreadsheet_id: String,
+) -> Result<Option<google_oauth::GoogleSpreadsheetFile>, String> {
+    google_oauth::pick_spreadsheet(app, spreadsheet_id).await
+}
+
+#[tauri::command]
 fn google_lcstats_logout(app: tauri::AppHandle) -> Result<bool, String> {
     google_oauth::logout(app.clone())?;
     disable_lcstats_in_disablemod(&app)?;
@@ -5002,6 +5022,14 @@ async fn list_lcstats_sheet_names(
     spreadsheet_id: String,
 ) -> Result<Vec<String>, String> {
     google_oauth::list_sheet_names(app, spreadsheet_id).await
+}
+
+#[tauri::command]
+async fn list_lcstats_sheet_infos(
+    app: tauri::AppHandle,
+    spreadsheet_id: String,
+) -> Result<Vec<google_oauth::GoogleSheetInfo>, String> {
+    google_oauth::list_sheet_infos(app, spreadsheet_id).await
 }
 
 #[tauri::command]
@@ -5911,10 +5939,14 @@ pub fn run() {
             get_disabled_mods,
             google_lcstats_auth_status,
             google_lcstats_start_oauth,
+            google_lcstats_access_token,
+            google_lcstats_picker_config,
+            google_lcstats_pick_spreadsheet,
             google_lcstats_logout,
             get_lcstats_settings,
             set_lcstats_settings,
             list_lcstats_sheet_names,
+            list_lcstats_sheet_infos,
             list_lcstats_spreadsheets,
             apply_disabled_mods,
             set_mod_enabled,

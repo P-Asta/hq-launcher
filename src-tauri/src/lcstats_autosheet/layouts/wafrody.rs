@@ -8,7 +8,7 @@ use crate::lcstats_autosheet::sheets::{
     first_empty_row_from, get_sheet_id, number_value, quote_sheet_name, read_number, read_range,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, bool_at, object_at, string_at, strip_moon_number, value_at,
+    array_at, array_at_any, bool_at, object_at, string_at, strip_moon_number, value_at,
 };
 
 const TARGET_SHEET_CELL: &str = "A1";
@@ -277,7 +277,13 @@ impl NormalizedStats {
     fn from_stats(stats: &Value) -> Self {
         let item_count = intish_at(stats, &["DungeonInfo", "ItemCount"]);
         let beehives = beehive_price_summary(stats);
-        let egg_values = intish_array(stats, &["BirdInfo", "EggValues"]);
+        let egg_values = intish_array_any(
+            stats,
+            &[
+                &["EggInfo", "Available"][..],
+                &["BirdInfo", "EggValues"][..],
+            ],
+        );
         let sid_type = non_false_text(&string_at(stats, &["SIDType"]));
         let meteor_shower_time = non_false_text(&string_at(stats, &["MeteorShowerTime"]));
         Self {
@@ -292,9 +298,17 @@ impl NormalizedStats {
             egg_values,
             has_meteor_shower: meteor_shower_time.is_some(),
             meteor_shower_time,
-            shotguns_collected: intish_at(stats, &["ShotgunsCollected"]),
+            shotguns_collected: collected_count_or_legacy_int(
+                stats,
+                &["ShotgunInfo", "Collected"],
+                &["ShotgunsCollected"],
+            ),
             nutcracker_count: indoor_enemy_count(stats, "Nutcracker"),
-            knives_collected: intish_at(stats, &["KnivesCollected"]),
+            knives_collected: collected_count_or_legacy_int(
+                stats,
+                &["KnifeInfo", "Collected"],
+                &["KnivesCollected"],
+            ),
             butler_count: indoor_enemy_count(stats, "Butler"),
             collected_total: intish_at(stats, &["CollectedTotal"]),
             bottom_line: intish_at(stats, &["BottomLine"]),
@@ -333,6 +347,15 @@ fn normalize_players(stats: &Value) -> HashMap<String, NormalizedPlayer> {
             )
             .trim()
             .to_string();
+            let time_of_death = strip_apostrophe(
+                player
+                    .get("TimeOfDeath")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            )
+            .trim()
+            .to_string();
+            let has_death_details = !cause_of_death.is_empty() || !time_of_death.is_empty();
 
             let status = if alive {
                 "A"
@@ -340,7 +363,7 @@ fn normalize_players(stats: &Value) -> HashMap<String, NormalizedPlayer> {
                 "DC"
             } else if cause_of_death == "Abandoned" {
                 "M"
-            } else if died_before_ship_leave_cutoff(&player, &takeoff_time) {
+            } else if has_death_details || died_before_ship_leave_cutoff(&player, &takeoff_time) {
                 "X"
             } else {
                 "S"
@@ -707,8 +730,23 @@ fn intish_at(stats: &Value, path: &[&str]) -> i64 {
     value_at(stats, path).map(value_as_i64).unwrap_or(0)
 }
 
-fn intish_array(stats: &Value, path: &[&str]) -> Vec<i64> {
-    array_at(stats, path).iter().map(value_as_i64).collect()
+fn intish_array_any(stats: &Value, paths: &[&[&str]]) -> Vec<i64> {
+    array_at_any(stats, paths)
+        .iter()
+        .map(value_as_i64)
+        .collect()
+}
+
+fn collected_count_or_legacy_int(
+    stats: &Value,
+    collected_path: &[&str],
+    legacy_path: &[&str],
+) -> i64 {
+    if let Some(collected) = value_at(stats, collected_path).and_then(Value::as_array) {
+        collected.len() as i64
+    } else {
+        intish_at(stats, legacy_path)
+    }
 }
 
 fn optional_i64_or_blank(value: Option<i64>) -> Value {
@@ -847,10 +885,13 @@ struct BeehivePriceSummary {
 }
 
 fn beehive_price_summary(stats: &Value) -> BeehivePriceSummary {
-    let mut values = array_at(stats, &["BeeInfo", "Values"])
-        .iter()
-        .filter_map(value_as_i64_option)
-        .collect::<Vec<_>>();
+    let mut values = array_at_any(
+        stats,
+        &[&["BeeInfo", "Available"][..], &["BeeInfo", "Values"][..]],
+    )
+    .iter()
+    .filter_map(value_as_i64_option)
+    .collect::<Vec<_>>();
     values.sort_unstable();
 
     let Some(&cheap_value) = values.first() else {
@@ -1014,6 +1055,49 @@ mod tests {
                 cheap_value: Some(80),
                 expensive_value: None,
             }
+        );
+    }
+
+    #[test]
+    fn new_stat_arrays_feed_wafrody_values() {
+        let stats = json!({
+            "BeeInfo": { "Available": [64, 88, 64], "Collected": [64] },
+            "EggInfo": { "Available": [12, 18], "Collected": [12] },
+            "ShotgunInfo": { "Available": [60], "Collected": [60] },
+            "KnifeInfo": { "Available": [35, 35], "Collected": [35, 35] }
+        });
+
+        let normalized = NormalizedStats::from_stats(&stats);
+        let summary = beehive_price_summary(&stats);
+
+        assert_eq!(summary.count_by_value, "2|1");
+        assert_eq!(summary.cheap_value, Some(64));
+        assert_eq!(summary.expensive_value, Some(88));
+        assert_eq!(normalized.egg_value, Some(30));
+        assert_eq!(normalized.shotguns_collected, 1);
+        assert_eq!(normalized.knives_collected, 2);
+    }
+
+    #[test]
+    fn player_with_death_cause_is_x_even_after_cutoff() {
+        let stats = json!({
+            "TakeOffTime": "11:57 PM",
+            "Players": {
+                "765": {
+                    "Name": "AureoHatsune",
+                    "Alive": false,
+                    "Disconnected": false,
+                    "TimeOfDeath": "10:12 PM",
+                    "CauseOfDeath": "Forest Giant"
+                }
+            }
+        });
+
+        let players = normalize_players(&stats);
+
+        assert_eq!(
+            players.get("765").map(|player| player.status.as_str()),
+            Some("X")
         );
     }
 
