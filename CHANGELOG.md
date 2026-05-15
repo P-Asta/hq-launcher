@@ -2,7 +2,7 @@
 - Content
 
 
-# 1.10.5 (2026-05-11)
+# 1.10.6 (2026-05-11)
 - Added **sheet auto fill ✨** feature
   - MakuSheet 1.0
   - AutoSheetModel
