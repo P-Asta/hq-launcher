@@ -71,7 +71,7 @@ pub async fn write(
     )
     .await?;
 
-    if strip_moon_number(&string_at(stats, &["MoonInfo", "Name"])).trim() == "Gordion" {
+    if is_gordion_stats(stats) {
         handle_gordion(
             client,
             token,
@@ -715,6 +715,17 @@ fn google_user_value(value: Value) -> Value {
 
 fn strip_apostrophe(value: &str) -> String {
     value.trim_start_matches('\'').to_string()
+}
+
+fn is_gordion_stats(stats: &Value) -> bool {
+    let moon = strip_moon_number(&strip_apostrophe(&string_at(stats, &["MoonInfo", "Name"])));
+    let normalized = moon
+        .trim()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .collect::<String>()
+        .to_ascii_uppercase();
+    normalized == "GORDION" || normalized == "GORION"
 }
 
 fn wafrody_weather(value: &str) -> String {

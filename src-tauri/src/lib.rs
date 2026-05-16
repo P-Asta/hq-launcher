@@ -57,6 +57,15 @@ use crate::{
 
 const INSTALL_COMPLETE_MARKER: &str = ".hq_install_complete";
 const DISABLEMOD_FILE_VERSION: u32 = 5;
+const LCSTATS_TRACKER_ID: (&str, &str) = ("MikuOreo", "LCStatsTracker");
+
+fn env_flag_enabled(value: Option<&str>) -> bool {
+    value.map(|value| value.trim() == "1").unwrap_or(false)
+}
+
+fn keep_lcstats_enabled_in_practice() -> bool {
+    env_flag_enabled(option_env!("DEV"))
+}
 
 fn manifest_state_has_version(app: &tauri::AppHandle, version: u32) -> bool {
     let Ok(app_data) = app.path().app_data_dir() else {
@@ -2801,14 +2810,34 @@ fn practice_mode_mod_ids() -> Vec<(String, String)> {
 fn practice_mode_forced_disabled_ids() -> Vec<(String, String)> {
     let mut mods = practice_mode_mod_ids();
     mods.push(("HQHQTeam".to_string(), "VLog".to_string()));
-    mods.push(("MikuOreo".to_string(), "LCStatsTracker".to_string()));
+    if !keep_lcstats_enabled_in_practice() {
+        mods.push((
+            LCSTATS_TRACKER_ID.0.to_string(),
+            LCSTATS_TRACKER_ID.1.to_string(),
+        ));
+    }
     mods
+}
+
+fn practice_mode_forced_enabled_ids() -> Vec<(String, String)> {
+    if keep_lcstats_enabled_in_practice() {
+        vec![(
+            LCSTATS_TRACKER_ID.0.to_string(),
+            LCSTATS_TRACKER_ID.1.to_string(),
+        )]
+    } else {
+        vec![]
+    }
 }
 
 fn sync_practice_locked_mods_for_version(
     version_plugins_dir: &std::path::Path,
 ) -> Result<(), String> {
-    for (dev, name) in [("HQHQTeam", "VLog"), ("MikuOreo", "LCStatsTracker")] {
+    let mut locked_mods = vec![("HQHQTeam", "VLog")];
+    if !keep_lcstats_enabled_in_practice() {
+        locked_mods.push(LCSTATS_TRACKER_ID);
+    }
+    for (dev, name) in locked_mods {
         if let Some(dir) = mod_dir_for(version_plugins_dir, dev, name) {
             let _ = set_mod_files_old_suffix(&dir, false);
         }
@@ -2975,7 +3004,11 @@ async fn prepare_practice_mods_for_version(
             rename_ops.push((dir, true, format!("{}-{}", m.dev, m.name)));
         }
     }
-    for (dev, name) in [("HQHQTeam", "VLog"), ("MikuOreo", "LCStatsTracker")] {
+    let mut locked_mods = vec![("HQHQTeam", "VLog")];
+    if !keep_lcstats_enabled_in_practice() {
+        locked_mods.push(LCSTATS_TRACKER_ID);
+    }
+    for (dev, name) in locked_mods {
         if let Some(dir) = mod_dir_for(&plugins, dev, name) {
             rename_ops.push((dir, false, format!("{dev}-{name}")));
         }
@@ -4462,10 +4495,16 @@ async fn launch_game_practice(
     let practice_ids = prepare_practice_mods_for_version(&app, version, None).await?;
     let mut forced_disabled_ids = practice_mode_forced_disabled_ids();
     forced_disabled_ids.extend(run_mode_tagged_mod_ids(version, None).await?);
+    let mut forced_enabled_ids = practice_ids.clone();
+    forced_enabled_ids.extend(practice_mode_forced_enabled_ids());
 
     // Practice mode state wins over the saved disabled list on launch.
-    let _ =
-        apply_effective_mod_states_for_version(&app, version, &forced_disabled_ids, &practice_ids);
+    let _ = apply_effective_mod_states_for_version(
+        &app,
+        version,
+        &forced_disabled_ids,
+        &forced_enabled_ids,
+    );
     if let Ok(plugins) = plugins_dir(&app, version) {
         let _ = sync_practice_locked_mods_for_version(&plugins);
     }
@@ -4558,6 +4597,9 @@ async fn launch_game_preset(
     allow_eclipsed_hq_optional_mods(&preset, &mut tagged_disabled_ids);
     let mut forced_enabled_ids = preset_ids.clone();
     forced_enabled_ids.extend(practice_ids.clone());
+    if practice {
+        forced_enabled_ids.extend(practice_mode_forced_enabled_ids());
+    }
     let forced_disabled_ids = if practice {
         let mut ids = practice_mode_forced_disabled_ids();
         ids.extend(tagged_disabled_ids);
@@ -4696,6 +4738,9 @@ async fn prepare_preset_for_version(
     allow_eclipsed_hq_optional_mods(preset, &mut tagged_disabled_ids);
     let mut forced_enabled_ids = preset_ids.clone();
     forced_enabled_ids.extend(practice_ids.clone());
+    if practice {
+        forced_enabled_ids.extend(practice_mode_forced_enabled_ids());
+    }
     let forced_disabled_ids = if practice {
         let mut ids = practice_mode_forced_disabled_ids();
         ids.extend(tagged_disabled_ids);
@@ -4943,6 +4988,9 @@ fn get_disabled_mods(app: tauri::AppHandle) -> Result<Vec<DisabledMod>, String> 
 }
 
 fn is_lcstats_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
+    if keep_lcstats_enabled_in_practice() {
+        return Ok(true);
+    }
     let disabled_keys = disabled_mod_keys(&read_disablemod(app)?.mods);
     Ok(!disabled_keys.contains(&normalize_mod_key("MikuOreo", "LCStatsTracker")))
 }
@@ -4956,6 +5004,9 @@ fn disable_lcstats_in_disablemod(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 fn ensure_lcstats_disabled_without_google_auth(app: &tauri::AppHandle) -> Result<(), String> {
+    if keep_lcstats_enabled_in_practice() {
+        return Ok(());
+    }
     if google_oauth::auth_status(app.clone())?.authenticated {
         return Ok(());
     }
@@ -5056,6 +5107,7 @@ async fn set_mod_enabled(
     if enabled
         && dev.eq_ignore_ascii_case("MikuOreo")
         && name.eq_ignore_ascii_case("LCStatsTracker")
+        && !keep_lcstats_enabled_in_practice()
     {
         let status = google_oauth::auth_status(app.clone())?;
         if !status.authenticated {

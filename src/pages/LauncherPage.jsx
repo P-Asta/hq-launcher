@@ -205,6 +205,9 @@ const PRACTICE_LOCKED_MOD_KEYS = new Set([
   "mikuoreo::lcstatstracker",
 ]);
 
+const KEEP_LCSTATS_ENABLED_IN_PRACTICE =
+  String(__HQ_LAUNCHER_DEV_ENV__ ?? "").trim() === "1";
+
 const SMHQ_FORCED_MOD_KEYS = new Set([
   "slushyrh::freeeeeemoooooons",
 ]);
@@ -227,6 +230,7 @@ const LCSTATS_LAYOUTS = [
   "BreadSheet",
   "WafrodyAutoSheet",
   "MakuSheet 1.0",
+  "ModdedSheet",
 ];
 
 const LCSTATS_LAYOUT_COLUMN_FIELDS = new Set([
@@ -238,7 +242,7 @@ const DEFAULT_LCSTATS_SETTINGS = {
   activeSheetName: "",
   startColumn: "D",
   quotaColumn: "B",
-  sellColumn: "AB",
+  sellColumn: "AE",
   layout: "AutoSheetModel",
   googleClientId: "",
   googleClientSecret: "",
@@ -1712,7 +1716,12 @@ export default function LauncherPage({
 
   const practiceLockedModKeys = useMemo(() => {
     if (!isPracticeRunMode(runMode)) return new Set();
-    return PRACTICE_LOCKED_MOD_KEYS;
+    if (!KEEP_LCSTATS_ENABLED_IN_PRACTICE) return PRACTICE_LOCKED_MOD_KEYS;
+    return new Set(
+      Array.from(PRACTICE_LOCKED_MOD_KEYS).filter(
+        (key) => key !== "mikuoreo::lcstatstracker"
+      )
+    );
   }, [runMode]);
 
   const smhqForcedModKeys = useMemo(() => {
@@ -3174,7 +3183,7 @@ export default function LauncherPage({
         ? normalizeSheetColumn(settings?.quotaColumn, "B")
         : "",
       sellColumn: lcstatsLayoutUsesColumnFields(layout)
-        ? normalizeSheetColumn(settings?.sellColumn, "AB")
+        ? normalizeSheetColumn(settings?.sellColumn, "AE")
         : "",
       layout,
       googleClientId: String(settings?.googleClientId ?? "").trim(),
@@ -3670,7 +3679,7 @@ export default function LauncherPage({
                             layout: value,
                             startColumn: lcstatsSettings.startColumn || "D",
                             quotaColumn: lcstatsSettings.quotaColumn || "B",
-                            sellColumn: lcstatsSettings.sellColumn || "AB",
+                            sellColumn: lcstatsSettings.sellColumn || "AE",
                           }
                         : {
                             layout: value,
@@ -3701,7 +3710,7 @@ export default function LauncherPage({
               {[
                 ["Start column", "startColumn", "D"],
                 ["Quota column", "quotaColumn", "B"],
-                ["Sell column", "sellColumn", "AB"],
+                ["Sell column", "sellColumn", "AE"],
               ].map(([label, key, placeholder]) => (
                 <div key={key} className="space-y-2">
                   <label className="block text-xs font-semibold text-white/50">

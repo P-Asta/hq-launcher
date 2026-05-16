@@ -5,7 +5,7 @@ use crate::lcstats_autosheet::layouts::BREADSHEET_LAYOUT;
 use crate::lcstats_autosheet::sheets::{
     batch_write_cells_user_entered, first_empty_row_from, number_value, read_number,
 };
-use crate::lcstats_autosheet::stats::{int_at, string_at, strip_moon_number};
+use crate::lcstats_autosheet::stats::{intish_value, string_at, strip_moon_number, value_at};
 
 const QUOTA_COLUMN: &str = "B";
 const MOON_COLUMN: &str = "G";
@@ -39,7 +39,8 @@ pub async fn write(
     )
     .await?;
     let summary_row = summary_row_for_day(target_row);
-    let mut values = build_values(stats, target_row, summary_row);
+    let include_day = !is_economy_stats(stats);
+    let mut values = build_values(stats, target_row, summary_row, include_day);
     add_sold_value(
         client,
         token,
@@ -56,10 +57,15 @@ pub async fn write(
     batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, values).await
 }
 
-fn build_values(stats: &Value, moon_row: usize, summary_row: usize) -> Vec<(String, usize, Value)> {
+fn build_values(
+    stats: &Value,
+    moon_row: usize,
+    summary_row: usize,
+    include_day: bool,
+) -> Vec<(String, usize, Value)> {
     let mut values = vec![];
     let moon = strip_moon_number(&string_at(stats, &["MoonInfo", "Name"]));
-    if !moon.trim().is_empty() {
+    if include_day && !moon.trim().is_empty() {
         values.push((MOON_COLUMN.to_string(), moon_row, json!(moon)));
         values.push((
             WEATHER_COLUMN.to_string(),
@@ -72,11 +78,11 @@ fn build_values(stats: &Value, moon_row: usize, summary_row: usize) -> Vec<(Stri
         values.push((
             COLLECTED_COLUMN.to_string(),
             moon_row,
-            json!(int_at(stats, &["CollectedTotal"])),
+            json!(intish_at(stats, &["CollectedTotal"])),
         ));
     }
 
-    let new_quota = int_at(stats, &["NewQuota"]);
+    let new_quota = intish_at(stats, &["NewQuota"]);
     if new_quota != 0 {
         values.push((QUOTA_COLUMN.to_string(), summary_row, json!(new_quota)));
     }
@@ -93,7 +99,7 @@ async fn add_sold_value(
     summary_row: usize,
     values: &mut Vec<(String, usize, Value)>,
 ) -> Result<(), String> {
-    let value_sold = int_at(stats, &["ValueSold"]);
+    let value_sold = intish_at(stats, &["ValueSold"]);
     if value_sold == 0 {
         return Ok(());
     }
@@ -111,6 +117,20 @@ async fn add_sold_value(
         number_value(current_value + value_sold as f64),
     ));
     Ok(())
+}
+
+fn intish_at(stats: &Value, path: &[&str]) -> i64 {
+    value_at(stats, path).map(intish_value).unwrap_or(0)
+}
+
+fn is_economy_stats(stats: &Value) -> bool {
+    intish_at(stats, &["NewQuota"]) != 0 || !has_dungeon_info(stats)
+}
+
+fn has_dungeon_info(stats: &Value) -> bool {
+    value_at(stats, &["DungeonInfo"])
+        .map(|value| !value.is_null())
+        .unwrap_or(false)
 }
 
 fn summary_row_for_day(day_row: usize) -> usize {
@@ -142,7 +162,7 @@ mod tests {
             "CollectedTotal": 420
         });
 
-        let values = build_values(&stats, 7, 5);
+        let values = build_values(&stats, 7, 5, true);
 
         assert_eq!(cell_value(&values, QUOTA_COLUMN), Some(&json!(130)));
         assert_eq!(cell_value(&values, MOON_COLUMN), Some(&json!("March")));
@@ -151,6 +171,28 @@ mod tests {
         assert_eq!(cell_row(&values, MOON_COLUMN), Some(7));
         assert_eq!(cell_row(&values, QUOTA_COLUMN), Some(5));
         assert_eq!(cell_value(&values, SOLD_COLUMN), None);
+    }
+
+    #[test]
+    fn economy_payloads_do_not_write_stale_day_values() {
+        let stats = json!({
+            "NewQuota": "'130",
+            "ValueSold": "'55",
+            "MoonInfo": {
+                "Name": "71 March",
+                "Weather": "Mild"
+            },
+            "DungeonInfo": {
+                "Interior": "Factory"
+            },
+            "CollectedTotal": "'420"
+        });
+
+        let values = build_values(&stats, 7, 5, !is_economy_stats(&stats));
+
+        assert_eq!(cell_value(&values, QUOTA_COLUMN), Some(&json!(130)));
+        assert_eq!(cell_value(&values, MOON_COLUMN), None);
+        assert_eq!(cell_value(&values, COLLECTED_COLUMN), None);
     }
 
     #[test]

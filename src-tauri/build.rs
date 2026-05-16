@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-const OAUTH_ENV_KEYS: [&str; 4] = [
+const BUILD_ENV_KEYS: [&str; 5] = [
+    "DEV",
     "GOOGLE_LCSTATS_CLIENT_ID",
     "GOOGLE_LCSTATS_CLIENT_SECRET",
     "GOOGLE_LCSTATS_PICKER_API_KEY",
@@ -45,7 +46,7 @@ fn inject_build_env() {
         values.extend(parse_env_file(&path));
     }
 
-    for key in OAUTH_ENV_KEYS {
+    for key in BUILD_ENV_KEYS {
         if let Ok(value) = std::env::var(key) {
             println!("cargo:rustc-env={key}={value}");
         } else if let Some(value) = values.get(key) {

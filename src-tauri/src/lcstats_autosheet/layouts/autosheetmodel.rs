@@ -7,8 +7,8 @@ use crate::lcstats_autosheet::sheets::{
     write_cells,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at_any, bool_at, enemy_count, int_at, missed_item_count, normalize_column, string_at,
-    strip_moon_number, sum_array_any, value_at,
+    array_at, array_at_any, bool_at, enemy_count, int_at, intish_value, missed_item_count,
+    normalize_column, string_at, strip_moon_number, sum_array_any, value_at,
 };
 
 pub async fn write(
@@ -24,7 +24,7 @@ pub async fn write(
     let sheet_name = settings.active_sheet_name.trim();
     let start_column = normalize_column(&settings.start_column, "D");
     let quota_column = normalize_column(&settings.quota_column, "B");
-    let sell_column = normalize_column(&settings.sell_column, "AB");
+    let sell_column = normalize_column(&settings.sell_column, "AE");
     if spreadsheet_id.is_empty() || sheet_name.is_empty() {
         return Err("spreadsheet or sheet is not set".to_string());
     }
@@ -113,12 +113,12 @@ pub async fn write(
 }
 
 fn process_stats(stats: &Value) -> Vec<Value> {
-    let new_quota = int_at(stats, &["NewQuota"]);
-    let value_sold = int_at(stats, &["ValueSold"]);
+    let new_quota = intish_at(stats, &["NewQuota"]);
+    let value_sold = intish_at(stats, &["ValueSold"]);
     if new_quota != 0 {
         return vec![json!(new_quota), json!(value_sold)];
     }
-    if value_sold != 0 {
+    if !has_dungeon_info(stats) && value_sold != 0 {
         return vec![json!(value_sold)];
     }
 
@@ -170,6 +170,7 @@ fn process_stats(stats: &Value) -> Vec<Value> {
         json!(string_at(stats, &["SIDType"])),
         json!(string_at(stats, &["InfestationType"])),
         json!(string_at(stats, &["MeteorShowerTime"])),
+        json!(lost_scrap(stats)),
     ]
 }
 
@@ -183,6 +184,28 @@ fn collected_count_or_legacy_int(
     } else {
         int_at(stats, legacy_path)
     }
+}
+
+fn intish_at(stats: &Value, path: &[&str]) -> i64 {
+    value_at(stats, path).map(intish_value).unwrap_or(0)
+}
+
+fn has_dungeon_info(stats: &Value) -> bool {
+    value_at(stats, &["DungeonInfo"])
+        .map(|value| !value.is_null())
+        .unwrap_or(false)
+}
+
+fn lost_scrap(stats: &Value) -> i64 {
+    array_at(stats, &["MissedItems"])
+        .iter()
+        .filter(|item| {
+            item.get("CollectedOnPreviousDay")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .map(|item| item.get("Value").map(intish_value).unwrap_or(0))
+        .sum()
 }
 
 #[cfg(test)]
@@ -199,7 +222,10 @@ mod tests {
             "BeeInfo": { "Available": [64, 88] },
             "EggInfo": { "Available": [12, 18] },
             "ShotgunInfo": { "Collected": [60] },
-            "KnifeInfo": { "Collected": [35, 35] }
+            "KnifeInfo": { "Collected": [35, 35] },
+            "MissedItems": [
+                { "Value": "'40", "CollectedOnPreviousDay": true }
+            ]
         });
 
         let row = process_stats(&stats);
@@ -209,5 +235,30 @@ mod tests {
         assert_eq!(row[9], json!(30));
         assert_eq!(row[12], json!(1));
         assert_eq!(row[13], json!(2));
+        assert_eq!(row[26], json!(40));
+    }
+
+    #[test]
+    fn value_sold_with_day_stats_does_not_skip_day_row() {
+        let stats = json!({
+            "ValueSold": "'130",
+            "MoonInfo": { "Name": "68 Artifice", "Weather": "Mild" },
+            "DungeonInfo": { "Interior": "Mineshaft", "ItemCount": 34 }
+        });
+
+        let row = process_stats(&stats);
+
+        assert!(row.len() > 2);
+        assert_eq!(row[1], json!("Artifice"));
+    }
+
+    #[test]
+    fn sell_only_payload_uses_string_number() {
+        let stats = json!({
+            "ValueSold": "'130",
+            "DungeonInfo": null
+        });
+
+        assert_eq!(process_stats(&stats), vec![json!(130)]);
     }
 }

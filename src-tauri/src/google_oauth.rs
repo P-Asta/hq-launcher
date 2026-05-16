@@ -76,7 +76,7 @@ impl Default for LcStatsSettings {
             active_sheet_name: String::new(),
             start_column: "D".to_string(),
             quota_column: "B".to_string(),
-            sell_column: "AB".to_string(),
+            sell_column: "AE".to_string(),
             layout: "AutoSheetModel".to_string(),
             google_client_id: String::new(),
             google_client_secret: String::new(),
