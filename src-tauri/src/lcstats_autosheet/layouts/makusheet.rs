@@ -316,7 +316,7 @@ fn build_values(
         values.push((QUOTA_AMOUNT_COLUMN.to_string(), row, quota_amount));
     }
     if let Some(average) = average_value(collected, available) {
-        values.push(("M".to_string(), row, average));
+        // values.push(("M".to_string(), row, average));
     }
     if lost_scrap != 0 {
         values.push((LOST_SCRAP_COLUMN.to_string(), row, json!(lost_scrap)));
