@@ -52,6 +52,319 @@ struct TokenResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CustomLcStatsLayoutSettings {
+    #[serde(default = "default_custom_start_row")]
+    pub start_row: usize,
+    #[serde(default = "default_custom_check_column")]
+    pub check_column: String,
+    #[serde(default = "default_custom_text_case")]
+    pub text_case: String,
+    #[serde(default = "default_custom_quota_column")]
+    pub quota_column: String,
+    #[serde(default = "default_custom_seed_column")]
+    pub seed_column: String,
+    #[serde(default = "default_custom_moon_column")]
+    pub moon_column: String,
+    #[serde(default = "default_custom_weather_column")]
+    pub weather_column: String,
+    #[serde(default = "default_custom_layout_column")]
+    pub layout_column: String,
+    #[serde(default = "default_custom_item_count_column")]
+    pub item_count_column: String,
+    #[serde(default = "default_custom_apparatus_column")]
+    pub apparatus_column: String,
+    #[serde(default = "default_custom_bee_amount_column")]
+    pub bee_amount_column: String,
+    #[serde(default = "default_custom_bee_value_column")]
+    pub bee_value_column: String,
+    #[serde(default = "default_custom_cheap_hive_column")]
+    pub cheap_hive_column: String,
+    #[serde(default = "default_custom_expensive_hive_column")]
+    pub expensive_hive_column: String,
+    #[serde(default = "default_custom_egg_column")]
+    pub egg_column: String,
+    #[serde(default = "default_custom_egg_notes_enabled")]
+    pub egg_notes_enabled: bool,
+    #[serde(default = "default_custom_collected_egg_column")]
+    pub collected_egg_column: String,
+    #[serde(default = "default_custom_collected_egg_notes_enabled")]
+    pub collected_egg_notes_enabled: bool,
+    #[serde(default = "default_custom_nut_column")]
+    pub nut_column: String,
+    #[serde(default = "default_custom_nut_collect_column")]
+    pub nut_collect_column: String,
+    #[serde(default = "default_custom_butler_column")]
+    pub butler_column: String,
+    #[serde(default = "default_custom_butler_collect_column")]
+    pub butler_collect_column: String,
+    #[serde(default = "default_custom_collected_column")]
+    pub collected_column: String,
+    #[serde(default = "default_custom_available_column")]
+    pub available_column: String,
+    #[serde(default = "default_custom_real_available_column")]
+    pub real_available_column: String,
+    #[serde(default = "default_custom_collected_no_extra_column")]
+    pub collected_no_extra_column: String,
+    #[serde(default = "default_custom_missing_column")]
+    pub missing_column: String,
+    #[serde(default = "default_custom_sold_column")]
+    pub sold_column: String,
+    #[serde(default = "default_custom_sid_column")]
+    pub sid_column: String,
+    #[serde(default = "default_custom_sid_write_false")]
+    pub sid_write_false: bool,
+    #[serde(default = "default_custom_infestation_column")]
+    pub infestation_column: String,
+    #[serde(default = "default_custom_infestation_write_false")]
+    pub infestation_write_false: bool,
+    #[serde(default = "default_custom_lost_scrap_column")]
+    pub lost_scrap_column: String,
+    #[serde(default = "default_custom_takeoff_time_column")]
+    pub takeoff_time_column: String,
+    #[serde(default = "default_custom_turret_column")]
+    pub turret_column: String,
+    #[serde(default = "default_custom_landmine_column")]
+    pub landmine_column: String,
+    #[serde(default = "default_custom_spiketrap_column")]
+    pub spiketrap_column: String,
+    #[serde(default = "default_custom_death_columns")]
+    pub death_columns: String,
+    #[serde(default = "default_custom_player_name_columns")]
+    pub player_name_columns: String,
+    #[serde(default = "default_custom_player_name_row")]
+    pub player_name_row: usize,
+    #[serde(default = "default_custom_alive_state")]
+    pub alive_state: String,
+    #[serde(default = "default_custom_dead_state")]
+    pub dead_state: String,
+    #[serde(default = "default_custom_missing_state")]
+    pub missing_state: String,
+    #[serde(default = "default_custom_disconnected_state")]
+    pub disconnected_state: String,
+    #[serde(default = "default_custom_death_notes_enabled")]
+    pub death_notes_enabled: bool,
+    #[serde(default = "default_custom_fog_column")]
+    pub fog_column: String,
+    #[serde(default = "default_custom_fog_write_false")]
+    pub fog_write_false: bool,
+    #[serde(default = "default_custom_meteor_column")]
+    pub meteor_column: String,
+    #[serde(default = "default_custom_meteor_write_false")]
+    pub meteor_write_false: bool,
+    #[serde(default = "default_custom_gifts_column")]
+    pub gifts_column: String,
+}
+
+impl Default for CustomLcStatsLayoutSettings {
+    fn default() -> Self {
+        Self {
+            start_row: default_custom_start_row(),
+            check_column: default_custom_check_column(),
+            text_case: default_custom_text_case(),
+            quota_column: default_custom_quota_column(),
+            seed_column: default_custom_seed_column(),
+            moon_column: default_custom_moon_column(),
+            weather_column: default_custom_weather_column(),
+            layout_column: default_custom_layout_column(),
+            item_count_column: default_custom_item_count_column(),
+            apparatus_column: default_custom_apparatus_column(),
+            bee_amount_column: default_custom_bee_amount_column(),
+            bee_value_column: default_custom_bee_value_column(),
+            cheap_hive_column: default_custom_cheap_hive_column(),
+            expensive_hive_column: default_custom_expensive_hive_column(),
+            egg_column: default_custom_egg_column(),
+            egg_notes_enabled: default_custom_egg_notes_enabled(),
+            collected_egg_column: default_custom_collected_egg_column(),
+            collected_egg_notes_enabled: default_custom_collected_egg_notes_enabled(),
+            nut_column: default_custom_nut_column(),
+            nut_collect_column: default_custom_nut_collect_column(),
+            butler_column: default_custom_butler_column(),
+            butler_collect_column: default_custom_butler_collect_column(),
+            collected_column: default_custom_collected_column(),
+            available_column: default_custom_available_column(),
+            real_available_column: default_custom_real_available_column(),
+            collected_no_extra_column: default_custom_collected_no_extra_column(),
+            missing_column: default_custom_missing_column(),
+            sold_column: default_custom_sold_column(),
+            sid_column: default_custom_sid_column(),
+            sid_write_false: default_custom_sid_write_false(),
+            infestation_column: default_custom_infestation_column(),
+            infestation_write_false: default_custom_infestation_write_false(),
+            lost_scrap_column: default_custom_lost_scrap_column(),
+            takeoff_time_column: default_custom_takeoff_time_column(),
+            turret_column: default_custom_turret_column(),
+            landmine_column: default_custom_landmine_column(),
+            spiketrap_column: default_custom_spiketrap_column(),
+            death_columns: default_custom_death_columns(),
+            player_name_columns: default_custom_player_name_columns(),
+            player_name_row: default_custom_player_name_row(),
+            alive_state: default_custom_alive_state(),
+            dead_state: default_custom_dead_state(),
+            missing_state: default_custom_missing_state(),
+            disconnected_state: default_custom_disconnected_state(),
+            death_notes_enabled: default_custom_death_notes_enabled(),
+            fog_column: default_custom_fog_column(),
+            fog_write_false: default_custom_fog_write_false(),
+            meteor_column: default_custom_meteor_column(),
+            meteor_write_false: default_custom_meteor_write_false(),
+            gifts_column: default_custom_gifts_column(),
+        }
+    }
+}
+
+fn default_custom_start_row() -> usize {
+    3
+}
+fn default_custom_check_column() -> String {
+    "O".to_string()
+}
+fn default_custom_text_case() -> String {
+    "Original".to_string()
+}
+fn default_custom_quota_column() -> String {
+    "B".to_string()
+}
+fn default_custom_seed_column() -> String {
+    String::new()
+}
+fn default_custom_moon_column() -> String {
+    "F".to_string()
+}
+fn default_custom_weather_column() -> String {
+    "G".to_string()
+}
+fn default_custom_layout_column() -> String {
+    "H".to_string()
+}
+fn default_custom_item_count_column() -> String {
+    "I".to_string()
+}
+fn default_custom_apparatus_column() -> String {
+    String::new()
+}
+fn default_custom_bee_amount_column() -> String {
+    "J".to_string()
+}
+fn default_custom_bee_value_column() -> String {
+    "K".to_string()
+}
+fn default_custom_cheap_hive_column() -> String {
+    String::new()
+}
+fn default_custom_expensive_hive_column() -> String {
+    String::new()
+}
+fn default_custom_egg_column() -> String {
+    "L".to_string()
+}
+fn default_custom_egg_notes_enabled() -> bool {
+    false
+}
+fn default_custom_collected_egg_column() -> String {
+    String::new()
+}
+fn default_custom_collected_egg_notes_enabled() -> bool {
+    true
+}
+fn default_custom_nut_column() -> String {
+    "M".to_string()
+}
+fn default_custom_nut_collect_column() -> String {
+    String::new()
+}
+fn default_custom_butler_column() -> String {
+    "N".to_string()
+}
+fn default_custom_butler_collect_column() -> String {
+    String::new()
+}
+fn default_custom_collected_column() -> String {
+    "O".to_string()
+}
+fn default_custom_available_column() -> String {
+    "P".to_string()
+}
+fn default_custom_real_available_column() -> String {
+    String::new()
+}
+fn default_custom_collected_no_extra_column() -> String {
+    String::new()
+}
+fn default_custom_missing_column() -> String {
+    "Q".to_string()
+}
+fn default_custom_sold_column() -> String {
+    "X".to_string()
+}
+fn default_custom_sid_column() -> String {
+    "Y".to_string()
+}
+fn default_custom_sid_write_false() -> bool {
+    true
+}
+fn default_custom_infestation_column() -> String {
+    "Z".to_string()
+}
+fn default_custom_infestation_write_false() -> bool {
+    true
+}
+fn default_custom_lost_scrap_column() -> String {
+    "AB".to_string()
+}
+fn default_custom_takeoff_time_column() -> String {
+    String::new()
+}
+fn default_custom_turret_column() -> String {
+    String::new()
+}
+fn default_custom_landmine_column() -> String {
+    String::new()
+}
+fn default_custom_spiketrap_column() -> String {
+    String::new()
+}
+fn default_custom_death_columns() -> String {
+    "AC,AD,AE,AF".to_string()
+}
+fn default_custom_player_name_columns() -> String {
+    String::new()
+}
+fn default_custom_player_name_row() -> usize {
+    1
+}
+fn default_custom_alive_state() -> String {
+    "S".to_string()
+}
+fn default_custom_dead_state() -> String {
+    "X".to_string()
+}
+fn default_custom_missing_state() -> String {
+    "M".to_string()
+}
+fn default_custom_disconnected_state() -> String {
+    "DC".to_string()
+}
+fn default_custom_death_notes_enabled() -> bool {
+    true
+}
+fn default_custom_fog_column() -> String {
+    "AG".to_string()
+}
+fn default_custom_fog_write_false() -> bool {
+    true
+}
+fn default_custom_meteor_column() -> String {
+    "AH".to_string()
+}
+fn default_custom_meteor_write_false() -> bool {
+    true
+}
+fn default_custom_gifts_column() -> String {
+    "AI".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LcStatsSettings {
     pub spreadsheet_id: String,
     pub active_sheet_name: String,
@@ -59,6 +372,8 @@ pub struct LcStatsSettings {
     pub quota_column: String,
     pub sell_column: String,
     pub layout: String,
+    #[serde(default)]
+    pub custom_layout: CustomLcStatsLayoutSettings,
     #[serde(default)]
     pub google_client_id: String,
     #[serde(default)]
@@ -78,6 +393,7 @@ impl Default for LcStatsSettings {
             quota_column: "B".to_string(),
             sell_column: "AE".to_string(),
             layout: "AutoSheetModel".to_string(),
+            custom_layout: CustomLcStatsLayoutSettings::default(),
             google_client_id: String::new(),
             google_client_secret: String::new(),
             google_picker_api_key: String::new(),

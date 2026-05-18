@@ -1,6 +1,10 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+# 1.10.8 (2026-05-18)
+- Added **Custom Layout**
+- Added **CharlyAutoSheet**
+- Added **EvilSheet**
 
 # 1.10.7 (2026-05-18)
 - Added **sheet auto fill ✨** feature

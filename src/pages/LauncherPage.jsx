@@ -226,9 +226,12 @@ const GOOGLE_OAUTH_MOD_KEYS = new Set([
 ]);
 
 const LCSTATS_LAYOUTS = [
-  "AutoSheetModel",
+  "Custom Layout",
+  // "AutoSheetModel",
   "BreadSheet",
   "WafrodyAutoSheet",
+  "CharlyAutoSheet",
+  "Evilsheet",
   "MakuSheet 1.0",
   "ModdedSheet",
 ];
@@ -237,6 +240,59 @@ const LCSTATS_LAYOUT_COLUMN_FIELDS = new Set([
   "AutoSheetModel",
 ]);
 
+const DEFAULT_CUSTOM_LCSTATS_LAYOUT = {
+  startRow: 3,
+  checkColumn: "O",
+  textCase: "Original",
+  quotaColumn: "B",
+  seedColumn: "",
+  moonColumn: "F",
+  weatherColumn: "G",
+  layoutColumn: "H",
+  itemCountColumn: "I",
+  apparatusColumn: "",
+  beeAmountColumn: "J",
+  beeValueColumn: "K",
+  cheapHiveColumn: "",
+  expensiveHiveColumn: "",
+  eggColumn: "L",
+  eggNotesEnabled: false,
+  collectedEggColumn: "",
+  collectedEggNotesEnabled: true,
+  nutColumn: "M",
+  nutCollectColumn: "",
+  butlerColumn: "N",
+  butlerCollectColumn: "",
+  collectedColumn: "O",
+  availableColumn: "P",
+  realAvailableColumn: "",
+  collectedNoExtraColumn: "",
+  missingColumn: "Q",
+  soldColumn: "X",
+  sidColumn: "Y",
+  sidWriteFalse: true,
+  infestationColumn: "Z",
+  infestationWriteFalse: true,
+  lostScrapColumn: "AB",
+  takeoffTimeColumn: "",
+  turretColumn: "",
+  landmineColumn: "",
+  spiketrapColumn: "",
+  deathColumns: "AC,AD,AE,AF",
+  playerNameColumns: "",
+  playerNameRow: 1,
+  aliveState: "S",
+  deadState: "X",
+  missingState: "M",
+  disconnectedState: "DC",
+  deathNotesEnabled: true,
+  fogColumn: "AG",
+  fogWriteFalse: true,
+  meteorColumn: "AH",
+  meteorWriteFalse: true,
+  giftsColumn: "AI",
+};
+
 const DEFAULT_LCSTATS_SETTINGS = {
   spreadsheetId: "",
   activeSheetName: "",
@@ -244,6 +300,7 @@ const DEFAULT_LCSTATS_SETTINGS = {
   quotaColumn: "B",
   sellColumn: "AE",
   layout: "AutoSheetModel",
+  customLayout: DEFAULT_CUSTOM_LCSTATS_LAYOUT,
   googleClientId: "",
   googleClientSecret: "",
   googlePickerApiKey: "",
@@ -452,6 +509,95 @@ function normalizeSheetColumn(value, fallback) {
     .toUpperCase()
     .replace(/[^A-Z]/g, "");
   return text || fallback;
+}
+
+function normalizeSheetColumnList(value, fallback) {
+  const text = String(value ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z,]/g, "")
+    .replace(/,{2,}/g, ",");
+  return text || fallback;
+}
+
+function normalizeCustomLcstatsLayout(layout = {}) {
+  const source = { ...DEFAULT_CUSTOM_LCSTATS_LAYOUT, ...(layout ?? {}) };
+  const allowedTextCases = new Set([
+    "Original",
+    "UPPERCASE",
+    "lowercase",
+    "Title Case",
+    "camelCase",
+    "PascalCase",
+  ]);
+  const textCase = allowedTextCases.has(source.textCase)
+    ? source.textCase
+    : "Original";
+  return {
+    ...source,
+    startRow: Math.max(1, Math.floor(Number(source.startRow) || 1)),
+    checkColumn: normalizeSheetColumn(source.checkColumn, ""),
+    textCase,
+    quotaColumn: normalizeSheetColumn(source.quotaColumn, ""),
+    seedColumn: normalizeSheetColumn(source.seedColumn, ""),
+    moonColumn: normalizeSheetColumn(source.moonColumn, ""),
+    weatherColumn: normalizeSheetColumn(source.weatherColumn, ""),
+    layoutColumn: normalizeSheetColumn(source.layoutColumn, ""),
+    itemCountColumn: normalizeSheetColumn(source.itemCountColumn, ""),
+    apparatusColumn: normalizeSheetColumn(source.apparatusColumn, ""),
+    beeAmountColumn: normalizeSheetColumn(source.beeAmountColumn, ""),
+    beeValueColumn: normalizeSheetColumn(source.beeValueColumn, ""),
+    cheapHiveColumn: normalizeSheetColumn(source.cheapHiveColumn, ""),
+    expensiveHiveColumn: normalizeSheetColumn(source.expensiveHiveColumn, ""),
+    eggColumn: normalizeSheetColumn(source.eggColumn, ""),
+    eggNotesEnabled: source.eggNotesEnabled === true,
+    collectedEggColumn: normalizeSheetColumn(source.collectedEggColumn, ""),
+    collectedEggNotesEnabled: source.collectedEggNotesEnabled !== false,
+    nutColumn: normalizeSheetColumn(source.nutColumn, ""),
+    nutCollectColumn: normalizeSheetColumn(source.nutCollectColumn, ""),
+    butlerColumn: normalizeSheetColumn(source.butlerColumn, ""),
+    butlerCollectColumn: normalizeSheetColumn(source.butlerCollectColumn, ""),
+    collectedColumn: normalizeSheetColumn(source.collectedColumn, ""),
+    availableColumn: normalizeSheetColumn(source.availableColumn, ""),
+    realAvailableColumn: normalizeSheetColumn(source.realAvailableColumn, ""),
+    collectedNoExtraColumn: normalizeSheetColumn(source.collectedNoExtraColumn, ""),
+    missingColumn: normalizeSheetColumn(source.missingColumn, ""),
+    soldColumn: normalizeSheetColumn(source.soldColumn, ""),
+    sidColumn: normalizeSheetColumn(source.sidColumn, ""),
+    sidWriteFalse: source.sidWriteFalse !== false,
+    infestationColumn: normalizeSheetColumn(source.infestationColumn, ""),
+    infestationWriteFalse: source.infestationWriteFalse !== false,
+    lostScrapColumn: normalizeSheetColumn(source.lostScrapColumn, ""),
+    takeoffTimeColumn: normalizeSheetColumn(source.takeoffTimeColumn, ""),
+    turretColumn: normalizeSheetColumn(source.turretColumn, ""),
+    landmineColumn: normalizeSheetColumn(source.landmineColumn, ""),
+    spiketrapColumn: normalizeSheetColumn(source.spiketrapColumn, ""),
+    deathColumns: normalizeSheetColumnList(source.deathColumns, ""),
+    playerNameColumns: normalizeSheetColumnList(source.playerNameColumns, ""),
+    playerNameRow: Math.max(1, Math.floor(Number(source.playerNameRow) || 1)),
+    aliveState: String(source.aliveState ?? "S"),
+    deadState: String(source.deadState ?? "X"),
+    missingState: String(source.missingState ?? "M"),
+    disconnectedState: String(source.disconnectedState ?? "DC"),
+    deathNotesEnabled: source.deathNotesEnabled !== false,
+    fogColumn: normalizeSheetColumn(source.fogColumn, ""),
+    fogWriteFalse: source.fogWriteFalse !== false,
+    meteorColumn: normalizeSheetColumn(source.meteorColumn, ""),
+    meteorWriteFalse: source.meteorWriteFalse !== false,
+    giftsColumn: normalizeSheetColumn(source.giftsColumn, ""),
+  };
+}
+
+function parseCustomLcstatsLayoutPreset(text) {
+  const parsed = JSON.parse(text);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  const allowedKeys = new Set(Object.keys(DEFAULT_CUSTOM_LCSTATS_LAYOUT));
+  if (!Object.keys(parsed).some((key) => allowedKeys.has(key))) {
+    return null;
+  }
+  return normalizeCustomLcstatsLayout(parsed);
 }
 
 function valueLabel(v) {
@@ -1094,6 +1240,16 @@ export default function LauncherPage({
   const [googleOauthBusy, setGoogleOauthBusy] = useState(false);
   const [googleOauthError, setGoogleOauthError] = useState("");
   const [customGoogleOauthOpen, setCustomGoogleOauthOpen] = useState(false);
+  const [customLayoutSectionOpen, setCustomLayoutSectionOpen] = useState({
+    Rows: true,
+    Run: true,
+    Scrap: true,
+    Events: false,
+    Players: true,
+  });
+  const [customLayoutClipboardValid, setCustomLayoutClipboardValid] = useState(false);
+  const [customLayoutMessage, setCustomLayoutMessage] = useState("");
+  const [customLayoutMessageKind, setCustomLayoutMessageKind] = useState("success");
   const [googleOauthStatus, setGoogleOauthStatus] = useState({
     authenticated: false,
     scope: null,
@@ -1255,6 +1411,18 @@ export default function LauncherPage({
       setLaunchBusy(false);
     }
   }, [gameStatus.running]);
+
+  useEffect(() => {
+    if (lcstatsSettings.layout !== "Custom Layout") {
+      setCustomLayoutClipboardValid(false);
+      return;
+    }
+    refreshCustomLayoutClipboardStatus().catch(() => {});
+    const timer = window.setInterval(() => {
+      refreshCustomLayoutClipboardStatus().catch(() => {});
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [lcstatsSettings.layout]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -3186,6 +3354,7 @@ export default function LauncherPage({
         ? normalizeSheetColumn(settings?.sellColumn, "AE")
         : "",
       layout,
+      customLayout: normalizeCustomLcstatsLayout(settings?.customLayout),
       googleClientId: String(settings?.googleClientId ?? "").trim(),
       googleClientSecret: String(settings?.googleClientSecret ?? "").trim(),
       googlePickerApiKey: String(settings?.googlePickerApiKey ?? "").trim(),
@@ -3452,6 +3621,68 @@ export default function LauncherPage({
     await persistLcstatsSettings(lcstatsSettings);
   }
 
+  function updateCustomLcstatsLayout(patch) {
+    updateLcstatsSettings({
+      customLayout: normalizeCustomLcstatsLayout({
+        ...(lcstatsSettings.customLayout ?? DEFAULT_CUSTOM_LCSTATS_LAYOUT),
+        ...patch,
+      }),
+    });
+  }
+
+  async function refreshCustomLayoutClipboardStatus() {
+    try {
+      const text = await navigator.clipboard.readText();
+      setCustomLayoutClipboardValid(!!parseCustomLcstatsLayoutPreset(text));
+    } catch {
+      setCustomLayoutClipboardValid(false);
+    }
+  }
+
+  async function copyCustomLcstatsLayout() {
+    try {
+      const text = JSON.stringify(
+        normalizeCustomLcstatsLayout(lcstatsSettings.customLayout),
+        null,
+        2
+      );
+      await navigator.clipboard.writeText(text);
+      setCustomLayoutClipboardValid(true);
+      setCustomLayoutMessage("Custom layout copied.");
+      setCustomLayoutMessageKind("success");
+      setLcstatsError("");
+      setLcstatsSaved("Custom layout copied.");
+    } catch (e) {
+      console.error(e);
+      setCustomLayoutMessage(e?.message ?? String(e));
+      setCustomLayoutMessageKind("error");
+      setLcstatsSaved("");
+      setLcstatsError(e?.message ?? String(e));
+    }
+  }
+
+  async function loadCustomLcstatsLayoutFromClipboard() {
+    try {
+      const text = await navigator.clipboard.readText();
+      const parsed = parseCustomLcstatsLayoutPreset(text);
+      if (!parsed) {
+        throw new Error("invalid custom layout preset");
+      }
+      updateLcstatsSettings({
+        customLayout: parsed,
+      });
+      setCustomLayoutMessage("Custom layout loaded.");
+      setCustomLayoutMessageKind("success");
+      setLcstatsSaved("Custom layout loaded.");
+    } catch (e) {
+      console.error(e);
+      setCustomLayoutMessage("Clipboard does not contain a valid custom layout JSON.");
+      setCustomLayoutMessageKind("error");
+      setLcstatsSaved("");
+      setLcstatsError("Clipboard does not contain a valid custom layout JSON.");
+    }
+  }
+
   function renderCustomGoogleOauthFields({ compact = false } = {}) {
     const hasCustomOauth = hasCustomGoogleOauthSettings(lcstatsSettings);
     return (
@@ -3535,6 +3766,311 @@ export default function LauncherPage({
             </div>
           </div>
         </div>
+      </div>
+    );
+  }
+
+  function renderCustomLcstatsLayoutFields() {
+    if (lcstatsSettings.layout !== "Custom Layout") return null;
+    const customLayout = normalizeCustomLcstatsLayout(lcstatsSettings.customLayout);
+    const disabled = lcstatsBusy || lcstatsRefreshBusy || lcstatsPickerBusy;
+    const sections = [
+      {
+        title: "Rows",
+        columns: "md:grid-cols-4",
+        groups: [
+          [
+            ["Start row", "startRow", "3", "number"],
+            ["Check column", "checkColumn", "O"],
+          ],
+          [
+            ["Text case", "textCase", "Original", "case"],
+          ],
+        ],
+      },
+      {
+        title: "Run",
+        columns: "md:grid-cols-4",
+        groups: [
+          [
+            ["Quota", "quotaColumn", "B"],
+            ["Seed", "seedColumn", ""],
+          ],
+          [
+            ["Moon", "moonColumn", "F"],
+            ["Weather", "weatherColumn", "G"],
+          ],
+          [
+            ["Layout", "layoutColumn", "H"],
+            ["Item count", "itemCountColumn", "I"],
+            ["Apparatus", "apparatusColumn", ""],
+          ],
+        ],
+      },
+      {
+        title: "Scrap",
+        columns: "md:grid-cols-4",
+        groups: [
+          [
+            ["Bee amount", "beeAmountColumn", "J"],
+            ["Bee value", "beeValueColumn", "K"],
+            ["Cheap hive", "cheapHiveColumn", ""],
+            ["Exp hive", "expensiveHiveColumn", ""],
+          ],
+          [
+            ["Egg", "eggColumn", "L"],
+            ["Egg price note", "eggNotesEnabled", "", "checkbox", "Add note"],
+          ],
+          [
+            ["Collected egg value", "collectedEggColumn", ""],
+            [
+              "Collected egg note",
+              "collectedEggNotesEnabled",
+              "",
+              "checkbox",
+              "Add note",
+            ],
+          ],
+          [
+            ["Collected", "collectedColumn", "O"],
+            ["Available", "availableColumn", "P"],
+            ["Real available", "realAvailableColumn", ""],
+            ["Collected no extra", "collectedNoExtraColumn", ""],
+          ],
+          [
+            ["Missing", "missingColumn", "Q"],
+            ["Lost scrap", "lostScrapColumn", "AB"],
+          ],
+          [
+            ["Sold", "soldColumn", "X"],
+            ["Gifts", "giftsColumn", "AI"],
+          ],
+        ],
+      },
+      {
+        title: "Events",
+        columns: "md:grid-cols-4",
+        groups: [
+          [
+            ["Nutcracker", "nutColumn", "M"],
+            ["Nut collect", "nutCollectColumn", ""],
+          ],
+          [
+            ["Butler", "butlerColumn", "N"],
+            ["Butler collect", "butlerCollectColumn", ""],
+          ],
+          [
+            ["SID", "sidColumn", "Y"],
+            ["SID false", "sidWriteFalse", "", "checkbox", "Write false"],
+            ["Infes", "infestationColumn", "Z"],
+            ["Infes false", "infestationWriteFalse", "", "checkbox", "Write false"],
+          ],
+          [
+            ["Fog", "fogColumn", "AG"],
+            ["Fog false", "fogWriteFalse", "", "checkbox", "Write false"],
+          ],
+          [
+            ["Meteor", "meteorColumn", "AH"],
+            ["Meteor false", "meteorWriteFalse", "", "checkbox", "Write false"],
+          ],
+          [
+            ["Take off time", "takeoffTimeColumn", ""],
+          ],
+          [
+            ["Turrets", "turretColumn", ""],
+            ["Landmines", "landmineColumn", ""],
+            ["Spiketraps", "spiketrapColumn", ""],
+          ],
+        ],
+      },
+      {
+        title: "Players",
+        columns: "md:grid-cols-2",
+        groups: [
+          [
+            ["Death state columns", "deathColumns", "AC,AD,AE,AF", "list"],
+            ["Player name columns", "playerNameColumns", "AB,AC,AD,AE", "list"],
+          ],
+          [
+            ["Player name row", "playerNameRow", "1", "number"],
+          ],
+          [
+            ["Alive value", "aliveState", "S", "text"],
+            ["Dead value", "deadState", "X", "text"],
+            ["Missing value", "missingState", "M", "text"],
+            ["Disconnected value", "disconnectedState", "DC", "text"],
+            ["Death reason notes", "deathNotesEnabled", "", "checkbox", "Use notes"],
+          ],
+        ],
+      },
+    ];
+
+    return (
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-xs font-semibold text-white/50">Custom columns</div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              className="h-8 px-3 text-xs"
+              disabled={disabled}
+              onClick={() => {
+                updateLcstatsSettings({
+                  customLayout: normalizeCustomLcstatsLayout(
+                    DEFAULT_CUSTOM_LCSTATS_LAYOUT
+                  ),
+                });
+                setCustomLayoutMessage("Custom layout reset.");
+                setCustomLayoutMessageKind("success");
+              }}
+            >
+              Reset
+            </Button>
+            <Button
+              variant="secondary"
+              className="h-8 px-3 text-xs"
+              disabled={disabled}
+              onClick={() => copyCustomLcstatsLayout().catch(console.error)}
+            >
+              Copy
+            </Button>
+            <Button
+              variant="secondary"
+              className="h-8 px-3 text-xs"
+              disabled={disabled || !customLayoutClipboardValid}
+              onMouseEnter={() => refreshCustomLayoutClipboardStatus().catch(() => {})}
+              onFocus={() => refreshCustomLayoutClipboardStatus().catch(() => {})}
+              onClick={() => loadCustomLcstatsLayoutFromClipboard().catch(console.error)}
+            >
+              Load
+            </Button>
+          </div>
+        </div>
+        {customLayoutMessage ? (
+          <div
+            className={cn(
+              "rounded-xl border px-3 py-2 text-xs",
+              customLayoutMessageKind === "error"
+                ? "border-red-400/30 bg-red-400/10 text-red-200"
+                : "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
+            )}
+          >
+            {customLayoutMessage}
+          </div>
+        ) : null}
+        {sections.map((section) => {
+          const open = customLayoutSectionOpen[section.title] ?? true;
+          const groups = section.groups ?? [section.fields ?? []];
+          const fieldCount = groups.reduce((count, group) => count + group.length, 0);
+          return (
+            <div key={section.title}>
+              <button
+                type="button"
+                className="flex min-w-0 items-center gap-2 text-left text-sm font-semibold text-white/75 transition hover:text-white"
+                onClick={() =>
+                  setCustomLayoutSectionOpen((prev) => ({
+                    ...prev,
+                    [section.title]: !(prev[section.title] ?? true),
+                  }))
+                }
+                aria-expanded={open}
+              >
+                <ChevronDown
+                  className={cn(
+                    "h-4 w-4 shrink-0 text-white/45 transition-transform",
+                    open ? "rotate-180" : ""
+                  )}
+                />
+                <span>{section.title}</span>
+                <span className="text-xs font-medium text-white/35">
+                  {fieldCount} fields
+                </span>
+              </button>
+              <div
+                className={cn(
+                  "oauth-expand custom-layout-expand mt-3",
+                  open ? "oauth-expand-open" : ""
+                )}
+              >
+                <div className="space-y-3">
+                  {groups.map((group, groupIndex) => (
+                    <div
+                      key={`${section.title}-${groupIndex}`}
+                      className={cn("grid grid-cols-1 gap-3", section.columns)}
+                    >
+                      {group.map(([label, key, placeholder, type, checkboxText]) => (
+                        <div key={key} className="min-w-0 space-y-2">
+                          <label className="block text-xs font-semibold text-white/50">
+                            {label}
+                          </label>
+                          {type === "checkbox" ? (
+                            <label className="flex h-10 items-center gap-3 rounded-xl border border-panel-outline bg-white/5 px-3 text-sm text-white/70">
+                              <Checkbox
+                                checked={!!customLayout[key]}
+                                disabled={disabled}
+                                onCheckedChange={(checked) =>
+                                  updateCustomLcstatsLayout({ [key]: !!checked })
+                                }
+                              />
+                              <span>{checkboxText ?? "Enabled"}</span>
+                            </label>
+                          ) : type === "case" ? (
+                            <Select
+                              value={customLayout[key]}
+                              onValueChange={(value) =>
+                                updateCustomLcstatsLayout({ [key]: value })
+                              }
+                              disabled={disabled}
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder={placeholder} />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {[
+                                  "Original",
+                                  "UPPERCASE",
+                                  "lowercase",
+                                  "Title Case",
+                                  "camelCase",
+                                  "PascalCase",
+                                ].map((option) => (
+                                  <SelectItem key={option} value={option}>
+                                    {option}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            <Input
+                              type={type === "number" ? "number" : "text"}
+                              min={type === "number" ? 1 : undefined}
+                              value={customLayout[key]}
+                              disabled={disabled}
+                              onChange={(event) => {
+                                const value = event.target.value;
+                                updateCustomLcstatsLayout({
+                                  [key]:
+                                    type === "number"
+                                      ? Math.max(1, Math.floor(Number(value) || 1))
+                                      : type === "list"
+                                        ? normalizeSheetColumnList(value, "")
+                                        : type === "text"
+                                          ? value
+                                          : normalizeSheetColumn(value, ""),
+                                });
+                              }}
+                              placeholder={placeholder}
+                            />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })}
       </div>
     );
   }
@@ -3730,6 +4266,8 @@ export default function LauncherPage({
               ))}
             </div>
             ) : null}
+
+            {renderCustomLcstatsLayoutFields()}
 
             {lcstatsError ? (
               <div className="rounded-2xl border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm text-red-200">

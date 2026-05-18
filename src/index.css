@@ -43,6 +43,10 @@ body {
   transform: translateY(0);
 }
 
+.custom-layout-expand.oauth-expand-open {
+  max-height: 720px;
+}
+
 * {
   user-select: none;
   -webkit-user-select: none;
