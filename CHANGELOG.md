@@ -1,6 +1,16 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+# 1.10.9 (2026-05-19)
+- Added an option to enable **LCStatsTracker** without Google login.
+- When **LCStatsTracker** is enabled without Google login, AutoSheet settings are locked and the AutoSheet listener will not start on launch.
+- Moved the **Google Login / Logout** button above the LCStatsTracker settings panel and made it full width.
+- Added **Custom Layout** bee options:
+  - `Split count`: off writes hive count as `5`, on writes it as `2/3`.
+  - `No hive zero`: writes `0` for missing hives when enabled; otherwise leaves hive cells blank.
+- Changed **Custom Layout** false-value defaults so SID, Infestation, Fog, and Meteor do not write `false` unless their `Write false` option is enabled.
+- Improved disabled input/select styling so locked settings look visibly disabled.
+
 # 1.10.8 (2026-05-18)
 - Added **Custom Layout**
 - Added **CharlyAutoSheet**

@@ -82,9 +82,11 @@ struct ResolvedCustomLayout {
     item_count_column: Option<String>,
     apparatus_column: Option<String>,
     bee_amount_column: Option<String>,
+    split_hive_count: bool,
     bee_value_column: Option<String>,
     cheap_hive_column: Option<String>,
     expensive_hive_column: Option<String>,
+    write_zero_for_missing_hives: bool,
     egg_column: Option<String>,
     egg_notes_enabled: bool,
     collected_egg_column: Option<String>,
@@ -146,9 +148,11 @@ impl ResolvedCustomLayout {
             item_count_column: normalize_optional_column(&settings.item_count_column),
             apparatus_column: normalize_optional_column(&settings.apparatus_column),
             bee_amount_column: normalize_optional_column(&settings.bee_amount_column),
+            split_hive_count: settings.split_hive_count,
             bee_value_column: normalize_optional_column(&settings.bee_value_column),
             cheap_hive_column: normalize_optional_column(&settings.cheap_hive_column),
             expensive_hive_column: normalize_optional_column(&settings.expensive_hive_column),
+            write_zero_for_missing_hives: settings.write_zero_for_missing_hives,
             egg_column: normalize_optional_column(&settings.egg_column),
             egg_notes_enabled: settings.egg_notes_enabled,
             collected_egg_column: normalize_optional_column(&settings.collected_egg_column),
@@ -301,7 +305,7 @@ impl NormalizedStats {
             ))),
             item_count: intish_at(stats, &["DungeonInfo", "ItemCount"]),
             apparatus_spawned: bool_at(stats, &["AppSpawned"]),
-            beehive_amount: beehive_amount(stats),
+            beehive_amount: beehive_amount(stats, layout.split_hive_count),
             beehive_value: beehive_value(stats),
             cheap_hive_value: cheap_hive_value(stats),
             expensive_hive_value: expensive_hive_value(stats),
@@ -394,29 +398,33 @@ fn build_value_updates(
         row,
         json!(stats.apparatus_spawned),
     );
-    push_value(
+    push_hive_text_value(
         &mut updates,
         &layout.bee_amount_column,
         row,
-        blank_or_x(&stats.beehive_amount),
+        &stats.beehive_amount,
+        layout.write_zero_for_missing_hives,
     );
-    push_value(
+    push_hive_text_value(
         &mut updates,
         &layout.bee_value_column,
         row,
-        blank_or_x(&stats.beehive_value),
+        &stats.beehive_value,
+        layout.write_zero_for_missing_hives,
     );
-    push_value(
+    push_hive_number_value(
         &mut updates,
         &layout.cheap_hive_column,
         row,
-        optional_i64_or_x(stats.cheap_hive_value),
+        stats.cheap_hive_value,
+        layout.write_zero_for_missing_hives,
     );
-    push_value(
+    push_hive_number_value(
         &mut updates,
         &layout.expensive_hive_column,
         row,
-        optional_i64_or_x(stats.expensive_hive_value),
+        stats.expensive_hive_value,
+        layout.write_zero_for_missing_hives,
     );
     if layout.egg_column.is_some() && !layout.egg_notes_enabled {
         push_value(
@@ -664,6 +672,36 @@ fn push_value(
     }
 }
 
+fn push_hive_text_value(
+    updates: &mut Vec<(String, usize, Value)>,
+    column: &Option<String>,
+    row: usize,
+    value: &str,
+    write_zero_for_missing_hives: bool,
+) {
+    if value.trim().is_empty() {
+        if write_zero_for_missing_hives {
+            push_value(updates, column, row, json!(0));
+        }
+    } else {
+        push_value(updates, column, row, json!(value));
+    }
+}
+
+fn push_hive_number_value(
+    updates: &mut Vec<(String, usize, Value)>,
+    column: &Option<String>,
+    row: usize,
+    value: Option<i64>,
+    write_zero_for_missing_hives: bool,
+) {
+    if let Some(value) = value {
+        push_value(updates, column, row, json!(value));
+    } else if write_zero_for_missing_hives {
+        push_value(updates, column, row, json!(0));
+    }
+}
+
 fn push_note_request(
     requests: &mut Vec<Value>,
     sheet_id: i64,
@@ -780,14 +818,17 @@ fn normalize_players(stats: &Value, layout: &ResolvedCustomLayout) -> Vec<Normal
         .collect()
 }
 
-fn beehive_amount(stats: &Value) -> String {
+fn beehive_amount(stats: &Value, split_hive_count: bool) -> String {
     let values = beehive_values(stats);
     if values.is_empty() {
         return String::new();
     }
+    if !split_hive_count {
+        return values.len().to_string();
+    }
     let small = values.iter().filter(|&&value| value < 100).count();
     let large = values.iter().filter(|&&value| value >= 100).count();
-    format!("{small}|{large}")
+    format!("{small}/{large}")
 }
 
 fn beehive_value(stats: &Value) -> String {
@@ -1135,10 +1176,6 @@ fn blank_or_x(value: &str) -> Value {
     }
 }
 
-fn optional_i64_or_x(value: Option<i64>) -> Value {
-    value.map_or_else(|| json!("X"), |value| json!(value))
-}
-
 fn collected_count_or_legacy_int(
     stats: &Value,
     collected_path: &[&str],
@@ -1209,9 +1246,11 @@ mod tests {
             item_count_column: "J".to_string(),
             apparatus_column: "AJ".to_string(),
             bee_amount_column: "K".to_string(),
+            split_hive_count: true,
             bee_value_column: "".to_string(),
             cheap_hive_column: "AD".to_string(),
             expensive_hive_column: "AE".to_string(),
+            write_zero_for_missing_hives: false,
             egg_column: "L".to_string(),
             egg_notes_enabled: false,
             collected_egg_column: "AF".to_string(),
@@ -1258,7 +1297,7 @@ mod tests {
         assert_eq!(cell_value(&updates, "H"), Some(&json!("CLEAR")));
         assert_eq!(cell_value(&updates, "I"), Some(&json!("MINESHAFT")));
         assert_eq!(cell_value(&updates, "J"), Some(&json!(34)));
-        assert_eq!(cell_value(&updates, "K"), Some(&json!("1|1")));
+        assert_eq!(cell_value(&updates, "K"), Some(&json!("1/1")));
         assert_eq!(cell_value(&updates, "AD"), Some(&json!(64)));
         assert_eq!(cell_value(&updates, "AE"), Some(&json!(132)));
         assert_eq!(cell_value(&updates, "L"), Some(&json!("12|18")));
@@ -1285,6 +1324,67 @@ mod tests {
             apply_text_case(&custom_weather("'Mild"), "camelCase"),
             "clear"
         );
+    }
+
+    #[test]
+    fn missing_hives_are_blank_unless_zero_is_enabled() {
+        let stats = json!({});
+        let settings = CustomLcStatsLayoutSettings {
+            bee_amount_column: "J".to_string(),
+            split_hive_count: false,
+            bee_value_column: "K".to_string(),
+            cheap_hive_column: "BA".to_string(),
+            expensive_hive_column: "BB".to_string(),
+            write_zero_for_missing_hives: false,
+            ..Default::default()
+        };
+        let layout = ResolvedCustomLayout::from_settings(&settings);
+        let normalized = NormalizedStats::from_stats(&stats, &layout);
+
+        let updates = build_value_updates(&normalized, &layout, 7);
+
+        assert_eq!(cell_value(&updates, "J"), None);
+        assert_eq!(cell_value(&updates, "K"), None);
+        assert_eq!(cell_value(&updates, "BA"), None);
+        assert_eq!(cell_value(&updates, "BB"), None);
+
+        let layout = ResolvedCustomLayout::from_settings(&CustomLcStatsLayoutSettings {
+            write_zero_for_missing_hives: true,
+            ..settings
+        });
+        let normalized = NormalizedStats::from_stats(&stats, &layout);
+        let updates = build_value_updates(&normalized, &layout, 7);
+
+        assert_eq!(cell_value(&updates, "J"), Some(&json!(0)));
+        assert_eq!(cell_value(&updates, "K"), Some(&json!(0)));
+        assert_eq!(cell_value(&updates, "BA"), Some(&json!(0)));
+        assert_eq!(cell_value(&updates, "BB"), Some(&json!(0)));
+    }
+
+    #[test]
+    fn hive_count_uses_total_by_default_and_split_when_enabled() {
+        let stats = json!({
+            "BeeInfo": { "Available": [60, 72, 108, 132, 144] }
+        });
+        let settings = CustomLcStatsLayoutSettings {
+            bee_amount_column: "J".to_string(),
+            split_hive_count: false,
+            ..Default::default()
+        };
+        let layout = ResolvedCustomLayout::from_settings(&settings);
+        let normalized = NormalizedStats::from_stats(&stats, &layout);
+        let updates = build_value_updates(&normalized, &layout, 7);
+
+        assert_eq!(cell_value(&updates, "J"), Some(&json!("5")));
+
+        let layout = ResolvedCustomLayout::from_settings(&CustomLcStatsLayoutSettings {
+            split_hive_count: true,
+            ..settings
+        });
+        let normalized = NormalizedStats::from_stats(&stats, &layout);
+        let updates = build_value_updates(&normalized, &layout, 7);
+
+        assert_eq!(cell_value(&updates, "J"), Some(&json!("2/3")));
     }
 
     fn cell_value<'a>(values: &'a [(String, usize, Value)], column: &str) -> Option<&'a Value> {

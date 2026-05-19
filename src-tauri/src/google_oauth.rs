@@ -75,12 +75,16 @@ pub struct CustomLcStatsLayoutSettings {
     pub apparatus_column: String,
     #[serde(default = "default_custom_bee_amount_column")]
     pub bee_amount_column: String,
+    #[serde(default)]
+    pub split_hive_count: bool,
     #[serde(default = "default_custom_bee_value_column")]
     pub bee_value_column: String,
     #[serde(default = "default_custom_cheap_hive_column")]
     pub cheap_hive_column: String,
     #[serde(default = "default_custom_expensive_hive_column")]
     pub expensive_hive_column: String,
+    #[serde(default)]
+    pub write_zero_for_missing_hives: bool,
     #[serde(default = "default_custom_egg_column")]
     pub egg_column: String,
     #[serde(default = "default_custom_egg_notes_enabled")]
@@ -169,9 +173,11 @@ impl Default for CustomLcStatsLayoutSettings {
             item_count_column: default_custom_item_count_column(),
             apparatus_column: default_custom_apparatus_column(),
             bee_amount_column: default_custom_bee_amount_column(),
+            split_hive_count: false,
             bee_value_column: default_custom_bee_value_column(),
             cheap_hive_column: default_custom_cheap_hive_column(),
             expensive_hive_column: default_custom_expensive_hive_column(),
+            write_zero_for_missing_hives: false,
             egg_column: default_custom_egg_column(),
             egg_notes_enabled: default_custom_egg_notes_enabled(),
             collected_egg_column: default_custom_collected_egg_column(),
@@ -300,13 +306,13 @@ fn default_custom_sid_column() -> String {
     "Y".to_string()
 }
 fn default_custom_sid_write_false() -> bool {
-    true
+    false
 }
 fn default_custom_infestation_column() -> String {
     "Z".to_string()
 }
 fn default_custom_infestation_write_false() -> bool {
-    true
+    false
 }
 fn default_custom_lost_scrap_column() -> String {
     "AB".to_string()
@@ -351,13 +357,13 @@ fn default_custom_fog_column() -> String {
     "AG".to_string()
 }
 fn default_custom_fog_write_false() -> bool {
-    true
+    false
 }
 fn default_custom_meteor_column() -> String {
     "AH".to_string()
 }
 fn default_custom_meteor_write_false() -> bool {
-    true
+    false
 }
 fn default_custom_gifts_column() -> String {
     "AI".to_string()

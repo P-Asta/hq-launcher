@@ -22,6 +22,19 @@ pub fn start_for_launch(
     if !enabled {
         return;
     }
+    match crate::google_oauth::auth_status(app.clone()) {
+        Ok(status) if status.authenticated => {}
+        Ok(_) => {
+            log::info!(
+                "LCStatsTracker AutoSheet listener skipped: Google login is not connected"
+            );
+            return;
+        }
+        Err(e) => {
+            log::warn!("LCStatsTracker AutoSheet listener skipped: failed to check Google login: {e}");
+            return;
+        }
+    }
     if state
         .running
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -41,6 +54,10 @@ pub fn start_for_launch(
 }
 
 async fn run_listener(app: tauri::AppHandle) -> Result<(), String> {
+    if !crate::google_oauth::auth_status(app.clone())?.authenticated {
+        log::info!("LCStatsTracker AutoSheet listener skipped: Google login is not connected");
+        return Ok(());
+    }
     let settings = crate::google_oauth::get_settings(app.clone())?;
     if settings.spreadsheet_id.trim().is_empty() || settings.active_sheet_name.trim().is_empty() {
         log::info!("LCStatsTracker AutoSheet listener skipped: spreadsheet or sheet is not set");

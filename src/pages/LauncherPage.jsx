@@ -252,9 +252,11 @@ const DEFAULT_CUSTOM_LCSTATS_LAYOUT = {
   itemCountColumn: "I",
   apparatusColumn: "",
   beeAmountColumn: "J",
+  splitHiveCount: false,
   beeValueColumn: "K",
   cheapHiveColumn: "",
   expensiveHiveColumn: "",
+  writeZeroForMissingHives: false,
   eggColumn: "L",
   eggNotesEnabled: false,
   collectedEggColumn: "",
@@ -270,9 +272,9 @@ const DEFAULT_CUSTOM_LCSTATS_LAYOUT = {
   missingColumn: "Q",
   soldColumn: "X",
   sidColumn: "Y",
-  sidWriteFalse: true,
+  sidWriteFalse: false,
   infestationColumn: "Z",
-  infestationWriteFalse: true,
+  infestationWriteFalse: false,
   lostScrapColumn: "AB",
   takeoffTimeColumn: "",
   turretColumn: "",
@@ -287,9 +289,9 @@ const DEFAULT_CUSTOM_LCSTATS_LAYOUT = {
   disconnectedState: "DC",
   deathNotesEnabled: true,
   fogColumn: "AG",
-  fogWriteFalse: true,
+  fogWriteFalse: false,
   meteorColumn: "AH",
-  meteorWriteFalse: true,
+  meteorWriteFalse: false,
   giftsColumn: "AI",
 };
 
@@ -546,9 +548,11 @@ function normalizeCustomLcstatsLayout(layout = {}) {
     itemCountColumn: normalizeSheetColumn(source.itemCountColumn, ""),
     apparatusColumn: normalizeSheetColumn(source.apparatusColumn, ""),
     beeAmountColumn: normalizeSheetColumn(source.beeAmountColumn, ""),
+    splitHiveCount: source.splitHiveCount === true,
     beeValueColumn: normalizeSheetColumn(source.beeValueColumn, ""),
     cheapHiveColumn: normalizeSheetColumn(source.cheapHiveColumn, ""),
     expensiveHiveColumn: normalizeSheetColumn(source.expensiveHiveColumn, ""),
+    writeZeroForMissingHives: source.writeZeroForMissingHives === true,
     eggColumn: normalizeSheetColumn(source.eggColumn, ""),
     eggNotesEnabled: source.eggNotesEnabled === true,
     collectedEggColumn: normalizeSheetColumn(source.collectedEggColumn, ""),
@@ -564,9 +568,9 @@ function normalizeCustomLcstatsLayout(layout = {}) {
     missingColumn: normalizeSheetColumn(source.missingColumn, ""),
     soldColumn: normalizeSheetColumn(source.soldColumn, ""),
     sidColumn: normalizeSheetColumn(source.sidColumn, ""),
-    sidWriteFalse: source.sidWriteFalse !== false,
+    sidWriteFalse: source.sidWriteFalse === true,
     infestationColumn: normalizeSheetColumn(source.infestationColumn, ""),
-    infestationWriteFalse: source.infestationWriteFalse !== false,
+    infestationWriteFalse: source.infestationWriteFalse === true,
     lostScrapColumn: normalizeSheetColumn(source.lostScrapColumn, ""),
     takeoffTimeColumn: normalizeSheetColumn(source.takeoffTimeColumn, ""),
     turretColumn: normalizeSheetColumn(source.turretColumn, ""),
@@ -581,9 +585,9 @@ function normalizeCustomLcstatsLayout(layout = {}) {
     disconnectedState: String(source.disconnectedState ?? "DC"),
     deathNotesEnabled: source.deathNotesEnabled !== false,
     fogColumn: normalizeSheetColumn(source.fogColumn, ""),
-    fogWriteFalse: source.fogWriteFalse !== false,
+    fogWriteFalse: source.fogWriteFalse === true,
     meteorColumn: normalizeSheetColumn(source.meteorColumn, ""),
-    meteorWriteFalse: source.meteorWriteFalse !== false,
+    meteorWriteFalse: source.meteorWriteFalse === true,
     giftsColumn: normalizeSheetColumn(source.giftsColumn, ""),
   };
 }
@@ -3273,6 +3277,29 @@ export default function LauncherPage({
     setPendingGoogleOauthToggle(null);
   }
 
+  async function enablePendingLcstatsWithoutGoogle() {
+    const pending = pendingGoogleOauthToggle;
+    if (!pending?.mod) {
+      setGoogleOauthDialogOpen(false);
+      return;
+    }
+
+    googleOauthRequestIdRef.current += 1;
+    setGoogleOauthBusy(true);
+    setGoogleOauthError("");
+    setPendingGoogleOauthToggle(null);
+    setGoogleOauthDialogOpen(false);
+    try {
+      await toggleModEnabledForMod(pending.mod, pending.nextEnabled, {
+        ...(pending.opts ?? {}),
+        skipGoogleOauthGate: true,
+        allowWithoutGoogle: true,
+      });
+    } finally {
+      setGoogleOauthBusy(false);
+    }
+  }
+
   async function startGoogleOauthLogin() {
     const requestId = googleOauthRequestIdRef.current + 1;
     googleOauthRequestIdRef.current = requestId;
@@ -3683,10 +3710,15 @@ export default function LauncherPage({
     }
   }
 
-  function renderCustomGoogleOauthFields({ compact = false } = {}) {
+  function renderCustomGoogleOauthFields({ compact = false, locked = false } = {}) {
     const hasCustomOauth = hasCustomGoogleOauthSettings(lcstatsSettings);
     return (
-      <div className={compact ? "mt-5" : ""}>
+      <div
+        className={cn(
+          compact ? "mt-5" : "",
+          locked ? "cursor-not-allowed opacity-45 [&_*]:cursor-not-allowed" : ""
+        )}
+      >
         <div className="flex items-center justify-between gap-3">
           <button
             type="button"
@@ -3737,7 +3769,8 @@ export default function LauncherPage({
                   lcstatsBusy ||
                   lcstatsRefreshBusy ||
                   lcstatsPickerBusy ||
-                  googleOauthBusy
+                  googleOauthBusy ||
+                  locked
                 }
                 onChange={(event) =>
                   updateLcstatsSettings({ googleClientId: event.target.value })
@@ -3756,7 +3789,8 @@ export default function LauncherPage({
                   lcstatsBusy ||
                   lcstatsRefreshBusy ||
                   lcstatsPickerBusy ||
-                  googleOauthBusy
+                  googleOauthBusy ||
+                  locked
                 }
                 onChange={(event) =>
                   updateLcstatsSettings({ googleClientSecret: event.target.value })
@@ -3770,10 +3804,10 @@ export default function LauncherPage({
     );
   }
 
-  function renderCustomLcstatsLayoutFields() {
+  function renderCustomLcstatsLayoutFields({ locked = false } = {}) {
     if (lcstatsSettings.layout !== "Custom Layout") return null;
     const customLayout = normalizeCustomLcstatsLayout(lcstatsSettings.customLayout);
-    const disabled = lcstatsBusy || lcstatsRefreshBusy || lcstatsPickerBusy;
+    const disabled = locked || lcstatsBusy || lcstatsRefreshBusy || lcstatsPickerBusy;
     const sections = [
       {
         title: "Rows",
@@ -3813,9 +3847,17 @@ export default function LauncherPage({
         groups: [
           [
             ["Bee amount", "beeAmountColumn", "J"],
+            ["Split count", "splitHiveCount", "", "checkbox", "Near/far"],
             ["Bee value", "beeValueColumn", "K"],
             ["Cheap hive", "cheapHiveColumn", ""],
             ["Exp hive", "expensiveHiveColumn", ""],
+            [
+              "hive zero",
+              "writeZeroForMissingHives",
+              "",
+              "checkbox",
+              "Write 0",
+            ],
           ],
           [
             ["Egg", "eggColumn", "L"],
@@ -4085,189 +4127,226 @@ export default function LauncherPage({
       ? lcstatsSettings.spreadsheetId
       : spreadsheetName || lcstatsSettings.spreadsheetId;
     const useSpreadsheetPicker = !hasCustomGoogleOauthSettings(lcstatsSettings);
+    const settingsLocked = modEnabled && !googleOauthStatus.authenticated;
+    const settingsDisabled =
+      settingsLocked || lcstatsBusy || lcstatsRefreshBusy || lcstatsPickerBusy;
+    const googleButtonLabel = googleOauthStatus.authenticated
+      ? "Google Logout"
+      : "Google Login";
+    const handleGoogleOauthButtonClick = () => {
+      if (googleOauthStatus.authenticated) {
+        logoutGoogleOauth().catch(console.error);
+      } else {
+        setGoogleOauthError("");
+        setGoogleOauthDialogOpen(true);
+      }
+    };
 
     return (
-      <div className="min-h-0 flex flex-1 overflow-hidden">
+      <div className="min-h-0 flex flex-1 flex-col gap-3 overflow-hidden">
+        <div>
+          <Button
+            variant={googleOauthStatus.authenticated ? "secondary" : "default"}
+            className="h-10 w-full"
+            disabled={googleOauthBusy}
+            onClick={handleGoogleOauthButtonClick}
+          >
+            {googleButtonLabel}
+          </Button>
+        </div>
         <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-panel-outline bg-black/10 p-4">
           <div className="space-y-5">
             {renderCustomGoogleOauthFields()}
 
+            {googleOauthError ? (
+              <div className="rounded-2xl border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm text-red-200">
+                {googleOauthError}
+              </div>
+            ) : null}
+
             <div
               className={cn(
-                "grid grid-cols-1 gap-3",
-                "md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2.5rem]"
+                "space-y-5 transition-opacity",
+                settingsLocked ? "cursor-not-allowed opacity-45 [&_*]:cursor-not-allowed" : ""
               )}
             >
-              <div className="min-w-0 space-y-2">
-                <label className="block text-xs font-semibold text-white/50">
-                  Spreadsheet
-                </label>
-                {useSpreadsheetPicker ? (
-                  <button
-                    type="button"
-                    className={cn(
-                      "flex h-10 w-full items-center justify-between gap-3 rounded-xl border border-panel-outline bg-white/5 px-4 text-left text-sm text-white outline-none transition hover:bg-white/10 focus:border-panel-outline focus:ring-2 focus:ring-panel-outline disabled:cursor-not-allowed disabled:opacity-60",
-                      !spreadsheetDisplayValue ? "text-white/40" : ""
-                    )}
-                    disabled={lcstatsRefreshBusy || lcstatsPickerBusy}
-                    onClick={() => {
-                      openLcstatsSpreadsheetPicker().catch(console.error);
-                    }}
-                    title={spreadsheetName && spreadsheetId ? spreadsheetId : undefined}
-                  >
-                    <span className="min-w-0 truncate">
-                      {spreadsheetDisplayValue || "Select spreadsheet"}
-                    </span>
-                    {lcstatsPickerBusy ? (
-                      <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-white/55" />
-                    ) : (
-                      <FolderOpen className="h-4 w-4 shrink-0 text-white/55" />
-                    )}
-                  </button>
-                ) : (
-                  <Input
-                    value={spreadsheetDisplayValue}
-                    disabled={lcstatsRefreshBusy || lcstatsPickerBusy}
-                    onFocus={(event) => {
-                      setLcstatsSpreadsheetFocused(true);
-                      window.requestAnimationFrame(() => event.target.select());
-                    }}
-                    onChange={(event) =>
-                      handleLcstatsSpreadsheetInputChange(event.target.value)
-                    }
-                    onBlur={(event) => {
-                      setLcstatsSpreadsheetFocused(false);
-                      loadLcstatsSheetNamesFromParsedInput(
-                        parseSpreadsheetInput(event.target.value)
-                      );
-                    }}
-                    placeholder="Google Sheets link or spreadsheet ID"
-                    title={spreadsheetName && spreadsheetId ? spreadsheetId : undefined}
-                  />
+              <div
+                className={cn(
+                  "grid grid-cols-1 gap-3",
+                  "md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2.5rem]"
                 )}
+              >
+                <div className="min-w-0 space-y-2">
+                  <label className="block text-xs font-semibold text-white/50">
+                    Spreadsheet
+                  </label>
+                  {useSpreadsheetPicker ? (
+                    <button
+                      type="button"
+                      className={cn(
+                        "flex h-10 w-full items-center justify-between gap-3 rounded-xl border border-panel-outline bg-white/5 px-4 text-left text-sm text-white outline-none transition hover:bg-white/10 focus:border-panel-outline focus:ring-2 focus:ring-panel-outline disabled:cursor-not-allowed disabled:bg-white/[0.03] disabled:text-white/45 disabled:opacity-60",
+                        !spreadsheetDisplayValue ? "text-white/40" : ""
+                      )}
+                      disabled={settingsDisabled}
+                      onClick={() => {
+                        openLcstatsSpreadsheetPicker().catch(console.error);
+                      }}
+                      title={spreadsheetName && spreadsheetId ? spreadsheetId : undefined}
+                    >
+                      <span className="min-w-0 truncate">
+                        {spreadsheetDisplayValue || "Select spreadsheet"}
+                      </span>
+                      {lcstatsPickerBusy ? (
+                        <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-white/55" />
+                      ) : (
+                        <FolderOpen className="h-4 w-4 shrink-0 text-white/55" />
+                      )}
+                    </button>
+                  ) : (
+                    <Input
+                      value={spreadsheetDisplayValue}
+                      disabled={settingsDisabled}
+                      onFocus={(event) => {
+                        setLcstatsSpreadsheetFocused(true);
+                        window.requestAnimationFrame(() => event.target.select());
+                      }}
+                      onChange={(event) =>
+                        handleLcstatsSpreadsheetInputChange(event.target.value)
+                      }
+                      onBlur={(event) => {
+                        setLcstatsSpreadsheetFocused(false);
+                        loadLcstatsSheetNamesFromParsedInput(
+                          parseSpreadsheetInput(event.target.value)
+                        );
+                      }}
+                      placeholder="Google Sheets link or spreadsheet ID"
+                      title={spreadsheetName && spreadsheetId ? spreadsheetId : undefined}
+                    />
+                  )}
+                </div>
+                <div className="min-w-0 space-y-2">
+                  <label className="block text-xs font-semibold text-white/50">
+                    Sheet
+                  </label>
+                  {lcstatsSheets.length > 0 ? (
+                    <Select
+                      value={lcstatsSettings.activeSheetName}
+                      onValueChange={(value) =>
+                        updateLcstatsSettings({ activeSheetName: value })
+                      }
+                      disabled={settingsDisabled}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select sheet" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {lcstatsSheets.map((name) => (
+                          <SelectItem key={name} value={name}>
+                            {name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Input
+                      value={lcstatsSettings.activeSheetName}
+                      disabled={settingsDisabled}
+                      onChange={(event) =>
+                        updateLcstatsSettings({ activeSheetName: event.target.value })
+                      }
+                      placeholder="Sheet1"
+                    />
+                  )}
+                </div>
+                <div className="flex items-end">
+                  <Button
+                    variant="secondary"
+                    className="h-10 w-10 shrink-0 px-0 disabled:cursor-not-allowed disabled:pointer-events-auto"
+                    disabled={settingsDisabled}
+                    onClick={() => {
+                      refreshLcstatsGoogleLists().catch(console.error);
+                    }}
+                    title="Refresh Google Sheets"
+                    aria-label="Refresh Google Sheets"
+                  >
+                    <RefreshCw
+                      className={cn(
+                        "h-4 w-4",
+                        lcstatsRefreshBusy ? "animate-spin" : ""
+                      )}
+                    />
+                  </Button>
+                </div>
               </div>
-              <div className="min-w-0 space-y-2">
-                <label className="block text-xs font-semibold text-white/50">
-                  Sheet
-                </label>
-                {lcstatsSheets.length > 0 ? (
+
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <div className="space-y-2">
+                  <label className="block text-xs font-semibold text-white/50">
+                    Layout
+                  </label>
                   <Select
-                    value={lcstatsSettings.activeSheetName}
+                    value={lcstatsSettings.layout}
                     onValueChange={(value) =>
-                      updateLcstatsSettings({ activeSheetName: value })
+                      updateLcstatsSettings(
+                        lcstatsLayoutUsesColumnFields(value)
+                          ? {
+                              layout: value,
+                              startColumn: lcstatsSettings.startColumn || "D",
+                              quotaColumn: lcstatsSettings.quotaColumn || "B",
+                              sellColumn: lcstatsSettings.sellColumn || "AE",
+                            }
+                          : {
+                              layout: value,
+                              startColumn: "",
+                              quotaColumn: "",
+                              sellColumn: "",
+                            }
+                      )
                     }
-                    disabled={lcstatsRefreshBusy || lcstatsPickerBusy}
+                    disabled={settingsDisabled}
                   >
                     <SelectTrigger>
-                      <SelectValue placeholder="Select sheet" />
+                      <SelectValue placeholder="Select layout" />
                     </SelectTrigger>
                     <SelectContent>
-                      {lcstatsSheets.map((name) => (
-                        <SelectItem key={name} value={name}>
-                          {name}
+                      {LCSTATS_LAYOUTS.map((layout) => (
+                        <SelectItem key={layout} value={layout}>
+                          {layout}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
-                ) : (
-                  <Input
-                    value={lcstatsSettings.activeSheetName}
-                    disabled={lcstatsRefreshBusy || lcstatsPickerBusy}
-                    onChange={(event) =>
-                      updateLcstatsSettings({ activeSheetName: event.target.value })
-                    }
-                    placeholder="Sheet1"
-                  />
-                )}
-              </div>
-              <div className="flex items-end">
-                <Button
-                  variant="secondary"
-                  className="h-10 w-10 shrink-0 px-0"
-                  disabled={lcstatsRefreshBusy || lcstatsPickerBusy}
-                  onClick={() => {
-                    refreshLcstatsGoogleLists().catch(console.error);
-                  }}
-                  title="Refresh Google Sheets"
-                  aria-label="Refresh Google Sheets"
-                >
-                  <RefreshCw
-                    className={cn(
-                      "h-4 w-4",
-                      lcstatsRefreshBusy ? "animate-spin" : ""
-                    )}
-                  />
-                </Button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <div className="space-y-2">
-                <label className="block text-xs font-semibold text-white/50">
-                  Layout
-                </label>
-                <Select
-                  value={lcstatsSettings.layout}
-                  onValueChange={(value) =>
-                    updateLcstatsSettings(
-                      lcstatsLayoutUsesColumnFields(value)
-                        ? {
-                            layout: value,
-                            startColumn: lcstatsSettings.startColumn || "D",
-                            quotaColumn: lcstatsSettings.quotaColumn || "B",
-                            sellColumn: lcstatsSettings.sellColumn || "AE",
-                          }
-                        : {
-                            layout: value,
-                            startColumn: "",
-                            quotaColumn: "",
-                            sellColumn: "",
-                          }
-                    )
-                  }
-                  disabled={lcstatsBusy || lcstatsRefreshBusy || lcstatsPickerBusy}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select layout" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {LCSTATS_LAYOUTS.map((layout) => (
-                      <SelectItem key={layout} value={layout}>
-                        {layout}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            {lcstatsLayoutUsesColumnFields(lcstatsSettings.layout) ? (
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              {[
-                ["Start column", "startColumn", "D"],
-                ["Quota column", "quotaColumn", "B"],
-                ["Sell column", "sellColumn", "AE"],
-              ].map(([label, key, placeholder]) => (
-                <div key={key} className="space-y-2">
-                  <label className="block text-xs font-semibold text-white/50">
-                    {label}
-                  </label>
-                  <Input
-                    value={lcstatsSettings[key]}
-                    disabled={lcstatsBusy || lcstatsRefreshBusy || lcstatsPickerBusy}
-                    onChange={(event) =>
-                      updateLcstatsSettings({
-                        [key]: normalizeSheetColumn(event.target.value, ""),
-                      })
-                    }
-                    placeholder={placeholder}
-                  />
                 </div>
-              ))}
-            </div>
-            ) : null}
+              </div>
 
-            {renderCustomLcstatsLayoutFields()}
+              {lcstatsLayoutUsesColumnFields(lcstatsSettings.layout) ? (
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                {[
+                  ["Start column", "startColumn", "D"],
+                  ["Quota column", "quotaColumn", "B"],
+                  ["Sell column", "sellColumn", "AE"],
+                ].map(([label, key, placeholder]) => (
+                  <div key={key} className="space-y-2">
+                    <label className="block text-xs font-semibold text-white/50">
+                      {label}
+                    </label>
+                    <Input
+                      value={lcstatsSettings[key]}
+                      disabled={settingsDisabled}
+                      onChange={(event) =>
+                        updateLcstatsSettings({
+                          [key]: normalizeSheetColumn(event.target.value, ""),
+                        })
+                      }
+                      placeholder={placeholder}
+                    />
+                  </div>
+                ))}
+              </div>
+              ) : null}
+
+              {renderCustomLcstatsLayoutFields({ locked: settingsLocked })}
+            </div>
 
             {lcstatsError ? (
               <div className="rounded-2xl border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm text-red-200">
@@ -4281,23 +4360,6 @@ export default function LauncherPage({
               </div>
             ) : null}
 
-            <div className="flex items-center justify-end gap-2">
-              <Button
-                variant="secondary"
-                className="h-10"
-                disabled={googleOauthBusy}
-                onClick={() => {
-                  if (googleOauthStatus.authenticated) {
-                    logoutGoogleOauth().catch(console.error);
-                  } else {
-                    setGoogleOauthError("");
-                    setGoogleOauthDialogOpen(true);
-                  }
-                }}
-              >
-                {googleOauthStatus.authenticated ? "Google Logout" : "Google Login"}
-              </Button>
-            </div>
           </div>
         </div>
       </div>
@@ -4398,6 +4460,7 @@ export default function LauncherPage({
             dev: m.dev,
             name: m.name,
             enabled: !!nextEnabled,
+            allowWithoutGoogle: !!opts?.allowWithoutGoogle,
           })
         )
       );
@@ -7481,6 +7544,18 @@ export default function LauncherPage({
                 Logout
               </Button>
               <div className="flex items-center gap-2">
+                {pendingGoogleOauthToggle?.mod ? (
+                  <Button
+                    variant="secondary"
+                    className="h-10 min-w-[160px]"
+                    disabled={googleOauthBusy}
+                    onClick={() => {
+                      enablePendingLcstatsWithoutGoogle().catch(console.error);
+                    }}
+                  >
+                    Enable without Google
+                  </Button>
+                ) : null}
                 <Button
                   variant="secondary"
                   className="h-10 min-w-[96px]"

@@ -5103,11 +5103,13 @@ async fn set_mod_enabled(
     dev: String,
     name: String,
     enabled: bool,
+    allow_without_google: Option<bool>,
 ) -> Result<bool, String> {
     if enabled
         && dev.eq_ignore_ascii_case("MikuOreo")
         && name.eq_ignore_ascii_case("LCStatsTracker")
         && !keep_lcstats_enabled_in_practice()
+        && !allow_without_google.unwrap_or(false)
     {
         let status = google_oauth::auth_status(app.clone())?;
         if !status.authenticated {
