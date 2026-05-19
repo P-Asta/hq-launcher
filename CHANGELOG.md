@@ -1,6 +1,9 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+# 1.10.10 (2026-05-19)
+= HOTFIX: enable without google donsent work bug fix
+
 # 1.10.9 (2026-05-19)
 - Added an option to enable **LCStatsTracker** without Google login.
 - When **LCStatsTracker** is enabled without Google login, AutoSheet settings are locked and the AutoSheet listener will not start on launch.

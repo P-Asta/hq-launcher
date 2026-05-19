@@ -5007,6 +5007,9 @@ fn ensure_lcstats_disabled_without_google_auth(app: &tauri::AppHandle) -> Result
     if keep_lcstats_enabled_in_practice() {
         return Ok(());
     }
+    if google_oauth::get_settings(app.clone())?.allow_without_google {
+        return Ok(());
+    }
     if google_oauth::auth_status(app.clone())?.authenticated {
         return Ok(());
     }
@@ -5050,7 +5053,9 @@ async fn google_lcstats_pick_spreadsheet(
 #[tauri::command]
 fn google_lcstats_logout(app: tauri::AppHandle) -> Result<bool, String> {
     google_oauth::logout(app.clone())?;
-    disable_lcstats_in_disablemod(&app)?;
+    if !google_oauth::get_settings(app.clone())?.allow_without_google {
+        disable_lcstats_in_disablemod(&app)?;
+    }
     Ok(true)
 }
 
@@ -5105,16 +5110,27 @@ async fn set_mod_enabled(
     enabled: bool,
     allow_without_google: Option<bool>,
 ) -> Result<bool, String> {
-    if enabled
-        && dev.eq_ignore_ascii_case("MikuOreo")
-        && name.eq_ignore_ascii_case("LCStatsTracker")
-        && !keep_lcstats_enabled_in_practice()
-        && !allow_without_google.unwrap_or(false)
-    {
+    let is_lcstats =
+        dev.eq_ignore_ascii_case("MikuOreo") && name.eq_ignore_ascii_case("LCStatsTracker");
+    let settings_allow_without_google = if is_lcstats {
+        google_oauth::get_settings(app.clone())?.allow_without_google
+    } else {
+        false
+    };
+    let allow_without_google =
+        allow_without_google.unwrap_or(false) || settings_allow_without_google;
+
+    if enabled && is_lcstats && !keep_lcstats_enabled_in_practice() && !allow_without_google {
         let status = google_oauth::auth_status(app.clone())?;
         if !status.authenticated {
             return Err("Google login is required to enable MikuOreo-LCStatsTracker.".to_string());
         }
+    }
+
+    if enabled && is_lcstats && allow_without_google && !settings_allow_without_google {
+        let mut settings = google_oauth::get_settings(app.clone())?;
+        settings.allow_without_google = true;
+        google_oauth::set_settings(app.clone(), settings)?;
     }
 
     let mut list = read_disablemod(&app)?;

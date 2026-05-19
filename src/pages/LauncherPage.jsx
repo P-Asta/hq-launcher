@@ -307,6 +307,7 @@ const DEFAULT_LCSTATS_SETTINGS = {
   googleClientSecret: "",
   googlePickerApiKey: "",
   googlePickerAppId: "",
+  allowWithoutGoogle: false,
 };
 
 const GOOGLE_PICKER_SCRIPT_SRC = "https://apis.google.com/js/api.js";
@@ -3290,6 +3291,12 @@ export default function LauncherPage({
     setPendingGoogleOauthToggle(null);
     setGoogleOauthDialogOpen(false);
     try {
+      const nextSettings = normalizeLcstatsSettings({
+        ...lcstatsSettings,
+        allowWithoutGoogle: true,
+      });
+      setLcstatsSettings(nextSettings);
+      await persistLcstatsSettings(nextSettings, { quiet: true });
       await toggleModEnabledForMod(pending.mod, pending.nextEnabled, {
         ...(pending.opts ?? {}),
         skipGoogleOauthGate: true,
@@ -3386,6 +3393,7 @@ export default function LauncherPage({
       googleClientSecret: String(settings?.googleClientSecret ?? "").trim(),
       googlePickerApiKey: String(settings?.googlePickerApiKey ?? "").trim(),
       googlePickerAppId: String(settings?.googlePickerAppId ?? "").trim(),
+      allowWithoutGoogle: !!settings?.allowWithoutGoogle,
     };
   }
 
@@ -4390,7 +4398,8 @@ export default function LauncherPage({
     if (
       nextEnabled &&
       !opts?.skipGoogleOauthGate &&
-      requiresGoogleOauthForMod(mod)
+      requiresGoogleOauthForMod(mod) &&
+      !lcstatsSettings.allowWithoutGoogle
     ) {
       const status = googleOauthStatus.authenticated
         ? googleOauthStatus

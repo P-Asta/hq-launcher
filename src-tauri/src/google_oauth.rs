@@ -388,6 +388,8 @@ pub struct LcStatsSettings {
     pub google_picker_api_key: String,
     #[serde(default)]
     pub google_picker_app_id: String,
+    #[serde(default)]
+    pub allow_without_google: bool,
 }
 
 impl Default for LcStatsSettings {
@@ -404,6 +406,7 @@ impl Default for LcStatsSettings {
             google_client_secret: String::new(),
             google_picker_api_key: String::new(),
             google_picker_app_id: String::new(),
+            allow_without_google: false,
         }
     }
 }
