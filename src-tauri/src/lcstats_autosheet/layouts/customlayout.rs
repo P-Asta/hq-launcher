@@ -7,7 +7,7 @@ use crate::lcstats_autosheet::sheets::{
 };
 use crate::lcstats_autosheet::stats::{
     array_at, array_at_any, bool_at, intish_value, object_at, string_at, strip_moon_number,
-    value_at,
+    value_at, value_at_any,
 };
 
 pub async fn write(
@@ -293,7 +293,7 @@ impl NormalizedStats {
         let meteor_time = non_false_text(&string_at(stats, &["MeteorShowerTime"]));
         Self {
             new_quota: intish_at(stats, &["NewQuota"]),
-            seed: strip_apostrophe(&string_at(stats, &["Seed"])),
+            seed: seed_text(stats),
             moon_name: strip_moon_number(&strip_apostrophe(&string_at(
                 stats,
                 &["MoonInfo", "Name"],
@@ -936,7 +936,7 @@ fn egg_values_note(label: &str, values: &[i64]) -> String {
 }
 
 fn gifts_cell(stats: &Value) -> NoteCell {
-    let gifts = array_at(stats, &["GiftBoxes"]);
+    let gifts = array_at_any(stats, &[&["GiftBoxesOpened"][..], &["GiftBoxes"][..]]);
     if gifts.is_empty() {
         return NoteCell {
             column: String::new(),
@@ -955,10 +955,7 @@ fn gifts_cell(stats: &Value) -> NoteCell {
         .collect::<Vec<_>>();
     let total_net = collected
         .iter()
-        .map(|gift| {
-            gift.get("GiftValue").map(intish_value).unwrap_or(0)
-                - gift.get("ScrapValue").map(intish_value).unwrap_or(0)
-        })
+        .map(|gift| gift_new_scrap_value(gift) - gift_scrap_value(gift))
         .sum::<i64>();
     let sign = if total_net >= 0 { "+" } else { "" };
     let cell_value = if collected.is_empty() {
@@ -971,10 +968,10 @@ fn gifts_cell(stats: &Value) -> NoteCell {
         .enumerate()
         .map(|(index, gift)| {
             format!(
-                "Box {}: GiftValue={}, ScrapValue={}, Collected={}",
+                "Box {}: NewScrapValue={}, GiftScrapValue={}, Collected={}",
                 index + 1,
-                gift.get("GiftValue").map(intish_value).unwrap_or(0),
-                gift.get("ScrapValue").map(intish_value).unwrap_or(0),
+                gift_new_scrap_value(gift),
+                gift_scrap_value(gift),
                 gift.get("Collected")
                     .and_then(Value::as_bool)
                     .unwrap_or(false)
@@ -987,6 +984,18 @@ fn gifts_cell(stats: &Value) -> NoteCell {
         value: json!(cell_value),
         note: Some(note),
     }
+}
+
+fn gift_new_scrap_value(gift: &Value) -> i64 {
+    value_at_any(gift, &[&["NewScrapValue"][..], &["GiftValue"][..]])
+        .map(intish_value)
+        .unwrap_or(0)
+}
+
+fn gift_scrap_value(gift: &Value) -> i64 {
+    value_at_any(gift, &[&["GiftScrapValue"][..], &["ScrapValue"][..]])
+        .map(intish_value)
+        .unwrap_or(0)
 }
 
 fn missing_items_cell(stats: &Value) -> NoteCell {
@@ -1168,6 +1177,17 @@ fn non_false_text(value: &str) -> Option<String> {
     }
 }
 
+fn seed_text(stats: &Value) -> String {
+    value_at(stats, &["Seed"])
+        .map(|value| {
+            value
+                .as_str()
+                .map(strip_apostrophe)
+                .unwrap_or_else(|| intish_value(value).to_string())
+        })
+        .unwrap_or_default()
+}
+
 fn blank_or_x(value: &str) -> Value {
     if value.trim().is_empty() {
         json!("X")
@@ -1324,6 +1344,43 @@ mod tests {
             apply_text_case(&custom_weather("'Mild"), "camelCase"),
             "clear"
         );
+    }
+
+    #[test]
+    fn numeric_seed_is_written_in_custom_layout() {
+        let stats = json!({ "Seed": 10183014 });
+        let layout = ResolvedCustomLayout::from_settings(&CustomLcStatsLayoutSettings {
+            seed_column: "AI".to_string(),
+            ..Default::default()
+        });
+        let normalized = NormalizedStats::from_stats(&stats, &layout);
+
+        let updates = build_value_updates(&normalized, &layout, 7);
+
+        assert_eq!(cell_value(&updates, "AI"), Some(&json!("10183014")));
+    }
+
+    #[test]
+    fn gift_boxes_opened_feed_custom_gift_value() {
+        let stats = json!({
+            "GiftBoxesOpened": [
+                { "NewScrapValue": 39, "GiftScrapValue": 12, "Collected": false },
+                { "NewScrapValue": 162, "GiftScrapValue": 26, "Collected": true }
+            ]
+        });
+        let layout = ResolvedCustomLayout::from_settings(&CustomLcStatsLayoutSettings {
+            gifts_column: "AB".to_string(),
+            ..Default::default()
+        });
+        let normalized = NormalizedStats::from_stats(&stats, &layout);
+
+        assert_eq!(normalized.gifts.value, json!("1|+136"));
+        assert!(normalized
+            .gifts
+            .note
+            .as_deref()
+            .unwrap_or_default()
+            .contains("NewScrapValue=162"));
     }
 
     #[test]

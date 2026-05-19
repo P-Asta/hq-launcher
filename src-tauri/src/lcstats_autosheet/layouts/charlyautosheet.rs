@@ -7,7 +7,7 @@ use crate::lcstats_autosheet::sheets::{
 };
 use crate::lcstats_autosheet::stats::{
     array_at, array_at_any, bool_at, intish_value, object_at, string_at, strip_moon_number,
-    value_at,
+    value_at, value_at_any,
 };
 
 const START_ROW: usize = 3;
@@ -437,7 +437,7 @@ fn egg_value(stats: &Value) -> String {
 }
 
 fn gifts_cell(stats: &Value) -> NoteCell {
-    let gifts = array_at(stats, &["GiftBoxes"]);
+    let gifts = array_at_any(stats, &[&["GiftBoxesOpened"][..], &["GiftBoxes"][..]]);
     if gifts.is_empty() {
         return NoteCell {
             column: GIFTS_COLUMN,
@@ -456,10 +456,7 @@ fn gifts_cell(stats: &Value) -> NoteCell {
         .collect::<Vec<_>>();
     let total_net = collected
         .iter()
-        .map(|gift| {
-            gift.get("GiftValue").map(intish_value).unwrap_or(0)
-                - gift.get("ScrapValue").map(intish_value).unwrap_or(0)
-        })
+        .map(|gift| gift_new_scrap_value(gift) - gift_scrap_value(gift))
         .sum::<i64>();
     let sign = if total_net >= 0 { "+" } else { "" };
     let cell_value = if collected.is_empty() {
@@ -472,10 +469,10 @@ fn gifts_cell(stats: &Value) -> NoteCell {
         .enumerate()
         .map(|(index, gift)| {
             format!(
-                "Box {}: GiftValue={}, ScrapValue={}, Collected={}",
+                "Box {}: NewScrapValue={}, GiftScrapValue={}, Collected={}",
                 index + 1,
-                gift.get("GiftValue").map(intish_value).unwrap_or(0),
-                gift.get("ScrapValue").map(intish_value).unwrap_or(0),
+                gift_new_scrap_value(gift),
+                gift_scrap_value(gift),
                 gift.get("Collected")
                     .and_then(Value::as_bool)
                     .unwrap_or(false)
@@ -488,6 +485,18 @@ fn gifts_cell(stats: &Value) -> NoteCell {
         value: json!(cell_value),
         note: Some(note),
     }
+}
+
+fn gift_new_scrap_value(gift: &Value) -> i64 {
+    value_at_any(gift, &[&["NewScrapValue"][..], &["GiftValue"][..]])
+        .map(intish_value)
+        .unwrap_or(0)
+}
+
+fn gift_scrap_value(gift: &Value) -> i64 {
+    value_at_any(gift, &[&["GiftScrapValue"][..], &["ScrapValue"][..]])
+        .map(intish_value)
+        .unwrap_or(0)
 }
 
 fn missing_items_cell(stats: &Value) -> NoteCell {
@@ -716,6 +725,24 @@ mod tests {
         assert_eq!(cell_value(&updates, EGG_VALUE_COLUMN), Some(&json!("X")));
         assert_eq!(normalized.missing.value, json!("X"));
         assert_eq!(normalized.gifts.value, json!("X"));
+    }
+
+    #[test]
+    fn gift_boxes_opened_feed_gift_value() {
+        let normalized = NormalizedStats::from_stats(&json!({
+            "GiftBoxesOpened": [
+                { "NewScrapValue": 39, "GiftScrapValue": 12, "Collected": false },
+                { "NewScrapValue": 162, "GiftScrapValue": 26, "Collected": true }
+            ]
+        }));
+
+        assert_eq!(normalized.gifts.value, json!("1|+136"));
+        assert!(normalized
+            .gifts
+            .note
+            .as_deref()
+            .unwrap_or_default()
+            .contains("NewScrapValue=162"));
     }
 
     #[test]

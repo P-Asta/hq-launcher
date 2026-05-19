@@ -1,8 +1,11 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+# 1.10.11 (2026-05-19)
+- HOTFIX: seed X bug fix
+
 # 1.10.10 (2026-05-19)
-= HOTFIX: enable without google donsent work bug fix
+- HOTFIX: enable without google donsent work bug fix
 
 # 1.10.9 (2026-05-19)
 - Added an option to enable **LCStatsTracker** without Google login.

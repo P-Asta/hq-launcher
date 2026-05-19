@@ -9,7 +9,7 @@ pub fn value_at<'a>(stats: &'a Value, path: &[&str]) -> Option<&'a Value> {
 }
 
 pub fn int_at(stats: &Value, path: &[&str]) -> i64 {
-    value_at(stats, path).and_then(Value::as_i64).unwrap_or(0)
+    value_at(stats, path).map(intish_value).unwrap_or(0)
 }
 
 pub fn bool_at(stats: &Value, path: &[&str]) -> bool {
@@ -19,10 +19,7 @@ pub fn bool_at(stats: &Value, path: &[&str]) -> bool {
 }
 
 pub fn string_at(stats: &Value, path: &[&str]) -> String {
-    value_at(stats, path)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
+    value_at(stats, path).map(value_text).unwrap_or_default()
 }
 
 pub fn array_at<'a>(stats: &'a Value, path: &[&str]) -> &'a [Value] {
@@ -41,6 +38,10 @@ pub fn array_at_any<'a>(stats: &'a Value, paths: &[&[&str]]) -> &'a [Value] {
     &[]
 }
 
+pub fn value_at_any<'a>(stats: &'a Value, paths: &[&[&str]]) -> Option<&'a Value> {
+    paths.iter().find_map(|path| value_at(stats, path))
+}
+
 pub fn intish_value(value: &Value) -> i64 {
     value
         .as_i64()
@@ -50,6 +51,22 @@ pub fn intish_value(value: &Value) -> i64 {
                 .and_then(|text| text.trim_start_matches('\'').trim().parse::<i64>().ok())
         })
         .unwrap_or(0)
+}
+
+pub fn value_text(value: &Value) -> String {
+    if let Some(text) = value.as_str() {
+        text.to_string()
+    } else if let Some(number) = value.as_i64() {
+        number.to_string()
+    } else if let Some(number) = value.as_u64() {
+        number.to_string()
+    } else if let Some(number) = value.as_f64() {
+        number.to_string()
+    } else if let Some(flag) = value.as_bool() {
+        flag.to_string()
+    } else {
+        String::new()
+    }
 }
 
 pub fn sum_array_any(stats: &Value, paths: &[&[&str]]) -> i64 {
@@ -103,5 +120,26 @@ pub fn normalize_column(value: &str, fallback: &str) -> String {
         fallback.to_string()
     } else {
         column
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn strings_can_read_numeric_payload_values() {
+        let stats = json!({ "Seed": 30494987, "IndoorFog": false });
+
+        assert_eq!(string_at(&stats, &["Seed"]), "30494987");
+        assert_eq!(string_at(&stats, &["IndoorFog"]), "false");
+    }
+
+    #[test]
+    fn ints_can_read_quoted_payload_values() {
+        let stats = json!({ "CollectedTotal": "'225" });
+
+        assert_eq!(int_at(&stats, &["CollectedTotal"]), 225);
     }
 }
