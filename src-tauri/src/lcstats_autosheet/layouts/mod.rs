@@ -5,6 +5,7 @@ pub mod customlayout;
 pub mod evilsheet;
 pub mod makusheet;
 pub mod moddedsheet;
+pub mod serenadesheet;
 pub mod wafrody;
 
 use serde_json::Value;
@@ -18,6 +19,7 @@ pub const CUSTOM_LAYOUT: &str = "Custom Layout";
 pub const EVILSHEET_LAYOUT: &str = "Evilsheet";
 pub const MAKUSHEET_LAYOUT: &str = "MakuSheet 1.0";
 pub const MODDEDSHEET_LAYOUT: &str = "ModdedSheet";
+pub const SERENADE_LAYOUT: &str = "SerenadeSheet";
 pub const WAFRODY_LAYOUT: &str = "WafrodyAutoSheet";
 
 pub fn is_supported_layout(layout: &str) -> bool {
@@ -28,6 +30,7 @@ pub fn is_supported_layout(layout: &str) -> bool {
         || layout.eq_ignore_ascii_case(EVILSHEET_LAYOUT)
         || layout.eq_ignore_ascii_case(MAKUSHEET_LAYOUT)
         || layout.eq_ignore_ascii_case(MODDEDSHEET_LAYOUT)
+        || layout.eq_ignore_ascii_case(SERENADE_LAYOUT)
         || layout.eq_ignore_ascii_case(WAFRODY_LAYOUT)
 }
 
@@ -57,6 +60,8 @@ pub async fn write_stats(
         evilsheet::write(client, &token, settings, stats).await
     } else if settings.layout.eq_ignore_ascii_case(MODDEDSHEET_LAYOUT) {
         moddedsheet::write(client, &token, settings, stats).await
+    } else if settings.layout.eq_ignore_ascii_case(SERENADE_LAYOUT) {
+        serenadesheet::write(client, &token, settings, stats).await
     } else if settings.layout.eq_ignore_ascii_case(MAKUSHEET_LAYOUT) {
         makusheet::write(client, &token, settings, stats).await
     } else if settings.layout.eq_ignore_ascii_case(BREADSHEET_LAYOUT) {

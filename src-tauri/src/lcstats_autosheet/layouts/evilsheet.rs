@@ -8,7 +8,7 @@ use crate::lcstats_autosheet::sheets::{
     first_empty_row_from, get_sheet_id, number_value, quote_sheet_name, read_number, read_range,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, object_at, string_at, strip_moon_number, value_at,
+    array_at, array_at_any, object_at, players_at, string_at, strip_moon_number, value_at,
 };
 
 const TARGET_SHEET_CELL: &str = "A1";
@@ -190,7 +190,7 @@ async fn setup_or_match_player_columns(
         }
     }
 
-    let players = object_at(stats, &["Players"]);
+    let players = players_at(stats);
     let mut player_columns = HashMap::new();
     if existing_slots.is_empty() {
         let mut updates = vec![];
@@ -312,7 +312,7 @@ fn build_value_updates(
 
 fn normalize_players(stats: &Value) -> HashMap<String, NormalizedPlayer> {
     let takeoff_time = string_at(stats, &["TakeOffTime"]);
-    object_at(stats, &["Players"])
+    players_at(stats)
         .into_iter()
         .map(|(steam_id, player)| {
             let alive = player

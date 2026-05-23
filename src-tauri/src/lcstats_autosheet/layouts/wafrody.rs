@@ -8,7 +8,8 @@ use crate::lcstats_autosheet::sheets::{
     first_empty_row_from, get_sheet_id, number_value, quote_sheet_name, read_number, read_range,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, bool_at, object_at, string_at, strip_moon_number, value_at,
+    array_at, array_at_any, bool_at, object_at, players_at, string_at, strip_moon_number, value_at,
+    value_at_any,
 };
 
 const TARGET_SHEET_CELL: &str = "A1";
@@ -38,10 +39,15 @@ const BOTTOM_LINE_COLUMN: &str = "Y";
 const REAL_LINE_COLUMN: &str = "Z";
 const MISSED_ITEMS_NOTE_COLUMN: &str = "AA";
 const VALUE_SOLD_COLUMN: &str = "AJ";
+const GIFT_BONUS_COLUMN: &str = "AK";
 const LOST_SCRAP_TOTAL_COLUMN: &str = "AR";
 const LOST_SCRAP_TOTAL_ROW: usize = 31;
+const HAZARD_TOTAL_COLUMN: &str = "AS";
+const TURRET_TOTAL_ROW: usize = 16;
+const LANDMINE_TOTAL_ROW: usize = 17;
+const SPIKETRAP_TOTAL_ROW: usize = 18;
 const NEW_QUOTA_COLUMN: &str = "C";
-const SEED_COLUMN: &str = "BE";
+const SEED_COLUMN: &str = "BF";
 const SID_COLUMN: &str = "J";
 const INFESTATION_COLUMN: &str = "R";
 
@@ -108,7 +114,25 @@ pub async fn write(
         &player_columns,
     )
     .await?;
-    add_lost_scraps_to_total(client, token, spreadsheet_id, &target_sheet.name, stats).await
+    add_lost_scraps_to_total(client, token, spreadsheet_id, &target_sheet.name, stats).await?;
+    update_hazard_totals(
+        client,
+        token,
+        spreadsheet_id,
+        &target_sheet.name,
+        target_row,
+        stats,
+    )
+    .await?;
+    add_old_giftbox_extra_to_previous_day(
+        client,
+        token,
+        spreadsheet_id,
+        &target_sheet.name,
+        target_row,
+        stats,
+    )
+    .await
 }
 
 async fn read_target_sheet(
@@ -208,7 +232,7 @@ async fn setup_or_match_player_columns(
         }
     }
 
-    let players = object_at(stats, &["Players"]);
+    let players = players_at(stats);
     let mut player_columns = HashMap::new();
     if existing_slots.is_empty() {
         let mut updates = vec![];
@@ -227,8 +251,8 @@ async fn setup_or_match_player_columns(
         }
         batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, updates).await?;
     } else {
-        for steam_id in players.keys() {
-            if let Some(column) = existing_slots.get(steam_id) {
+        for (steam_id, _) in players {
+            if let Some(column) = existing_slots.get(&steam_id) {
                 player_columns.insert(steam_id.clone(), column.clone());
             }
         }
@@ -253,16 +277,18 @@ struct NormalizedStats {
     expensive_beehive_value: Option<i64>,
     egg_value: Option<i64>,
     egg_values: Vec<i64>,
-    has_meteor_shower: bool,
     meteor_shower_time: Option<String>,
+    has_available_shotguns: bool,
     shotguns_collected: i64,
     nutcracker_count: usize,
+    has_available_knives: bool,
     knives_collected: i64,
     butler_count: usize,
     collected_total: i64,
     bottom_line: i64,
     real_line: i64,
     value_sold: i64,
+    gift_bonus: i64,
     new_quota: i64,
     seed: String,
     has_sid: bool,
@@ -286,6 +312,9 @@ impl NormalizedStats {
         );
         let sid_type = non_false_text(&string_at(stats, &["SIDType"]));
         let meteor_shower_time = non_false_text(&string_at(stats, &["MeteorShowerTime"]));
+        let shotgun_available = intish_array_any(stats, &[&["ShotgunInfo", "Available"][..]]);
+        let knife_available = intish_array_any(stats, &[&["KnifeInfo", "Available"][..]]);
+        let bottom_line = intish_at(stats, &["BottomLine"]) + shotgun_available.iter().sum::<i64>();
         Self {
             moon_name: strip_apostrophe(&string_at(stats, &["MoonInfo", "Name"])),
             weather: wafrody_weather(&string_at(stats, &["MoonInfo", "Weather"])),
@@ -296,14 +325,15 @@ impl NormalizedStats {
             expensive_beehive_value: beehives.expensive_value,
             egg_value: (!egg_values.is_empty()).then(|| egg_values.iter().sum()),
             egg_values,
-            has_meteor_shower: meteor_shower_time.is_some(),
             meteor_shower_time,
+            has_available_shotguns: !shotgun_available.is_empty(),
             shotguns_collected: collected_count_or_legacy_int(
                 stats,
                 &["ShotgunInfo", "Collected"],
                 &["ShotgunsCollected"],
             ),
             nutcracker_count: indoor_enemy_count(stats, "Nutcracker"),
+            has_available_knives: !knife_available.is_empty(),
             knives_collected: collected_count_or_legacy_int(
                 stats,
                 &["KnifeInfo", "Collected"],
@@ -311,9 +341,10 @@ impl NormalizedStats {
             ),
             butler_count: indoor_enemy_count(stats, "Butler"),
             collected_total: intish_at(stats, &["CollectedTotal"]),
-            bottom_line: intish_at(stats, &["BottomLine"]),
+            bottom_line,
             real_line: intish_at(stats, &["BottomLineTrue"]),
             value_sold: intish_at(stats, &["ValueSold"]),
+            gift_bonus: gift_bonus_total(stats),
             new_quota: intish_at(stats, &["NewQuota"]),
             seed: strip_apostrophe(&string_at(stats, &["Seed"])),
             has_sid: sid_type.is_some(),
@@ -328,7 +359,7 @@ impl NormalizedStats {
 
 fn normalize_players(stats: &Value) -> HashMap<String, NormalizedPlayer> {
     let takeoff_time = string_at(stats, &["TakeOffTime"]);
-    object_at(stats, &["Players"])
+    players_at(stats)
         .into_iter()
         .map(|(steam_id, player)| {
             let alive = player
@@ -414,7 +445,10 @@ fn build_value_updates(
         (
             METEOR_SHOWER_TIME_COLUMN.to_string(),
             row,
-            json!(stats.has_meteor_shower),
+            stats
+                .meteor_shower_time
+                .as_ref()
+                .map_or_else(|| json!(""), |value| json!(value)),
         ),
         (
             COLLECTED_TOTAL_COLUMN.to_string(),
@@ -430,24 +464,28 @@ fn build_value_updates(
         (SEED_COLUMN.to_string(), row, json!(stats.seed)),
     ];
 
-    if stats.nutcracker_count != 0 {
+    if stats.has_available_shotguns {
         values.push((
             SHOTGUNS_COLLECTED_COLUMN.to_string(),
             row,
             json!(stats.shotguns_collected),
         ));
+    }
+    if stats.nutcracker_count != 0 {
         values.push((
             NUTCRACKER_COUNT_COLUMN.to_string(),
             row,
             json!(stats.nutcracker_count),
         ));
     }
-    if stats.butler_count != 0 {
+    if stats.has_available_knives {
         values.push((
             KNIVES_COLLECTED_COLUMN.to_string(),
             row,
             json!(stats.knives_collected),
         ));
+    }
+    if stats.butler_count != 0 {
         values.push((
             BUTLER_COUNT_COLUMN.to_string(),
             row,
@@ -462,6 +500,9 @@ fn build_value_updates(
     }
     if stats.value_sold != 0 {
         values.push((VALUE_SOLD_COLUMN.to_string(), row, json!(stats.value_sold)));
+    }
+    if stats.gift_bonus != 0 {
+        values.push((GIFT_BONUS_COLUMN.to_string(), row, json!(stats.gift_bonus)));
     }
     if stats.new_quota != 0 {
         values.push((NEW_QUOTA_COLUMN.to_string(), row, json!(stats.new_quota)));
@@ -500,21 +541,11 @@ async fn write_rich_cells(
             sid_type,
         ));
     }
-    if let Some(meteor_shower_time) = &stats.meteor_shower_time {
-        requests.push(value_with_note_request(
-            sheet_id,
-            METEOR_SHOWER_TIME_COLUMN,
-            row,
-            json!(stats.has_meteor_shower),
-            meteor_shower_time,
-        ));
-    }
-
     for (steam_id, player) in object_at(raw_stats, &["Players"]) {
         let Some(column) = player_columns.get(&steam_id) else {
             continue;
         };
-        let Some(note) = player_death_note(&player) else {
+        let Some(note) = player_death_note(&player, raw_stats) else {
             continue;
         };
         let status = stats
@@ -540,7 +571,19 @@ async fn write_rich_cells(
         ));
     }
 
-    if let Some(note) = enemy_spawn_times_note(raw_stats, "Nutcracker") {
+    if is_version_45_or_49(raw_stats) {
+        if let Some(note) = collected_values_note(raw_stats, &["ShotgunInfo", "Collected"]) {
+            requests.push(note_request(
+                sheet_id,
+                SHOTGUNS_COLLECTED_COLUMN,
+                row,
+                &note,
+            ));
+        }
+        if let Some(note) = nut_spawn_available_note(raw_stats) {
+            requests.push(note_request(sheet_id, NUTCRACKER_COUNT_COLUMN, row, &note));
+        }
+    } else if let Some(note) = enemy_spawn_times_note(raw_stats, "Nutcracker") {
         requests.push(note_request(sheet_id, NUTCRACKER_COUNT_COLUMN, row, &note));
     }
     if let Some(note) = enemy_spawn_times_note(raw_stats, "Butler") {
@@ -548,6 +591,9 @@ async fn write_rich_cells(
     }
     if let Some(note) = missed_items_note(raw_stats) {
         requests.push(note_request(sheet_id, MISSED_ITEMS_NOTE_COLUMN, row, &note));
+    }
+    if let Some(note) = hazard_note(raw_stats) {
+        requests.push(note_request(sheet_id, INTERIOR_COLUMN, row, &note));
     }
 
     if requests.is_empty() {
@@ -566,6 +612,7 @@ async fn handle_gordion(
 ) -> Result<(), String> {
     let value_sold = intish_at(stats, &["ValueSold"]);
     let new_quota = intish_at(stats, &["NewQuota"]);
+    let gift_bonus = gift_bonus_total(stats);
     let target_line = run_block_start_row(target_row);
     let mut updates = vec![];
 
@@ -589,6 +636,22 @@ async fn handle_gordion(
             NEW_QUOTA_COLUMN.to_string(),
             target_line + 3,
             json!(new_quota),
+        ));
+    }
+    if gift_bonus != 0 && target_row > 1 {
+        let gift_row = target_row - 1;
+        let current_value = read_number(
+            client,
+            token,
+            spreadsheet_id,
+            sheet_name,
+            &format!("{GIFT_BONUS_COLUMN}{gift_row}"),
+        )
+        .await?;
+        updates.push((
+            GIFT_BONUS_COLUMN.to_string(),
+            gift_row,
+            number_value(current_value + gift_bonus as f64),
         ));
     }
     if updates.is_empty() {
@@ -625,6 +688,161 @@ async fn add_lost_scraps_to_total(
             LOST_SCRAP_TOTAL_COLUMN.to_string(),
             LOST_SCRAP_TOTAL_ROW,
             number_value(current_value + lost_total as f64),
+        )],
+    )
+    .await
+}
+
+async fn update_hazard_totals(
+    client: &reqwest::Client,
+    token: &str,
+    spreadsheet_id: &str,
+    sheet_name: &str,
+    target_row: usize,
+    stats: &Value,
+) -> Result<(), String> {
+    if target_row <= 6
+        || value_at(stats, &["HazardInfo"])
+            .map(Value::is_null)
+            .unwrap_or(true)
+    {
+        return Ok(());
+    }
+
+    let turret_count = intish_at(stats, &["HazardInfo", "TurretCount"]);
+    let landmine_count = intish_at(stats, &["HazardInfo", "LandmineCount"]);
+    let spiketrap_count = intish_at(stats, &["HazardInfo", "SpiketrapCount"]);
+
+    let current_turret_total = read_total_from_cell(
+        client,
+        token,
+        spreadsheet_id,
+        sheet_name,
+        &format!("{HAZARD_TOTAL_COLUMN}{TURRET_TOTAL_ROW}"),
+    )
+    .await?;
+    let current_landmine_total = read_total_from_cell(
+        client,
+        token,
+        spreadsheet_id,
+        sheet_name,
+        &format!("{HAZARD_TOTAL_COLUMN}{LANDMINE_TOTAL_ROW}"),
+    )
+    .await?;
+    let current_spiketrap_total = read_total_from_cell(
+        client,
+        token,
+        spreadsheet_id,
+        sheet_name,
+        &format!("{HAZARD_TOTAL_COLUMN}{SPIKETRAP_TOTAL_ROW}"),
+    )
+    .await?;
+
+    let counted_days = (target_row - 6) as f64;
+    let new_turret_total = current_turret_total + turret_count;
+    let new_landmine_total = current_landmine_total + landmine_count;
+    let new_spiketrap_total = current_spiketrap_total + spiketrap_count;
+
+    batch_write_cells_user_entered(
+        client,
+        token,
+        spreadsheet_id,
+        sheet_name,
+        vec![
+            (
+                HAZARD_TOTAL_COLUMN.to_string(),
+                TURRET_TOTAL_ROW,
+                json!(format!(
+                    "{}/{:.2}",
+                    new_turret_total,
+                    new_turret_total as f64 / counted_days
+                )),
+            ),
+            (
+                HAZARD_TOTAL_COLUMN.to_string(),
+                LANDMINE_TOTAL_ROW,
+                json!(format!(
+                    "{}/{:.2}",
+                    new_landmine_total,
+                    new_landmine_total as f64 / counted_days
+                )),
+            ),
+            (
+                HAZARD_TOTAL_COLUMN.to_string(),
+                SPIKETRAP_TOTAL_ROW,
+                json!(format!(
+                    "{}/{:.2}",
+                    new_spiketrap_total,
+                    new_spiketrap_total as f64 / counted_days
+                )),
+            ),
+        ],
+    )
+    .await
+}
+
+async fn read_total_from_cell(
+    client: &reqwest::Client,
+    token: &str,
+    spreadsheet_id: &str,
+    sheet_name: &str,
+    cell: &str,
+) -> Result<i64, String> {
+    let range = format!("{}!{cell}", quote_sheet_name(sheet_name));
+    let data = read_range(client, token, spreadsheet_id, &range).await?;
+    Ok(data
+        .get("values")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .and_then(Value::as_array)
+        .and_then(|cells| cells.first())
+        .map(parse_total_average_cell)
+        .unwrap_or(0))
+}
+
+fn parse_total_average_cell(value: &Value) -> i64 {
+    let text = value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| value.to_string());
+    let total = text.split('/').next().unwrap_or_default().replace(',', ".");
+    total
+        .trim()
+        .parse::<f64>()
+        .map(|value| value as i64)
+        .unwrap_or(0)
+}
+
+async fn add_old_giftbox_extra_to_previous_day(
+    client: &reqwest::Client,
+    token: &str,
+    spreadsheet_id: &str,
+    sheet_name: &str,
+    target_row: usize,
+    stats: &Value,
+) -> Result<(), String> {
+    let extra = intish_at(stats, &["ExtraFromOldGiftbox"]);
+    if extra == 0 || target_row <= START_ROW {
+        return Ok(());
+    }
+    let previous_day_row = target_row - 1;
+    let current_value = read_number(
+        client,
+        token,
+        spreadsheet_id,
+        sheet_name,
+        &format!("{GIFT_BONUS_COLUMN}{previous_day_row}"),
+    )
+    .await?;
+    batch_write_cells_user_entered(
+        client,
+        token,
+        spreadsheet_id,
+        sheet_name,
+        vec![(
+            GIFT_BONUS_COLUMN.to_string(),
+            previous_day_row,
+            number_value(current_value + extra as f64),
         )],
     )
     .await
@@ -668,7 +886,6 @@ fn row_values_with_notes_request(
     cells: Vec<(Value, String)>,
 ) -> Value {
     let column_index = column_to_index(column);
-    let has_notes = cells.iter().any(|(_, note)| !note.is_empty());
     let values = cells
         .into_iter()
         .map(|(value, note)| {
@@ -679,11 +896,6 @@ fn row_values_with_notes_request(
             cell
         })
         .collect::<Vec<_>>();
-    let fields = if has_notes {
-        "userEnteredValue,note"
-    } else {
-        "userEnteredValue"
-    };
     json!({
         "updateCells": {
             "range": {
@@ -696,7 +908,7 @@ fn row_values_with_notes_request(
             "rows": [{
                 "values": values
             }],
-            "fields": fields
+            "fields": "userEnteredValue,note"
         }
     })
 }
@@ -799,7 +1011,7 @@ fn died_before_ship_leave_cutoff(player: &Value, takeoff_time: &str) -> bool {
     matches!((death_minutes, limit_minutes), (Some(death), Some(limit)) if death <= limit)
 }
 
-fn player_death_note(player: &Value) -> Option<String> {
+fn player_death_note(player: &Value, stats: &Value) -> Option<String> {
     if player.get("Alive").and_then(Value::as_bool) == Some(true)
         || player.get("Disconnected").and_then(Value::as_bool) == Some(true)
     {
@@ -813,7 +1025,7 @@ fn player_death_note(player: &Value) -> Option<String> {
     )
     .trim()
     .to_string();
-    let death_time = strip_apostrophe(
+    let mut death_time = strip_apostrophe(
         player
             .get("TimeOfDeath")
             .and_then(Value::as_str)
@@ -824,7 +1036,62 @@ fn player_death_note(player: &Value) -> Option<String> {
     if cause.is_empty() && death_time.is_empty() {
         return None;
     }
-    Some(format!("Cause: {cause}\nTime: {death_time}"))
+    if cause == "Abandoned" {
+        death_time = "11:57 PM".to_string();
+    }
+
+    let mut lines = vec![format!("Cause: {cause}"), format!("Time: {death_time}")];
+    let indoor_before_death = spawns_before_death(stats, &["IndoorSpawns"], &death_time);
+    if !indoor_before_death.is_empty() {
+        lines.push(String::new());
+        lines.push("Inside spawns before death:".to_string());
+        lines.extend(indoor_before_death);
+    }
+    let night_before_death = spawns_before_death(stats, &["NightTimeSpawns"], &death_time);
+    if !night_before_death.is_empty() {
+        lines.push(String::new());
+        lines.push("Night outside spawns before death:".to_string());
+        lines.extend(night_before_death);
+    }
+    Some(lines.join("\n"))
+}
+
+fn spawns_before_death(stats: &Value, path: &[&str], death_time: &str) -> Vec<String> {
+    let Some(death_minutes) = parse_time_to_minutes(death_time) else {
+        return vec![];
+    };
+    array_at(stats, path)
+        .iter()
+        .filter(|spawn| {
+            spawn
+                .get("SpawnTime")
+                .and_then(Value::as_str)
+                .and_then(parse_time_to_minutes)
+                .map(|spawn_minutes| spawn_minutes <= death_minutes)
+                .unwrap_or(false)
+        })
+        .map(format_spawn_note)
+        .collect()
+}
+
+fn format_spawn_note(spawn: &Value) -> String {
+    let enemy = spawn
+        .get("Enemy")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let spawn_time = spawn
+        .get("SpawnTime")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut note = format!("{enemy} - {spawn_time}");
+    if let Some(death_time) = spawn
+        .get("TimeOfDeath")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        note.push_str(&format!(" / died {death_time}"));
+    }
+    note
 }
 
 fn enemy_spawn_times_note(stats: &Value, enemy: &str) -> Option<String> {
@@ -838,8 +1105,58 @@ fn enemy_spawn_times_note(stats: &Value, enemy: &str) -> Option<String> {
     (!times.is_empty()).then(|| format!("Spawn times:\n{}", times.join("\n")))
 }
 
+fn is_version_45_or_49(stats: &Value) -> bool {
+    let version = string_at(stats, &["Version"]);
+    let version = version.trim_start_matches('V').trim_start_matches('v');
+    matches!(version.parse::<i64>(), Ok(45 | 49))
+}
+
+fn collected_values_note(stats: &Value, path: &[&str]) -> Option<String> {
+    let values = intish_array_any(stats, &[path]);
+    (!values.is_empty()).then(|| {
+        format!(
+            "Collected:\n{}",
+            values
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })
+}
+
+fn nut_spawn_available_note(stats: &Value) -> Option<String> {
+    let available_shotguns = intish_array_any(stats, &[&["ShotgunInfo", "Available"][..]]);
+    let lines = array_at(stats, &["IndoorSpawns"])
+        .iter()
+        .filter(|spawn| spawn.get("Enemy").and_then(Value::as_str) == Some("Nutcracker"))
+        .enumerate()
+        .map(|(index, spawn)| {
+            let spawn_time = spawn
+                .get("SpawnTime")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let mut line = spawn_time.to_string();
+            if let Some(value) = available_shotguns.get(index) {
+                line.push_str(&format!(" : {value}"));
+            }
+            if let Some(death_time) = spawn
+                .get("TimeOfDeath")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+            {
+                line.push_str(&format!(" / died {death_time}"));
+            }
+            line
+        })
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
 fn missed_items_note(stats: &Value) -> Option<String> {
-    let mut missed_by_type: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut inside_by_type: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut outside_by_type: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for item in array_at(stats, &["MissedItems"]) {
         let item_type = item
             .get("ItemType")
@@ -857,21 +1174,57 @@ fn missed_items_note(stats: &Value) -> Option<String> {
         if item.get("CollectedOnPreviousDay").and_then(Value::as_bool) == Some(true) {
             value_text.push_str("(lost)");
         }
-        missed_by_type
+
+        let y_position = item
+            .get("DespawnPosition")
+            .and_then(Value::as_array)
+            .and_then(|position| position.get(1))
+            .map(value_as_f64)
+            .unwrap_or(0.0);
+        let target = if y_position <= -100.0 {
+            &mut inside_by_type
+        } else {
+            &mut outside_by_type
+        };
+        target
             .entry(item_type.to_string())
             .or_default()
             .push(value_text);
     }
-    if missed_by_type.is_empty() {
+    if inside_by_type.is_empty() && outside_by_type.is_empty() {
         return None;
     }
-    Some(
-        missed_by_type
+    let mut sections = vec![];
+    if !inside_by_type.is_empty() {
+        sections.push(missed_item_section("Inside :", inside_by_type));
+    }
+    if !outside_by_type.is_empty() {
+        sections.push(missed_item_section("Outside :", outside_by_type));
+    }
+    Some(sections.join("\n\n"))
+}
+
+fn missed_item_section(label: &str, items: BTreeMap<String, Vec<String>>) -> String {
+    let mut lines = vec![label.to_string()];
+    lines.extend(
+        items
             .into_iter()
-            .map(|(item_type, values)| format!("{item_type} : {}", values.join(",")))
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
+            .map(|(item_type, values)| format!("{item_type} : {}", values.join(","))),
+    );
+    lines.join("\n")
+}
+
+fn hazard_note(stats: &Value) -> Option<String> {
+    let hazard_info = value_at(stats, &["HazardInfo"])?;
+    if hazard_info.is_null() {
+        return None;
+    }
+    Some(format!(
+        "Turrets: {}\nLandmines: {}\nSpiketraps: {}",
+        intish_at(stats, &["HazardInfo", "TurretCount"]),
+        intish_at(stats, &["HazardInfo", "LandmineCount"]),
+        intish_at(stats, &["HazardInfo", "SpiketrapCount"])
+    ))
 }
 
 fn lost_scrap_total(stats: &Value) -> i64 {
@@ -880,6 +1233,41 @@ fn lost_scrap_total(stats: &Value) -> i64 {
         .filter(|item| item.get("CollectedOnPreviousDay").and_then(Value::as_bool) == Some(true))
         .map(|item| item.get("Value").map(value_as_i64).unwrap_or(0))
         .sum()
+}
+
+fn gift_bonus_total(stats: &Value) -> i64 {
+    let opened_bonus: i64 = array_at_any(stats, &[&["GiftBoxesOpened"][..], &["GiftBoxes"][..]])
+        .iter()
+        .map(|gift| gift_new_scrap_value(gift) - gift_original_value(gift))
+        .sum();
+    let missed_bonus: i64 = array_at(stats, &["MissedItems"])
+        .iter()
+        .filter(|item| item.get("ItemType").and_then(Value::as_str) == Some("Gift box"))
+        .map(|item| {
+            intish_item_at(item, "ScrapInsideGiftValue")
+                - item.get("Value").map(value_as_i64).unwrap_or(0)
+        })
+        .sum();
+    opened_bonus + missed_bonus + intish_at(stats, &["ExtraFromOldGift"])
+}
+
+fn gift_new_scrap_value(gift: &Value) -> i64 {
+    value_at_any(gift, &[&["NewScrapValue"][..], &["GiftValue"][..]])
+        .map(value_as_i64)
+        .unwrap_or(0)
+}
+
+fn gift_original_value(gift: &Value) -> i64 {
+    value_at_any(
+        gift,
+        &[&["Value"][..], &["GiftScrapValue"][..], &["ScrapValue"][..]],
+    )
+    .map(value_as_i64)
+    .unwrap_or(0)
+}
+
+fn intish_item_at(item: &Value, key: &str) -> i64 {
+    item.get(key).map(value_as_i64).unwrap_or(0)
 }
 
 fn run_block_start_row(current_row: usize) -> usize {
@@ -963,12 +1351,35 @@ fn value_as_i64(value: &Value) -> i64 {
     value_as_i64_option(value).unwrap_or(0)
 }
 
+fn value_as_f64(value: &Value) -> f64 {
+    value
+        .as_f64()
+        .or_else(|| {
+            value.as_str().and_then(|text| {
+                strip_apostrophe(text)
+                    .trim()
+                    .replace(',', ".")
+                    .parse::<f64>()
+                    .ok()
+            })
+        })
+        .unwrap_or(0.0)
+}
+
 fn value_as_i64_option(value: &Value) -> Option<i64> {
-    value.as_i64().or_else(|| {
-        value
-            .as_str()
-            .and_then(|text| strip_apostrophe(text).trim().parse::<i64>().ok())
-    })
+    value
+        .as_i64()
+        .or_else(|| value.as_f64().map(|value| value as i64))
+        .or_else(|| {
+            value.as_str().and_then(|text| {
+                strip_apostrophe(text)
+                    .trim()
+                    .replace(',', ".")
+                    .parse::<f64>()
+                    .ok()
+                    .map(|value| value as i64)
+            })
+        })
 }
 
 fn column_to_index(column: &str) -> usize {
@@ -1087,6 +1498,96 @@ mod tests {
         assert_eq!(normalized.egg_value, Some(30));
         assert_eq!(normalized.shotguns_collected, 1);
         assert_eq!(normalized.knives_collected, 2);
+    }
+
+    #[test]
+    fn gift_boxes_write_bonus_to_ak_from_new_scrap_minus_value() {
+        let stats = json!({
+            "GiftBoxesOpened": [
+                { "NewScrapValue": 162, "Value": 115, "Collected": true },
+                { "NewScrapValue": 39, "Value": 14, "Collected": false }
+            ]
+        });
+
+        let normalized = NormalizedStats::from_stats(&stats);
+        let updates = build_value_updates(&normalized, &HashMap::new(), 7);
+
+        assert_eq!(normalized.gift_bonus, 72);
+        assert_eq!(cell_value(&updates, GIFT_BONUS_COLUMN), Some(&json!(72)));
+    }
+
+    #[test]
+    fn gift_boxes_are_not_added_to_lost_scrap_total() {
+        let stats = json!({
+            "MissedItems": [
+                { "Value": 30, "CollectedOnPreviousDay": true }
+            ],
+            "GiftBoxesOpened": [
+                { "NewScrapValue": 162, "Value": 26 }
+            ]
+        });
+
+        assert_eq!(lost_scrap_total(&stats), 30);
+    }
+
+    #[test]
+    fn bottom_line_includes_available_shotgun_values() {
+        let stats = json!({
+            "BottomLine": 500,
+            "ShotgunInfo": { "Available": [60, 70], "Collected": [] }
+        });
+
+        let normalized = NormalizedStats::from_stats(&stats);
+        let updates = build_value_updates(&normalized, &HashMap::new(), 7);
+
+        assert_eq!(cell_value(&updates, BOTTOM_LINE_COLUMN), Some(&json!(630)));
+        assert_eq!(
+            cell_value(&updates, SHOTGUNS_COLLECTED_COLUMN),
+            Some(&json!(0))
+        );
+    }
+
+    #[test]
+    fn missed_items_note_splits_inside_and_outside() {
+        let stats = json!({
+            "MissedItems": [
+                { "ItemType": "Cash register", "Value": 80, "DespawnPosition": [0, -120, 0] },
+                { "ItemType": "Gift box", "Value": 20, "DespawnPosition": [0, 2, 0], "CollectedOnPreviousDay": true }
+            ]
+        });
+
+        let note = missed_items_note(&stats).unwrap();
+
+        assert!(note.contains("Inside :\nCash register : 80"));
+        assert!(note.contains("Outside :\nGift box : 20(lost)"));
+    }
+
+    #[test]
+    fn player_death_note_includes_spawns_before_death() {
+        let stats = json!({
+            "Players": {},
+            "IndoorSpawns": [
+                { "Enemy": "Bracken", "SpawnTime": "9:00 PM" },
+                { "Enemy": "Coil-head", "SpawnTime": "11:00 PM" }
+            ],
+            "NightTimeSpawns": [
+                { "Enemy": "Earth Leviathan", "SpawnTime": "9:30 PM", "TimeOfDeath": "10:00 PM" }
+            ]
+        });
+        let player = json!({
+            "Alive": false,
+            "Disconnected": false,
+            "CauseOfDeath": "Forest Giant",
+            "TimeOfDeath": "10:00 PM"
+        });
+
+        let note = player_death_note(&player, &stats).unwrap();
+
+        assert!(note.contains("Inside spawns before death:\nBracken - 9:00 PM"));
+        assert!(!note.contains("Coil-head - 11:00 PM"));
+        assert!(note.contains(
+            "Night outside spawns before death:\nEarth Leviathan - 9:30 PM / died 10:00 PM"
+        ));
     }
 
     #[test]

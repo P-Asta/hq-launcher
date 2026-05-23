@@ -8,7 +8,8 @@ use crate::lcstats_autosheet::sheets::{
     first_empty_row_from, get_sheet_id, number_value, quote_sheet_name, read_number,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, intish_value, object_at, string_at, strip_moon_number, value_at,
+    array_at, array_at_any, intish_value, object_at, players_at, string_at, strip_moon_number,
+    value_at,
 };
 
 const CHECK_COLUMN: &str = "K";
@@ -220,7 +221,7 @@ async fn setup_or_match_player_columns(
         }
     }
 
-    let players = object_at(stats, &["Players"]);
+    let players = players_at(stats);
     let mut player_columns = HashMap::new();
     if existing_slots.is_empty() {
         let mut updates = vec![];
@@ -243,7 +244,7 @@ async fn setup_or_match_player_columns(
         batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, updates).await?;
     } else {
         let mut updates = vec![];
-        for steam_id in players.keys() {
+        for (steam_id, player) in &players {
             if let Some(column) = existing_slots.get(steam_id) {
                 player_columns.insert(steam_id.clone(), column.clone());
                 if let Some((index, _)) = PLAYER_COLUMNS
@@ -257,9 +258,8 @@ async fn setup_or_match_player_columns(
                         .unwrap_or_default()
                         .trim();
                     if current_name.is_empty() {
-                        let name = players
-                            .get(steam_id)
-                            .and_then(|player| player.get("Name"))
+                        let name = player
+                            .get("Name")
                             .and_then(Value::as_str)
                             .unwrap_or_default();
                         updates.push((
@@ -323,7 +323,7 @@ fn build_values(
     }
 
     let takeoff_time = string_at(stats, &["TakeOffTime"]);
-    for (steam_id, player) in object_at(stats, &["Players"]) {
+    for (steam_id, player) in players_at(stats) {
         if let Some(column) = player_columns.get(&steam_id) {
             values.push((
                 column.clone(),
@@ -527,12 +527,9 @@ fn value_with_note_request(
 ) -> Value {
     let column_index = column_to_index(column);
     let mut cell = json!({ "userEnteredValue": google_user_value(value) });
-    let fields = if note.is_empty() {
-        "userEnteredValue"
-    } else {
+    if !note.is_empty() {
         cell["note"] = json!(note);
-        "userEnteredValue,note"
-    };
+    }
     json!({
         "updateCells": {
             "range": {
@@ -545,7 +542,7 @@ fn value_with_note_request(
             "rows": [{
                 "values": [cell]
             }],
-            "fields": fields
+            "fields": "userEnteredValue,note"
         }
     })
 }

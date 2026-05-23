@@ -1,6 +1,15 @@
 ## Version (YYYY-MM-DD)
 - Content
 
+# 1.11.0 (2026-05-25)
+- Added **SerenadeSheet** support for LCStatsTracker AutoSheet.
+- Added more **Custom Layout** options, including bee collected, outside items, shotgun/knife notes, app-less, late-death state, player names as notes, gift filtering, and gift net-only handling.
+- Added a search box for **Custom Layout** settings and improved the settings grid so checkbox controls no longer overlap nearby inputs in narrow panels.
+- Improved **WafrodyAutoSheet** support for gift box bonuses, old gift box extras, hazard totals, shotgun/nutcracker notes, split inside/outside missed-item notes, and death notes with spawn details.
+- AutoSheet now clears stale cell notes when a value is written without a new note, across all layouts.
+- Player state columns now use LCStatsTracker player IDs for stable ordering when available.
+- Improved the **LCStatsTracker AutoSheet** listener so streaming payloads are parsed as they arrive, reconnects continue without a 12-hour stop, and slow writes time out instead of blocking the listener.
+
 # 1.10.11 (2026-05-19)
 - HOTFIX: seed X bug fix
 

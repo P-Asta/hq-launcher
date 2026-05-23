@@ -129,6 +129,14 @@ pub async fn write_cells(
     start_cell: &str,
     values: Vec<Vec<Value>>,
 ) -> Result<(), String> {
+    if values.is_empty() {
+        return Ok(());
+    }
+    let sheet_id = get_sheet_id(client, token, spreadsheet_id, sheet_name).await?;
+    let (start_column_index, start_row) = parse_cell_reference(start_cell)
+        .ok_or_else(|| format!("Invalid sheet cell reference: {start_cell}"))?;
+    let note_clear_requests =
+        rows_note_clear_requests(sheet_id, start_column_index, start_row, &values);
     let range = format!("{}!{start_cell}", quote_sheet_name(sheet_name));
     let url = format!(
         "https://sheets.googleapis.com/v4/spreadsheets/{}/values/{}?valueInputOption=RAW&fields=updatedCells",
@@ -143,7 +151,7 @@ pub async fn write_cells(
         .await
         .map_err(|e| e.to_string())?;
     let _ = parse_google_response(response, "write Google Sheets range").await?;
-    Ok(())
+    batch_update_spreadsheet(client, token, spreadsheet_id, note_clear_requests).await
 }
 
 pub async fn batch_write_cells_user_entered(
@@ -156,6 +164,8 @@ pub async fn batch_write_cells_user_entered(
     if values.is_empty() {
         return Ok(());
     }
+    let sheet_id = get_sheet_id(client, token, spreadsheet_id, sheet_name).await?;
+    let note_clear_requests = compact_note_clear_requests(sheet_id, &values)?;
     let data = compact_value_ranges(sheet_name, values)?;
     if data.is_empty() {
         return Ok(());
@@ -172,7 +182,7 @@ pub async fn batch_write_cells_user_entered(
         .await
         .map_err(|e| e.to_string())?;
     let _ = parse_google_response(response, "batch write Google Sheets values").await?;
-    Ok(())
+    batch_update_spreadsheet(client, token, spreadsheet_id, note_clear_requests).await
 }
 
 pub async fn batch_update_spreadsheet(
@@ -333,6 +343,122 @@ fn value_range(
     json!({ "range": range, "values": [values] })
 }
 
+fn compact_note_clear_requests(
+    sheet_id: i64,
+    values: &[(String, usize, Value)],
+) -> Result<Vec<Value>, String> {
+    let mut cells = BTreeMap::new();
+    for (column, row, _) in values {
+        let column_index =
+            column_to_index(column).ok_or_else(|| format!("Invalid sheet column: {column}"))?;
+        cells.insert((*row, column_index), ());
+    }
+    Ok(group_note_clear_requests(sheet_id, cells.into_keys()))
+}
+
+fn rows_note_clear_requests(
+    sheet_id: i64,
+    start_column_index: usize,
+    start_row: usize,
+    values: &[Vec<Value>],
+) -> Vec<Value> {
+    values
+        .iter()
+        .enumerate()
+        .filter(|(_, row_values)| !row_values.is_empty())
+        .map(|(row_index, row_values)| {
+            row_note_clear_request(
+                sheet_id,
+                start_row + row_index,
+                start_column_index,
+                row_values.len(),
+            )
+        })
+        .collect()
+}
+
+fn group_note_clear_requests<I>(sheet_id: i64, cells: I) -> Vec<Value>
+where
+    I: IntoIterator<Item = (usize, usize)>,
+{
+    let mut requests = vec![];
+    let mut current_row = 0;
+    let mut start_column = 0;
+    let mut next_column = 0;
+
+    for (row, column) in cells {
+        if next_column == 0 {
+            current_row = row;
+            start_column = column;
+            next_column = column + 1;
+            continue;
+        }
+        if row == current_row && column == next_column {
+            next_column += 1;
+            continue;
+        }
+        requests.push(row_note_clear_request(
+            sheet_id,
+            current_row,
+            start_column,
+            next_column - start_column,
+        ));
+        current_row = row;
+        start_column = column;
+        next_column = column + 1;
+    }
+
+    if next_column != 0 {
+        requests.push(row_note_clear_request(
+            sheet_id,
+            current_row,
+            start_column,
+            next_column - start_column,
+        ));
+    }
+
+    requests
+}
+
+fn row_note_clear_request(
+    sheet_id: i64,
+    row: usize,
+    start_column_index: usize,
+    column_count: usize,
+) -> Value {
+    let cell_values = (0..column_count).map(|_| json!({})).collect::<Vec<_>>();
+    json!({
+        "updateCells": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": row.saturating_sub(1),
+                "endRowIndex": row,
+                "startColumnIndex": start_column_index,
+                "endColumnIndex": start_column_index + column_count
+            },
+            "rows": [{ "values": cell_values }],
+            "fields": "note"
+        }
+    })
+}
+
+fn parse_cell_reference(cell: &str) -> Option<(usize, usize)> {
+    let mut column = String::new();
+    let mut row = String::new();
+    for ch in cell.trim().chars().filter(|ch| *ch != '$') {
+        if ch.is_ascii_alphabetic() && row.is_empty() {
+            column.push(ch);
+        } else if ch.is_ascii_digit() {
+            row.push(ch);
+        } else {
+            return None;
+        }
+    }
+    let column_index = column_to_index(&column)?;
+    let row = row.parse::<usize>().ok().filter(|row| *row > 0)?;
+    Some((column_index, row))
+}
+
 fn column_to_index(column: &str) -> Option<usize> {
     let mut index = 0usize;
     let mut seen = false;
@@ -369,4 +495,50 @@ fn url_encode(value: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn note_clear_requests_clear_notes_without_touching_values() {
+        let request = row_note_clear_request(123, 7, 2, 2);
+        let update = &request["updateCells"];
+
+        assert_eq!(update["fields"], json!("note"));
+        assert_eq!(update["range"]["startRowIndex"], json!(6));
+        assert_eq!(update["range"]["startColumnIndex"], json!(2));
+        assert_eq!(update["range"]["endColumnIndex"], json!(4));
+        assert_eq!(update["rows"][0]["values"], json!([{}, {}]));
+        assert!(update["rows"][0]["values"][0].get("note").is_none());
+    }
+
+    #[test]
+    fn compact_note_clear_requests_group_contiguous_cells() {
+        let values = vec![
+            ("B".to_string(), 4, json!(1)),
+            ("C".to_string(), 4, json!(true)),
+            ("E".to_string(), 4, json!("x")),
+        ];
+        let requests = compact_note_clear_requests(123, &values).unwrap();
+
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[0]["updateCells"]["range"]["endColumnIndex"],
+            json!(3)
+        );
+        assert_eq!(
+            requests[1]["updateCells"]["range"]["startColumnIndex"],
+            json!(4)
+        );
+    }
+
+    #[test]
+    fn parses_start_cell_reference() {
+        assert_eq!(parse_cell_reference("AA12"), Some((26, 12)));
+        assert_eq!(parse_cell_reference("$B$3"), Some((1, 3)));
+        assert_eq!(parse_cell_reference("12AA"), None);
+    }
 }

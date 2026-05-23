@@ -85,6 +85,35 @@ pub fn object_at(stats: &Value, path: &[&str]) -> std::collections::BTreeMap<Str
         .unwrap_or_default()
 }
 
+pub fn players_at(stats: &Value) -> Vec<(String, Value)> {
+    let mut players = object_at(stats, &["Players"])
+        .into_iter()
+        .collect::<Vec<_>>();
+    players.sort_by(|(left_key, left), (right_key, right)| {
+        player_id_sort_key(left_key, left)
+            .cmp(&player_id_sort_key(right_key, right))
+            .then_with(|| left_key.cmp(right_key))
+    });
+    players
+}
+
+fn player_id_sort_key(key: &str, player: &Value) -> (bool, i64) {
+    player
+        .get("PlayerID")
+        .or_else(|| player.get("PlayerId"))
+        .or_else(|| player.get("PlayerIndex"))
+        .and_then(|value| {
+            value.as_i64().or_else(|| {
+                value
+                    .as_str()
+                    .and_then(|text| text.trim_start_matches('\'').trim().parse::<i64>().ok())
+            })
+        })
+        .or_else(|| key.trim_start_matches('\'').trim().parse::<i64>().ok())
+        .map(|id| (false, id))
+        .unwrap_or((true, 0))
+}
+
 pub fn missed_item_count(stats: &Value) -> usize {
     array_at(stats, &["MissedItems"])
         .iter()
@@ -141,5 +170,53 @@ mod tests {
         let stats = json!({ "CollectedTotal": "'225" });
 
         assert_eq!(int_at(&stats, &["CollectedTotal"]), 225);
+    }
+
+    #[test]
+    fn players_are_sorted_by_player_id_before_object_key() {
+        let stats = json!({
+            "Players": {
+                "steam-c": { "Name": "C", "PlayerID": 2 },
+                "steam-a": { "Name": "A", "PlayerID": 0 },
+                "steam-b": { "Name": "B", "PlayerID": 1 }
+            }
+        });
+
+        let names = players_at(&stats)
+            .into_iter()
+            .map(|(_, player)| {
+                player
+                    .get("Name")
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn players_fall_back_to_numeric_object_keys() {
+        let stats = json!({
+            "Players": {
+                "10": { "Name": "C" },
+                "2": { "Name": "B" },
+                "1": { "Name": "A" }
+            }
+        });
+
+        let names = players_at(&stats)
+            .into_iter()
+            .map(|(_, player)| {
+                player
+                    .get("Name")
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["A", "B", "C"]);
     }
 }

@@ -6,7 +6,7 @@ use crate::lcstats_autosheet::sheets::{
     batch_update_spreadsheet, batch_write_cells_user_entered, first_empty_row_from, get_sheet_id,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, bool_at, intish_value, object_at, string_at, strip_moon_number,
+    array_at, array_at_any, bool_at, intish_value, players_at, string_at, strip_moon_number,
     value_at, value_at_any,
 };
 
@@ -286,12 +286,9 @@ async fn write_note_cells(
 fn value_with_note_request(sheet_id: i64, cell: &NoteCell, row: usize) -> Value {
     let column_index = column_to_index(cell.column);
     let mut value = json!({ "userEnteredValue": google_user_value(cell.value.clone()) });
-    let fields = if let Some(note) = cell.note.as_ref().filter(|note| !note.trim().is_empty()) {
+    if let Some(note) = cell.note.as_ref().filter(|note| !note.trim().is_empty()) {
         value["note"] = json!(note);
-        "userEnteredValue,note"
-    } else {
-        "userEnteredValue"
-    };
+    }
     json!({
         "updateCells": {
             "range": {
@@ -302,7 +299,7 @@ fn value_with_note_request(sheet_id: i64, cell: &NoteCell, row: usize) -> Value 
                 "endColumnIndex": column_index + 1
             },
             "rows": [{ "values": [value] }],
-            "fields": fields
+            "fields": "userEnteredValue,note"
         }
     })
 }
@@ -320,8 +317,9 @@ fn google_user_value(value: Value) -> Value {
 }
 
 fn normalize_players(stats: &Value) -> Vec<NormalizedPlayer> {
-    object_at(stats, &["Players"])
-        .into_values()
+    players_at(stats)
+        .into_iter()
+        .map(|(_, player)| player)
         .map(|player| {
             let alive = player
                 .get("Alive")

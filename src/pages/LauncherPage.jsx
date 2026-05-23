@@ -230,6 +230,7 @@ const LCSTATS_LAYOUTS = [
   // "AutoSheetModel",
   "BreadSheet",
   "WafrodyAutoSheet",
+  "SerenadeSheet",
   "CharlyAutoSheet",
   "Evilsheet",
   "MakuSheet 1.0",
@@ -253,6 +254,7 @@ const DEFAULT_CUSTOM_LCSTATS_LAYOUT = {
   apparatusColumn: "",
   beeAmountColumn: "J",
   splitHiveCount: false,
+  beehiveCollectedColumn: "",
   beeValueColumn: "K",
   cheapHiveColumn: "",
   expensiveHiveColumn: "",
@@ -270,6 +272,8 @@ const DEFAULT_CUSTOM_LCSTATS_LAYOUT = {
   realAvailableColumn: "",
   collectedNoExtraColumn: "",
   missingColumn: "Q",
+  filterCollectedGiftScrapFromMissing: true,
+  outsideItemsColumn: "",
   soldColumn: "X",
   sidColumn: "Y",
   sidWriteFalse: false,
@@ -280,6 +284,9 @@ const DEFAULT_CUSTOM_LCSTATS_LAYOUT = {
   turretColumn: "",
   landmineColumn: "",
   spiketrapColumn: "",
+  knifeColumn: "",
+  shotgunColumn: "",
+  appLessColumn: "",
   deathColumns: "AC,AD,AE,AF",
   playerNameColumns: "",
   playerNameRow: 1,
@@ -287,12 +294,15 @@ const DEFAULT_CUSTOM_LCSTATS_LAYOUT = {
   deadState: "X",
   missingState: "M",
   disconnectedState: "DC",
+  lateDeadState: "SX",
   deathNotesEnabled: true,
+  playerNamesAsNotes: false,
   fogColumn: "AG",
   fogWriteFalse: false,
   meteorColumn: "AH",
   meteorWriteFalse: false,
   giftsColumn: "AI",
+  giftBoxesNetOnly: false,
 };
 
 const DEFAULT_LCSTATS_SETTINGS = {
@@ -550,6 +560,7 @@ function normalizeCustomLcstatsLayout(layout = {}) {
     apparatusColumn: normalizeSheetColumn(source.apparatusColumn, ""),
     beeAmountColumn: normalizeSheetColumn(source.beeAmountColumn, ""),
     splitHiveCount: source.splitHiveCount === true,
+    beehiveCollectedColumn: normalizeSheetColumn(source.beehiveCollectedColumn, ""),
     beeValueColumn: normalizeSheetColumn(source.beeValueColumn, ""),
     cheapHiveColumn: normalizeSheetColumn(source.cheapHiveColumn, ""),
     expensiveHiveColumn: normalizeSheetColumn(source.expensiveHiveColumn, ""),
@@ -567,6 +578,9 @@ function normalizeCustomLcstatsLayout(layout = {}) {
     realAvailableColumn: normalizeSheetColumn(source.realAvailableColumn, ""),
     collectedNoExtraColumn: normalizeSheetColumn(source.collectedNoExtraColumn, ""),
     missingColumn: normalizeSheetColumn(source.missingColumn, ""),
+    filterCollectedGiftScrapFromMissing:
+      source.filterCollectedGiftScrapFromMissing !== false,
+    outsideItemsColumn: normalizeSheetColumn(source.outsideItemsColumn, ""),
     soldColumn: normalizeSheetColumn(source.soldColumn, ""),
     sidColumn: normalizeSheetColumn(source.sidColumn, ""),
     sidWriteFalse: source.sidWriteFalse === true,
@@ -577,6 +591,12 @@ function normalizeCustomLcstatsLayout(layout = {}) {
     turretColumn: normalizeSheetColumn(source.turretColumn, ""),
     landmineColumn: normalizeSheetColumn(source.landmineColumn, ""),
     spiketrapColumn: normalizeSheetColumn(source.spiketrapColumn, ""),
+    knifeColumn: normalizeSheetColumn(source.knifeColumn, ""),
+    shotgunColumn: normalizeSheetColumn(source.shotgunColumn, ""),
+    appLessColumn: normalizeSheetColumn(
+      source.appLessColumn ?? source.appyLessColumn,
+      ""
+    ),
     deathColumns: normalizeSheetColumnList(source.deathColumns, ""),
     playerNameColumns: normalizeSheetColumnList(source.playerNameColumns, ""),
     playerNameRow: Math.max(1, Math.floor(Number(source.playerNameRow) || 1)),
@@ -584,12 +604,15 @@ function normalizeCustomLcstatsLayout(layout = {}) {
     deadState: String(source.deadState ?? "X"),
     missingState: String(source.missingState ?? "M"),
     disconnectedState: String(source.disconnectedState ?? "DC"),
+    lateDeadState: String(source.lateDeadState ?? "SX"),
     deathNotesEnabled: source.deathNotesEnabled !== false,
+    playerNamesAsNotes: source.playerNamesAsNotes === true,
     fogColumn: normalizeSheetColumn(source.fogColumn, ""),
     fogWriteFalse: source.fogWriteFalse === true,
     meteorColumn: normalizeSheetColumn(source.meteorColumn, ""),
     meteorWriteFalse: source.meteorWriteFalse === true,
     giftsColumn: normalizeSheetColumn(source.giftsColumn, ""),
+    giftBoxesNetOnly: source.giftBoxesNetOnly === true,
   };
 }
 
@@ -1255,6 +1278,7 @@ export default function LauncherPage({
   const [customLayoutClipboardValid, setCustomLayoutClipboardValid] = useState(false);
   const [customLayoutMessage, setCustomLayoutMessage] = useState("");
   const [customLayoutMessageKind, setCustomLayoutMessageKind] = useState("success");
+  const [customLayoutSearch, setCustomLayoutSearch] = useState("");
   const [googleOauthStatus, setGoogleOauthStatus] = useState({
     authenticated: false,
     scope: null,
@@ -3819,7 +3843,7 @@ export default function LauncherPage({
     const sections = [
       {
         title: "Rows",
-        columns: "md:grid-cols-4",
+        columns: "grid-cols-[repeat(auto-fit,minmax(7.25rem,1fr))]",
         groups: [
           [
             ["Start row", "startRow", "3", "number"],
@@ -3832,7 +3856,7 @@ export default function LauncherPage({
       },
       {
         title: "Run",
-        columns: "md:grid-cols-4",
+        columns: "grid-cols-[repeat(auto-fit,minmax(7.25rem,1fr))]",
         groups: [
           [
             ["Quota", "quotaColumn", "B"],
@@ -3846,16 +3870,18 @@ export default function LauncherPage({
             ["Layout", "layoutColumn", "H"],
             ["Item count", "itemCountColumn", "I"],
             ["Apparatus", "apparatusColumn", ""],
+            ["App less", "appLessColumn", ""],
           ],
         ],
       },
       {
         title: "Scrap",
-        columns: "md:grid-cols-4",
+        columns: "grid-cols-[repeat(auto-fit,minmax(7.25rem,1fr))]",
         groups: [
           [
             ["Bee amount", "beeAmountColumn", "J"],
-            ["Split count", "splitHiveCount", "", "checkbox", "Near/far"],
+            ["Split count", "splitHiveCount", "", "checkbox", "Cheap/exp"],
+            ["Bee collected", "beehiveCollectedColumn", ""],
             ["Bee value", "beeValueColumn", "K"],
             ["Cheap hive", "cheapHiveColumn", ""],
             ["Exp hive", "expensiveHiveColumn", ""],
@@ -3889,25 +3915,36 @@ export default function LauncherPage({
           ],
           [
             ["Missing", "missingColumn", "Q"],
+            [
+              "Gift filter",
+              "filterCollectedGiftScrapFromMissing",
+              "",
+              "checkbox",
+              "Filter gifts",
+            ],
             ["Lost scrap", "lostScrapColumn", "AB"],
+            ["Outside items", "outsideItemsColumn", ""],
           ],
           [
             ["Sold", "soldColumn", "X"],
             ["Gifts", "giftsColumn", "AI"],
+            ["Gift net only", "giftBoxesNetOnly", "", "checkbox", "Net only"],
           ],
         ],
       },
       {
         title: "Events",
-        columns: "md:grid-cols-4",
+        columns: "grid-cols-[repeat(auto-fit,minmax(7.25rem,1fr))]",
         groups: [
           [
             ["Nutcracker", "nutColumn", "M"],
             ["Nut collect", "nutCollectColumn", ""],
+            ["Shotgun", "shotgunColumn", ""],
           ],
           [
             ["Butler", "butlerColumn", "N"],
             ["Butler collect", "butlerCollectColumn", ""],
+            ["Knife", "knifeColumn", ""],
           ],
           [
             ["SID", "sidColumn", "Y"],
@@ -3935,7 +3972,7 @@ export default function LauncherPage({
       },
       {
         title: "Players",
-        columns: "md:grid-cols-2",
+        columns: "grid-cols-[repeat(auto-fit,minmax(13rem,1fr))]",
         groups: [
           [
             ["Death state columns", "deathColumns", "AC,AD,AE,AF", "list"],
@@ -3947,13 +3984,38 @@ export default function LauncherPage({
           [
             ["Alive value", "aliveState", "S", "text"],
             ["Dead value", "deadState", "X", "text"],
+            ["Late death", "lateDeadState", "SX", "text"],
             ["Missing value", "missingState", "M", "text"],
             ["Disconnected value", "disconnectedState", "DC", "text"],
             ["Death reason notes", "deathNotesEnabled", "", "checkbox", "Use notes"],
+            ["Names as notes", "playerNamesAsNotes", "", "checkbox", "Use notes"],
           ],
         ],
       },
     ];
+    const customLayoutSearchQuery = customLayoutSearch.trim().toLowerCase();
+    const fieldMatchesSearch = (sectionTitle, field) => {
+      if (!customLayoutSearchQuery) return true;
+      const [label, key, placeholder, type, checkboxText] = field;
+      return [sectionTitle, label, key, placeholder, type, checkboxText]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(customLayoutSearchQuery));
+    };
+    const visibleSections = sections
+      .map((section) => {
+        if (!customLayoutSearchQuery) return section;
+        const sectionTitleMatches = section.title
+          .toLowerCase()
+          .includes(customLayoutSearchQuery);
+        if (sectionTitleMatches) return section;
+        const groups = (section.groups ?? [section.fields ?? []])
+          .map((group) =>
+            group.filter((field) => fieldMatchesSearch(section.title, field))
+          )
+          .filter((group) => group.length > 0);
+        return groups.length > 0 ? { ...section, groups } : null;
+      })
+      .filter(Boolean);
 
     return (
       <div className="space-y-3">
@@ -3996,6 +4058,26 @@ export default function LauncherPage({
             </Button>
           </div>
         </div>
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/40" />
+          <Input
+            value={customLayoutSearch}
+            disabled={disabled}
+            onChange={(event) => setCustomLayoutSearch(event.target.value)}
+            placeholder="Search custom settings"
+            className="pl-10 pr-9"
+          />
+          {customLayoutSearch ? (
+            <button
+              type="button"
+              className="absolute right-2 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-white/40 transition hover:bg-white/10 hover:text-white"
+              onClick={() => setCustomLayoutSearch("")}
+              aria-label="Clear custom settings search"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          ) : null}
+        </div>
         {customLayoutMessage ? (
           <div
             className={cn(
@@ -4008,8 +4090,14 @@ export default function LauncherPage({
             {customLayoutMessage}
           </div>
         ) : null}
-        {sections.map((section) => {
+        {visibleSections.length === 0 ? (
+          <div className="rounded-xl border border-panel-outline bg-white/[0.03] px-3 py-3 text-sm text-white/45">
+            No custom settings found.
+          </div>
+        ) : null}
+        {visibleSections.map((section) => {
           const open = customLayoutSectionOpen[section.title] ?? true;
+          const visibleOpen = customLayoutSearchQuery ? true : open;
           const groups = section.groups ?? [section.fields ?? []];
           const fieldCount = groups.reduce((count, group) => count + group.length, 0);
           return (
@@ -4028,7 +4116,7 @@ export default function LauncherPage({
                 <ChevronDown
                   className={cn(
                     "h-4 w-4 shrink-0 text-white/45 transition-transform",
-                    open ? "rotate-180" : ""
+                    visibleOpen ? "rotate-180" : ""
                   )}
                 />
                 <span>{section.title}</span>
@@ -4039,7 +4127,7 @@ export default function LauncherPage({
               <div
                 className={cn(
                   "oauth-expand custom-layout-expand mt-3",
-                  open ? "oauth-expand-open" : ""
+                  visibleOpen ? "oauth-expand-open" : ""
                 )}
               >
                 <div className="space-y-3">
@@ -4054,7 +4142,7 @@ export default function LauncherPage({
                             {label}
                           </label>
                           {type === "checkbox" ? (
-                            <label className="flex h-10 items-center gap-3 rounded-xl border border-panel-outline bg-white/5 px-3 text-sm text-white/70">
+                            <label className="flex h-10 min-w-0 items-center gap-2 overflow-hidden rounded-xl border border-panel-outline bg-white/5 px-3 text-sm text-white/70">
                               <Checkbox
                                 checked={!!customLayout[key]}
                                 disabled={disabled}
@@ -4062,7 +4150,9 @@ export default function LauncherPage({
                                   updateCustomLcstatsLayout({ [key]: !!checked })
                                 }
                               />
-                              <span>{checkboxText ?? "Enabled"}</span>
+                              <span className="min-w-0 truncate whitespace-nowrap">
+                                {checkboxText ?? "Enabled"}
+                              </span>
                             </label>
                           ) : type === "case" ? (
                             <Select

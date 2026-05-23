@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 
 use crate::google_oauth::{CustomLcStatsLayoutSettings, LcStatsSettings};
 use crate::lcstats_autosheet::layouts::CUSTOM_LAYOUT;
@@ -6,7 +7,7 @@ use crate::lcstats_autosheet::sheets::{
     batch_update_spreadsheet, batch_write_cells_user_entered, first_empty_row_from, get_sheet_id,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, bool_at, intish_value, object_at, string_at, strip_moon_number,
+    array_at, array_at_any, bool_at, intish_value, players_at, string_at, strip_moon_number,
     value_at, value_at_any,
 };
 
@@ -83,6 +84,7 @@ struct ResolvedCustomLayout {
     apparatus_column: Option<String>,
     bee_amount_column: Option<String>,
     split_hive_count: bool,
+    beehive_collected_column: Option<String>,
     bee_value_column: Option<String>,
     cheap_hive_column: Option<String>,
     expensive_hive_column: Option<String>,
@@ -100,6 +102,8 @@ struct ResolvedCustomLayout {
     real_available_column: Option<String>,
     collected_no_extra_column: Option<String>,
     missing_column: Option<String>,
+    filter_collected_gift_scrap_from_missing: bool,
+    outside_items_column: Option<String>,
     sold_column: Option<String>,
     sid_column: Option<String>,
     sid_write_false: bool,
@@ -110,6 +114,9 @@ struct ResolvedCustomLayout {
     turret_column: Option<String>,
     landmine_column: Option<String>,
     spiketrap_column: Option<String>,
+    knife_column: Option<String>,
+    shotgun_column: Option<String>,
+    app_less_column: Option<String>,
     death_columns: Vec<String>,
     player_name_columns: Vec<String>,
     player_name_row: usize,
@@ -117,12 +124,15 @@ struct ResolvedCustomLayout {
     dead_state: String,
     missing_state: String,
     disconnected_state: String,
+    late_dead_state: String,
     death_notes_enabled: bool,
+    player_names_as_notes: bool,
     fog_column: Option<String>,
     fog_write_false: bool,
     meteor_column: Option<String>,
     meteor_write_false: bool,
     gifts_column: Option<String>,
+    gift_boxes_net_only: bool,
 }
 
 impl ResolvedCustomLayout {
@@ -131,14 +141,15 @@ impl ResolvedCustomLayout {
         let collected_column = normalize_optional_column(&settings.collected_column);
         let available_column = normalize_optional_column(&settings.available_column);
         let quota_column = normalize_optional_column(&settings.quota_column);
+        let check_column = normalize_optional_column(&settings.check_column)
+            .or_else(|| moon_column.clone())
+            .or_else(|| collected_column.clone())
+            .or_else(|| available_column.clone())
+            .or_else(|| quota_column.clone())
+            .unwrap_or_else(|| "A".to_string());
         Self {
             start_row: settings.start_row.max(1),
-            check_column: normalize_optional_column(&settings.check_column)
-                .or_else(|| moon_column.clone())
-                .or_else(|| collected_column.clone())
-                .or_else(|| available_column.clone())
-                .or_else(|| quota_column.clone())
-                .unwrap_or_else(|| "A".to_string()),
+            check_column,
             text_case: normalize_text_case(&settings.text_case),
             quota_column,
             seed_column: normalize_optional_column(&settings.seed_column),
@@ -149,6 +160,7 @@ impl ResolvedCustomLayout {
             apparatus_column: normalize_optional_column(&settings.apparatus_column),
             bee_amount_column: normalize_optional_column(&settings.bee_amount_column),
             split_hive_count: settings.split_hive_count,
+            beehive_collected_column: normalize_optional_column(&settings.beehive_collected_column),
             bee_value_column: normalize_optional_column(&settings.bee_value_column),
             cheap_hive_column: normalize_optional_column(&settings.cheap_hive_column),
             expensive_hive_column: normalize_optional_column(&settings.expensive_hive_column),
@@ -168,6 +180,9 @@ impl ResolvedCustomLayout {
                 &settings.collected_no_extra_column,
             ),
             missing_column: normalize_optional_column(&settings.missing_column),
+            filter_collected_gift_scrap_from_missing: settings
+                .filter_collected_gift_scrap_from_missing,
+            outside_items_column: normalize_optional_column(&settings.outside_items_column),
             sold_column: normalize_optional_column(&settings.sold_column),
             sid_column: normalize_optional_column(&settings.sid_column),
             sid_write_false: settings.sid_write_false,
@@ -178,6 +193,9 @@ impl ResolvedCustomLayout {
             turret_column: normalize_optional_column(&settings.turret_column),
             landmine_column: normalize_optional_column(&settings.landmine_column),
             spiketrap_column: normalize_optional_column(&settings.spiketrap_column),
+            knife_column: normalize_optional_column(&settings.knife_column),
+            shotgun_column: normalize_optional_column(&settings.shotgun_column),
+            app_less_column: normalize_optional_column(&settings.app_less_column),
             death_columns: settings
                 .death_columns
                 .split(',')
@@ -193,12 +211,15 @@ impl ResolvedCustomLayout {
             dead_state: settings.dead_state.clone(),
             missing_state: settings.missing_state.clone(),
             disconnected_state: settings.disconnected_state.clone(),
+            late_dead_state: settings.late_dead_state.clone(),
             death_notes_enabled: settings.death_notes_enabled,
+            player_names_as_notes: settings.player_names_as_notes,
             fog_column: normalize_optional_column(&settings.fog_column),
             fog_write_false: settings.fog_write_false,
             meteor_column: normalize_optional_column(&settings.meteor_column),
             meteor_write_false: settings.meteor_write_false,
             gifts_column: normalize_optional_column(&settings.gifts_column),
+            gift_boxes_net_only: settings.gift_boxes_net_only,
         }
     }
 }
@@ -257,8 +278,10 @@ struct NormalizedStats {
     interior: String,
     item_count: i64,
     apparatus_spawned: bool,
+    app_less: Option<bool>,
     beehive_amount: String,
     beehive_value: String,
+    beehive_collected: String,
     cheap_hive_value: Option<i64>,
     expensive_hive_value: Option<i64>,
     egg_available: NoteCell,
@@ -272,6 +295,7 @@ struct NormalizedStats {
     real_available_total: i64,
     collected_no_extra: i64,
     missing: NoteCell,
+    outside_items: NoteCell,
     value_sold: i64,
     sid: NoteCell,
     infestation: NoteCell,
@@ -280,6 +304,8 @@ struct NormalizedStats {
     turret_count: i64,
     landmine_count: i64,
     spiketrap_count: i64,
+    knife: NoteCell,
+    shotgun: NoteCell,
     players: Vec<NormalizedPlayer>,
     fog: bool,
     meteor: NoteCell,
@@ -291,6 +317,11 @@ impl NormalizedStats {
         let sid_type = non_false_text(&string_at(stats, &["SIDType"]));
         let infestation_type = non_false_text(&string_at(stats, &["InfestationType"]));
         let meteor_time = non_false_text(&string_at(stats, &["MeteorShowerTime"]));
+        let interior = normalize_interior_name(&strip_apostrophe(&string_at(
+            stats,
+            &["DungeonInfo", "Interior"],
+        )));
+        let apparatus_spawned = bool_at(stats, &["AppSpawned"]);
         Self {
             new_quota: intish_at(stats, &["NewQuota"]),
             seed: seed_text(stats),
@@ -299,14 +330,15 @@ impl NormalizedStats {
                 &["MoonInfo", "Name"],
             ))),
             weather: custom_weather(&string_at(stats, &["MoonInfo", "Weather"])),
-            interior: normalize_interior_name(&strip_apostrophe(&string_at(
-                stats,
-                &["DungeonInfo", "Interior"],
-            ))),
+            interior: interior.clone(),
             item_count: intish_at(stats, &["DungeonInfo", "ItemCount"]),
-            apparatus_spawned: bool_at(stats, &["AppSpawned"]),
+            apparatus_spawned,
+            app_less: interior
+                .eq_ignore_ascii_case("Facility")
+                .then_some(!apparatus_spawned),
             beehive_amount: beehive_amount(stats, layout.split_hive_count),
             beehive_value: beehive_value(stats),
+            beehive_collected: beehive_collected(stats),
             cheap_hive_value: cheap_hive_value(stats),
             expensive_hive_value: expensive_hive_value(stats),
             egg_available: egg_available_cell(stats),
@@ -327,7 +359,8 @@ impl NormalizedStats {
             available_total: intish_at(stats, &["BottomLine"]),
             real_available_total: intish_at(stats, &["BottomLineTrue"]),
             collected_no_extra: intish_at(stats, &["CollectedNoExtra"]),
-            missing: missing_items_cell(stats),
+            missing: missing_items_cell(stats, layout.filter_collected_gift_scrap_from_missing),
+            outside_items: outside_items_cell(stats),
             value_sold: intish_at(stats, &["ValueSold"]),
             sid: NoteCell {
                 column: String::new(),
@@ -344,6 +377,8 @@ impl NormalizedStats {
             turret_count: intish_at(stats, &["HazardInfo", "TurretCount"]),
             landmine_count: intish_at(stats, &["HazardInfo", "LandmineCount"]),
             spiketrap_count: intish_at(stats, &["HazardInfo", "SpiketrapCount"]),
+            knife: weapon_info_cell(stats, &["KnifeInfo"], "Knife"),
+            shotgun: weapon_info_cell(stats, &["ShotgunInfo"], "Shotgun"),
             players: normalize_players(stats, layout),
             fog: bool_at(stats, &["IndoorFog"]),
             meteor: NoteCell {
@@ -351,7 +386,7 @@ impl NormalizedStats {
                 value: json!(meteor_time.is_some()),
                 note: meteor_time,
             },
-            gifts: gifts_cell(stats),
+            gifts: gifts_cell(stats, layout.gift_boxes_net_only),
         }
     }
 }
@@ -398,12 +433,21 @@ fn build_value_updates(
         row,
         json!(stats.apparatus_spawned),
     );
+    if let Some(app_less) = stats.app_less {
+        push_value(&mut updates, &layout.app_less_column, row, json!(app_less));
+    }
     push_hive_text_value(
         &mut updates,
         &layout.bee_amount_column,
         row,
         &stats.beehive_amount,
         layout.write_zero_for_missing_hives,
+    );
+    push_value(
+        &mut updates,
+        &layout.beehive_collected_column,
+        row,
+        blank_or_x(&stats.beehive_collected),
     );
     push_hive_text_value(
         &mut updates,
@@ -562,6 +606,9 @@ fn build_value_updates(
         .take(layout.player_name_columns.len())
         .enumerate()
     {
+        if layout.player_names_as_notes {
+            continue;
+        }
         if !player.name.trim().is_empty() {
             updates.push((
                 layout.player_name_columns[index].clone(),
@@ -591,6 +638,27 @@ async fn write_note_cells(
         &layout.missing_column,
         row,
         &stats.missing,
+    );
+    push_note_request(
+        &mut requests,
+        sheet_id,
+        &layout.outside_items_column,
+        row,
+        &stats.outside_items,
+    );
+    push_note_request(
+        &mut requests,
+        sheet_id,
+        &layout.knife_column,
+        row,
+        &stats.knife,
+    );
+    push_note_request(
+        &mut requests,
+        sheet_id,
+        &layout.shotgun_column,
+        row,
+        &stats.shotgun,
     );
     if layout.egg_notes_enabled {
         push_note_request(
@@ -658,6 +726,27 @@ async fn write_note_cells(
         }
     }
 
+    if layout.player_names_as_notes {
+        for (index, player) in stats
+            .players
+            .iter()
+            .take(layout.player_name_columns.len())
+            .enumerate()
+        {
+            if !player.name.trim().is_empty() {
+                requests.push(value_with_note_request(
+                    sheet_id,
+                    &NoteCell {
+                        column: layout.player_name_columns[index].clone(),
+                        value: json!(""),
+                        note: Some(player.name.clone()),
+                    },
+                    layout.player_name_row,
+                ));
+            }
+        }
+    }
+
     batch_update_spreadsheet(client, token, spreadsheet_id, requests).await
 }
 
@@ -719,12 +808,9 @@ fn push_note_request(
 fn value_with_note_request(sheet_id: i64, cell: &NoteCell, row: usize) -> Value {
     let column_index = column_to_index(&cell.column);
     let mut value = json!({ "userEnteredValue": google_user_value(cell.value.clone()) });
-    let fields = if let Some(note) = cell.note.as_ref().filter(|note| !note.trim().is_empty()) {
+    if let Some(note) = cell.note.as_ref().filter(|note| !note.trim().is_empty()) {
         value["note"] = json!(note);
-        "userEnteredValue,note"
-    } else {
-        "userEnteredValue"
-    };
+    }
     json!({
         "updateCells": {
             "range": {
@@ -735,7 +821,7 @@ fn value_with_note_request(sheet_id: i64, cell: &NoteCell, row: usize) -> Value 
                 "endColumnIndex": column_index + 1
             },
             "rows": [{ "values": [value] }],
-            "fields": fields
+            "fields": "userEnteredValue,note"
         }
     })
 }
@@ -753,8 +839,9 @@ fn google_user_value(value: Value) -> Value {
 }
 
 fn normalize_players(stats: &Value, layout: &ResolvedCustomLayout) -> Vec<NormalizedPlayer> {
-    object_at(stats, &["Players"])
-        .into_values()
+    players_at(stats)
+        .into_iter()
+        .map(|(_, player)| player)
         .map(|player| {
             let name = strip_apostrophe(
                 player
@@ -795,6 +882,8 @@ fn normalize_players(stats: &Value, layout: &ResolvedCustomLayout) -> Vec<Normal
                 layout.missing_state.as_str()
             } else if alive {
                 layout.alive_state.as_str()
+            } else if is_late_death(&death_time) && !layout.late_dead_state.trim().is_empty() {
+                layout.late_dead_state.as_str()
             } else {
                 layout.dead_state.as_str()
             }
@@ -828,7 +917,7 @@ fn beehive_amount(stats: &Value, split_hive_count: bool) -> String {
     }
     let small = values.iter().filter(|&&value| value < 100).count();
     let large = values.iter().filter(|&&value| value >= 100).count();
-    format!("{small}/{large}")
+    format!("{small}|{large}")
 }
 
 fn beehive_value(stats: &Value) -> String {
@@ -847,6 +936,20 @@ fn beehive_value(stats: &Value) -> String {
         .copied()
         .unwrap_or(0);
     format!("{small}|{large}")
+}
+
+fn beehive_collected(stats: &Value) -> String {
+    let values = int_values_any(stats, &[&["BeeInfo", "Collected"][..]]);
+    if values.is_empty() {
+        return String::new();
+    }
+    if stats_version(stats) >= 70 {
+        let small = values.iter().filter(|&&value| value < 100).count();
+        let large = values.iter().filter(|&&value| value >= 100).count();
+        format!("{small}|{large}")
+    } else {
+        values.len().to_string()
+    }
 }
 
 fn cheap_hive_value(stats: &Value) -> Option<i64> {
@@ -935,8 +1038,11 @@ fn egg_values_note(label: &str, values: &[i64]) -> String {
     )
 }
 
-fn gifts_cell(stats: &Value) -> NoteCell {
+fn gifts_cell(stats: &Value, net_only: bool) -> NoteCell {
     let gifts = array_at_any(stats, &[&["GiftBoxesOpened"][..], &["GiftBoxes"][..]]);
+    if net_only {
+        return gift_net_cell(&gifts);
+    }
     if gifts.is_empty() {
         return NoteCell {
             column: String::new(),
@@ -986,6 +1092,64 @@ fn gifts_cell(stats: &Value) -> NoteCell {
     }
 }
 
+fn gift_net_cell(gifts: &[Value]) -> NoteCell {
+    if gifts.is_empty() {
+        return NoteCell {
+            column: String::new(),
+            value: json!("X"),
+            note: None,
+        };
+    }
+
+    let collected = gifts
+        .iter()
+        .filter(|gift| {
+            gift.get("Collected")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    let missed = gifts
+        .iter()
+        .filter(|gift| {
+            !gift
+                .get("Collected")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    let net = collected
+        .iter()
+        .map(|gift| gift_new_scrap_value(gift) - gift_scrap_value(gift))
+        .sum::<i64>();
+    let sign = if net >= 0 { "+" } else { "" };
+    let value = if collected.is_empty() {
+        json!("X")
+    } else {
+        json!(format!("{sign}{net}"))
+    };
+    let note = (!missed.is_empty()).then(|| {
+        missed
+            .iter()
+            .enumerate()
+            .map(|(index, gift)| {
+                format!(
+                    "Gift {}: Box: {} ; Item: {}",
+                    index + 1,
+                    gift_scrap_value(gift),
+                    gift_new_scrap_value(gift)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    NoteCell {
+        column: String::new(),
+        value,
+        note,
+    }
+}
+
 fn gift_new_scrap_value(gift: &Value) -> i64 {
     value_at_any(gift, &[&["NewScrapValue"][..], &["GiftValue"][..]])
         .map(intish_value)
@@ -998,7 +1162,12 @@ fn gift_scrap_value(gift: &Value) -> i64 {
         .unwrap_or(0)
 }
 
-fn missing_items_cell(stats: &Value) -> NoteCell {
+fn missing_items_cell(stats: &Value, filter_collected_gift_scrap: bool) -> NoteCell {
+    let collected_gift_values = if filter_collected_gift_scrap {
+        collected_gift_scrap_values(stats)
+    } else {
+        BTreeSet::new()
+    };
     let missing = array_at(stats, &["MissedItems"])
         .iter()
         .filter(|item| {
@@ -1006,6 +1175,13 @@ fn missing_items_cell(stats: &Value) -> NoteCell {
                 .get("CollectedOnPreviousDay")
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
+        })
+        .filter(|item| {
+            let gift_value = item
+                .get("ScrapInsideGiftValue")
+                .map(intish_value)
+                .unwrap_or(0);
+            gift_value == 0 || !collected_gift_values.contains(&gift_value)
         })
         .collect::<Vec<_>>();
     if missing.is_empty() {
@@ -1032,6 +1208,106 @@ fn missing_items_cell(stats: &Value) -> NoteCell {
         column: String::new(),
         value: json!(missing.len().to_string()),
         note: Some(note),
+    }
+}
+
+fn collected_gift_scrap_values(stats: &Value) -> BTreeSet<i64> {
+    array_at_any(stats, &[&["GiftBoxesOpened"][..], &["GiftBoxes"][..]])
+        .iter()
+        .filter(|gift| {
+            gift.get("Collected")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .map(gift_new_scrap_value)
+        .collect()
+}
+
+fn outside_items_cell(stats: &Value) -> NoteCell {
+    let bee_available = int_values_any(
+        stats,
+        &[&["BeeInfo", "Available"][..], &["BeeInfo", "Values"][..]],
+    );
+    let bee_collected = int_values_any(stats, &[&["BeeInfo", "Collected"][..]]);
+    let egg_available = int_values_any(
+        stats,
+        &[
+            &["EggInfo", "Available"][..],
+            &["BirdInfo", "EggValues"][..],
+        ],
+    );
+    let egg_collected = int_values_any(
+        stats,
+        &[
+            &["EggInfo", "Collected"][..],
+            &["BirdInfo", "CollectedEggValues"][..],
+        ],
+    );
+
+    let total = bee_collected.iter().sum::<i64>() + egg_collected.iter().sum::<i64>();
+    let bee_missed_small = bee_available.iter().filter(|&&value| value < 100).count() as i64
+        - bee_collected.iter().filter(|&&value| value < 100).count() as i64;
+    let bee_missed_large = bee_available.iter().filter(|&&value| value >= 100).count() as i64
+        - bee_collected.iter().filter(|&&value| value >= 100).count() as i64;
+    let bee_missed_total = bee_available.len() as i64 - bee_collected.len() as i64;
+
+    let mut remaining_eggs = egg_available;
+    remaining_eggs.sort_unstable();
+    let mut collected_eggs = egg_collected;
+    collected_eggs.sort_unstable();
+    for value in collected_eggs {
+        if let Some(index) = remaining_eggs.iter().position(|egg| *egg == value) {
+            remaining_eggs.remove(index);
+        }
+    }
+
+    let mut note_parts = vec![];
+    if stats_version(stats) >= 70 {
+        if bee_missed_small > 0 || bee_missed_large > 0 {
+            note_parts.push(format!("Bee ({bee_missed_small}|{bee_missed_large})"));
+        }
+    } else if bee_missed_total > 0 {
+        note_parts.push(format!("Bee ({bee_missed_total})"));
+    }
+    if !remaining_eggs.is_empty() {
+        note_parts.push(format!(
+            "Egg ({})",
+            remaining_eggs
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    NoteCell {
+        column: String::new(),
+        value: if total > 0 { json!(total) } else { json!("X") },
+        note: (!note_parts.is_empty()).then(|| format!("Missing: {}", note_parts.join(" "))),
+    }
+}
+
+fn weapon_info_cell(stats: &Value, path: &[&str], label: &str) -> NoteCell {
+    let collected_path = [path, &["Collected"][..]].concat();
+    let available_path = [path, &["Available"][..]].concat();
+    let collected = int_values_at(stats, &collected_path);
+    let available = int_values_at(stats, &available_path);
+    let missed = available
+        .iter()
+        .skip(collected.len())
+        .copied()
+        .collect::<Vec<_>>();
+    let note = (!missed.is_empty()).then(|| {
+        missed
+            .iter()
+            .map(|value| format!("{label}: {value}"))
+            .collect::<Vec<_>>()
+            .join(" ; ")
+    });
+    NoteCell {
+        column: String::new(),
+        value: json!(collected.len() as i64),
+        note,
     }
 }
 
@@ -1208,6 +1484,21 @@ fn collected_count_or_legacy_int(
     }
 }
 
+fn int_values_at(stats: &Value, path: &[&str]) -> Vec<i64> {
+    array_at(stats, path).iter().map(intish_value).collect()
+}
+
+fn int_values_any(stats: &Value, paths: &[&[&str]]) -> Vec<i64> {
+    array_at_any(stats, paths)
+        .iter()
+        .map(intish_value)
+        .collect()
+}
+
+fn stats_version(stats: &Value) -> i64 {
+    intish_at(stats, &["Version"])
+}
+
 fn intish_at(stats: &Value, path: &[&str]) -> i64 {
     value_at(stats, path).map(intish_value).unwrap_or(0)
 }
@@ -1224,6 +1515,27 @@ fn normalize_optional_column(value: &str) -> Option<String> {
         .collect::<String>()
         .to_ascii_uppercase();
     (!column.is_empty()).then_some(column)
+}
+
+fn is_late_death(value: &str) -> bool {
+    let mut parts = value.split(':');
+    let Some(hour) = parts
+        .next()
+        .and_then(|part| part.trim().parse::<i64>().ok())
+    else {
+        return false;
+    };
+    let Some(minute) = parts.next().and_then(|part| {
+        let digits = part
+            .trim()
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit())
+            .collect::<String>();
+        digits.parse::<i64>().ok()
+    }) else {
+        return false;
+    };
+    (hour == 22 && minute >= 45) || hour >= 23
 }
 
 fn column_to_index(column: &str) -> usize {
@@ -1267,6 +1579,7 @@ mod tests {
             apparatus_column: "AJ".to_string(),
             bee_amount_column: "K".to_string(),
             split_hive_count: true,
+            beehive_collected_column: "AQ".to_string(),
             bee_value_column: "".to_string(),
             cheap_hive_column: "AD".to_string(),
             expensive_hive_column: "AE".to_string(),
@@ -1284,6 +1597,8 @@ mod tests {
             real_available_column: "AK".to_string(),
             collected_no_extra_column: "AL".to_string(),
             missing_column: "Q".to_string(),
+            filter_collected_gift_scrap_from_missing: true,
+            outside_items_column: "AR".to_string(),
             sold_column: "R".to_string(),
             sid_column: "S".to_string(),
             sid_write_false: true,
@@ -1294,6 +1609,9 @@ mod tests {
             turret_column: "AN".to_string(),
             landmine_column: "AO".to_string(),
             spiketrap_column: "AP".to_string(),
+            knife_column: "AS".to_string(),
+            shotgun_column: "AT".to_string(),
+            app_less_column: "AU".to_string(),
             death_columns: "U,V,W,X".to_string(),
             player_name_columns: "AB,AC,AD,AE".to_string(),
             player_name_row: 56,
@@ -1301,12 +1619,15 @@ mod tests {
             dead_state: "D".to_string(),
             missing_state: "M".to_string(),
             disconnected_state: "DC".to_string(),
+            late_dead_state: "SX".to_string(),
             death_notes_enabled: false,
+            player_names_as_notes: false,
             fog_column: "Y".to_string(),
             fog_write_false: true,
             meteor_column: "Z".to_string(),
             meteor_write_false: true,
             gifts_column: "AB".to_string(),
+            gift_boxes_net_only: false,
         });
         let normalized = NormalizedStats::from_stats(&stats, &layout);
 
@@ -1317,7 +1638,7 @@ mod tests {
         assert_eq!(cell_value(&updates, "H"), Some(&json!("CLEAR")));
         assert_eq!(cell_value(&updates, "I"), Some(&json!("MINESHAFT")));
         assert_eq!(cell_value(&updates, "J"), Some(&json!(34)));
-        assert_eq!(cell_value(&updates, "K"), Some(&json!("1/1")));
+        assert_eq!(cell_value(&updates, "K"), Some(&json!("1|1")));
         assert_eq!(cell_value(&updates, "AD"), Some(&json!(64)));
         assert_eq!(cell_value(&updates, "AE"), Some(&json!(132)));
         assert_eq!(cell_value(&updates, "L"), Some(&json!("12|18")));
@@ -1331,6 +1652,8 @@ mod tests {
         assert_eq!(cell_value_at(&updates, "AB", 56), Some(&json!("Aureo")));
         assert_eq!(cell_value(&updates, "Y"), Some(&json!(true)));
         assert_eq!(cell_value(&updates, "K").is_some(), true);
+        assert_eq!(cell_value(&updates, "AQ"), Some(&json!("X")));
+        assert_eq!(cell_value(&updates, "AU"), None);
         assert_eq!(cell_value(&updates, "AA"), None);
     }
 
@@ -1381,6 +1704,89 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("NewScrapValue=162"));
+    }
+
+    #[test]
+    fn python_layout_specific_fields_are_available() {
+        let stats = json!({
+            "Version": 70,
+            "MoonInfo": { "Name": "'68 Artifice", "Weather": "'Mild" },
+            "DungeonInfo": { "Interior": "'FacilityFlow", "ItemCount": "'34" },
+            "AppSpawned": false,
+            "BeeInfo": { "Available": [64, 132], "Collected": [64] },
+            "EggInfo": { "Available": [12, 18, 30], "Collected": [12] },
+            "KnifeInfo": { "Available": [21, 33], "Collected": [21] },
+            "ShotgunInfo": { "Available": [40, 52], "Collected": [40] },
+            "MissedItems": [
+                {
+                    "ItemType": "Gift scrap",
+                    "Value": 91,
+                    "ScrapInsideGiftValue": 111,
+                    "CollectedOnPreviousDay": false
+                },
+                {
+                    "ItemType": "Cash register",
+                    "Value": 80,
+                    "ScrapInsideGiftValue": 0,
+                    "CollectedOnPreviousDay": false
+                }
+            ],
+            "GiftBoxesOpened": [
+                { "NewScrapValue": 111, "GiftScrapValue": 20, "Collected": true },
+                { "NewScrapValue": 9, "GiftScrapValue": 30, "Collected": false }
+            ],
+            "Players": {
+                "1": {
+                    "Name": "'Aureo",
+                    "Alive": false,
+                    "Disconnected": false,
+                    "TimeOfDeath": "'23:00",
+                    "CauseOfDeath": "'Blunt force trauma"
+                }
+            }
+        });
+        let layout = ResolvedCustomLayout::from_settings(&CustomLcStatsLayoutSettings {
+            beehive_collected_column: "AV".to_string(),
+            outside_items_column: "AW".to_string(),
+            knife_column: "AX".to_string(),
+            shotgun_column: "AY".to_string(),
+            app_less_column: "AZ".to_string(),
+            death_columns: "BA".to_string(),
+            gift_boxes_net_only: true,
+            gifts_column: "BB".to_string(),
+            ..Default::default()
+        });
+        let normalized = NormalizedStats::from_stats(&stats, &layout);
+        let updates = build_value_updates(&normalized, &layout, 7);
+
+        assert_eq!(cell_value(&updates, "AV"), Some(&json!("1|0")));
+        assert_eq!(cell_value(&updates, "AZ"), Some(&json!(true)));
+        assert_eq!(
+            normalized
+                .players
+                .first()
+                .map(|player| player.status.as_str()),
+            Some("SX")
+        );
+        assert_eq!(normalized.outside_items.value, json!(76));
+        assert_eq!(
+            normalized.outside_items.note.as_deref(),
+            Some("Missing: Bee (0|1) Egg (18, 30)")
+        );
+        assert_eq!(normalized.missing.value, json!("1"));
+        assert_eq!(
+            normalized.missing.note.as_deref(),
+            Some("Cash register: 80")
+        );
+        assert_eq!(normalized.knife.value, json!(1));
+        assert_eq!(normalized.knife.note.as_deref(), Some("Knife: 33"));
+        assert_eq!(normalized.shotgun.value, json!(1));
+        assert_eq!(normalized.shotgun.note.as_deref(), Some("Shotgun: 52"));
+        assert_eq!(normalized.gifts.value, json!("+91"));
+        assert_eq!(
+            normalized.gifts.note.as_deref(),
+            Some("Gift 1: Box: 30 ; Item: 9")
+        );
     }
 
     #[test]
@@ -1441,7 +1847,7 @@ mod tests {
         let normalized = NormalizedStats::from_stats(&stats, &layout);
         let updates = build_value_updates(&normalized, &layout, 7);
 
-        assert_eq!(cell_value(&updates, "J"), Some(&json!("2/3")));
+        assert_eq!(cell_value(&updates, "J"), Some(&json!("2|3")));
     }
 
     fn cell_value<'a>(values: &'a [(String, usize, Value)], column: &str) -> Option<&'a Value> {

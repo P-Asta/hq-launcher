@@ -77,6 +77,8 @@ pub struct CustomLcStatsLayoutSettings {
     pub bee_amount_column: String,
     #[serde(default)]
     pub split_hive_count: bool,
+    #[serde(default = "default_custom_beehive_collected_column")]
+    pub beehive_collected_column: String,
     #[serde(default = "default_custom_bee_value_column")]
     pub bee_value_column: String,
     #[serde(default = "default_custom_cheap_hive_column")]
@@ -111,6 +113,10 @@ pub struct CustomLcStatsLayoutSettings {
     pub collected_no_extra_column: String,
     #[serde(default = "default_custom_missing_column")]
     pub missing_column: String,
+    #[serde(default = "default_custom_filter_collected_gift_scrap_from_missing")]
+    pub filter_collected_gift_scrap_from_missing: bool,
+    #[serde(default = "default_custom_outside_items_column")]
+    pub outside_items_column: String,
     #[serde(default = "default_custom_sold_column")]
     pub sold_column: String,
     #[serde(default = "default_custom_sid_column")]
@@ -131,6 +137,12 @@ pub struct CustomLcStatsLayoutSettings {
     pub landmine_column: String,
     #[serde(default = "default_custom_spiketrap_column")]
     pub spiketrap_column: String,
+    #[serde(default = "default_custom_knife_column")]
+    pub knife_column: String,
+    #[serde(default = "default_custom_shotgun_column")]
+    pub shotgun_column: String,
+    #[serde(default = "default_custom_app_less_column", alias = "appyLessColumn")]
+    pub app_less_column: String,
     #[serde(default = "default_custom_death_columns")]
     pub death_columns: String,
     #[serde(default = "default_custom_player_name_columns")]
@@ -145,8 +157,12 @@ pub struct CustomLcStatsLayoutSettings {
     pub missing_state: String,
     #[serde(default = "default_custom_disconnected_state")]
     pub disconnected_state: String,
+    #[serde(default = "default_custom_late_dead_state")]
+    pub late_dead_state: String,
     #[serde(default = "default_custom_death_notes_enabled")]
     pub death_notes_enabled: bool,
+    #[serde(default = "default_custom_player_names_as_notes")]
+    pub player_names_as_notes: bool,
     #[serde(default = "default_custom_fog_column")]
     pub fog_column: String,
     #[serde(default = "default_custom_fog_write_false")]
@@ -157,6 +173,8 @@ pub struct CustomLcStatsLayoutSettings {
     pub meteor_write_false: bool,
     #[serde(default = "default_custom_gifts_column")]
     pub gifts_column: String,
+    #[serde(default = "default_custom_gift_boxes_net_only")]
+    pub gift_boxes_net_only: bool,
 }
 
 impl Default for CustomLcStatsLayoutSettings {
@@ -174,6 +192,7 @@ impl Default for CustomLcStatsLayoutSettings {
             apparatus_column: default_custom_apparatus_column(),
             bee_amount_column: default_custom_bee_amount_column(),
             split_hive_count: false,
+            beehive_collected_column: default_custom_beehive_collected_column(),
             bee_value_column: default_custom_bee_value_column(),
             cheap_hive_column: default_custom_cheap_hive_column(),
             expensive_hive_column: default_custom_expensive_hive_column(),
@@ -191,6 +210,9 @@ impl Default for CustomLcStatsLayoutSettings {
             real_available_column: default_custom_real_available_column(),
             collected_no_extra_column: default_custom_collected_no_extra_column(),
             missing_column: default_custom_missing_column(),
+            filter_collected_gift_scrap_from_missing:
+                default_custom_filter_collected_gift_scrap_from_missing(),
+            outside_items_column: default_custom_outside_items_column(),
             sold_column: default_custom_sold_column(),
             sid_column: default_custom_sid_column(),
             sid_write_false: default_custom_sid_write_false(),
@@ -201,6 +223,9 @@ impl Default for CustomLcStatsLayoutSettings {
             turret_column: default_custom_turret_column(),
             landmine_column: default_custom_landmine_column(),
             spiketrap_column: default_custom_spiketrap_column(),
+            knife_column: default_custom_knife_column(),
+            shotgun_column: default_custom_shotgun_column(),
+            app_less_column: default_custom_app_less_column(),
             death_columns: default_custom_death_columns(),
             player_name_columns: default_custom_player_name_columns(),
             player_name_row: default_custom_player_name_row(),
@@ -208,12 +233,15 @@ impl Default for CustomLcStatsLayoutSettings {
             dead_state: default_custom_dead_state(),
             missing_state: default_custom_missing_state(),
             disconnected_state: default_custom_disconnected_state(),
+            late_dead_state: default_custom_late_dead_state(),
             death_notes_enabled: default_custom_death_notes_enabled(),
+            player_names_as_notes: default_custom_player_names_as_notes(),
             fog_column: default_custom_fog_column(),
             fog_write_false: default_custom_fog_write_false(),
             meteor_column: default_custom_meteor_column(),
             meteor_write_false: default_custom_meteor_write_false(),
             gifts_column: default_custom_gifts_column(),
+            gift_boxes_net_only: default_custom_gift_boxes_net_only(),
         }
     }
 }
@@ -250,6 +278,9 @@ fn default_custom_apparatus_column() -> String {
 }
 fn default_custom_bee_amount_column() -> String {
     "J".to_string()
+}
+fn default_custom_beehive_collected_column() -> String {
+    String::new()
 }
 fn default_custom_bee_value_column() -> String {
     "K".to_string()
@@ -299,6 +330,12 @@ fn default_custom_collected_no_extra_column() -> String {
 fn default_custom_missing_column() -> String {
     "Q".to_string()
 }
+fn default_custom_filter_collected_gift_scrap_from_missing() -> bool {
+    true
+}
+fn default_custom_outside_items_column() -> String {
+    String::new()
+}
 fn default_custom_sold_column() -> String {
     "X".to_string()
 }
@@ -329,6 +366,15 @@ fn default_custom_landmine_column() -> String {
 fn default_custom_spiketrap_column() -> String {
     String::new()
 }
+fn default_custom_knife_column() -> String {
+    String::new()
+}
+fn default_custom_shotgun_column() -> String {
+    String::new()
+}
+fn default_custom_app_less_column() -> String {
+    String::new()
+}
 fn default_custom_death_columns() -> String {
     "AC,AD,AE,AF".to_string()
 }
@@ -350,8 +396,14 @@ fn default_custom_missing_state() -> String {
 fn default_custom_disconnected_state() -> String {
     "DC".to_string()
 }
+fn default_custom_late_dead_state() -> String {
+    "SX".to_string()
+}
 fn default_custom_death_notes_enabled() -> bool {
     true
+}
+fn default_custom_player_names_as_notes() -> bool {
+    false
 }
 fn default_custom_fog_column() -> String {
     "AG".to_string()
@@ -367,6 +419,9 @@ fn default_custom_meteor_write_false() -> bool {
 }
 fn default_custom_gifts_column() -> String {
     "AI".to_string()
+}
+fn default_custom_gift_boxes_net_only() -> bool {
+    false
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
