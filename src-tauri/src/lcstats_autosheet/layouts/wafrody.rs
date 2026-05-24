@@ -40,7 +40,7 @@ const REAL_LINE_COLUMN: &str = "Z";
 const MISSED_ITEMS_NOTE_COLUMN: &str = "AA";
 const VALUE_SOLD_COLUMN: &str = "AJ";
 const GIFT_BONUS_COLUMN: &str = "AK";
-const LOST_SCRAP_TOTAL_COLUMN: &str = "AR";
+const LOST_SCRAP_TOTAL_COLUMN: &str = "AS";
 const LOST_SCRAP_TOTAL_ROW: usize = 31;
 const HAZARD_TOTAL_COLUMN: &str = "AS";
 const TURRET_TOTAL_ROW: usize = 16;
@@ -595,6 +595,9 @@ async fn write_rich_cells(
     if let Some(note) = hazard_note(raw_stats) {
         requests.push(note_request(sheet_id, INTERIOR_COLUMN, row, &note));
     }
+    if let Some(note) = gift_bonus_note(raw_stats) {
+        requests.push(note_request(sheet_id, GIFT_BONUS_COLUMN, row, &note));
+    }
 
     if requests.is_empty() {
         return Ok(());
@@ -1106,9 +1109,16 @@ fn enemy_spawn_times_note(stats: &Value, enemy: &str) -> Option<String> {
 }
 
 fn is_version_45_or_49(stats: &Value) -> bool {
+    matches!(stats_version_number(stats), Some(45 | 49))
+}
+
+fn stats_version_number(stats: &Value) -> Option<i64> {
     let version = string_at(stats, &["Version"]);
-    let version = version.trim_start_matches('V').trim_start_matches('v');
-    matches!(version.parse::<i64>(), Ok(45 | 49))
+    let version = version
+        .trim()
+        .trim_start_matches('V')
+        .trim_start_matches('v');
+    version.parse::<i64>().ok()
 }
 
 fn collected_values_note(stats: &Value, path: &[&str]) -> Option<String> {
@@ -1166,21 +1176,33 @@ fn missed_items_note(stats: &Value) -> Option<String> {
         if item_type.is_empty() {
             continue;
         }
-        let mut value_text = item
-            .get("Value")
-            .map(value_as_i64)
-            .map(|value| value.to_string())
-            .unwrap_or_default();
-        if item.get("CollectedOnPreviousDay").and_then(Value::as_bool) == Some(true) {
-            value_text.push_str("(lost)");
-        }
-
         let y_position = item
             .get("DespawnPosition")
             .and_then(Value::as_array)
             .and_then(|position| position.get(1))
             .map(value_as_f64)
             .unwrap_or(0.0);
+        let mut value_text = if item_type == "Gift box" {
+            format!(
+                "{}=>{}",
+                item.get("Value")
+                    .map(value_as_i64)
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                intish_item_at(item, "ScrapInsideGiftValue")
+            )
+        } else {
+            item.get("Value")
+                .map(value_as_i64)
+                .map(|value| value.to_string())
+                .unwrap_or_default()
+        };
+        if item.get("CollectedOnPreviousDay").and_then(Value::as_bool) == Some(true) {
+            value_text.push_str("(lost)");
+        }
+        if missed_item_is_voided(stats, y_position) {
+            value_text.push_str("(voided)");
+        }
         let target = if y_position <= -100.0 {
             &mut inside_by_type
         } else {
@@ -1202,6 +1224,28 @@ fn missed_items_note(stats: &Value) -> Option<String> {
         sections.push(missed_item_section("Outside :", outside_by_type));
     }
     Some(sections.join("\n\n"))
+}
+
+fn missed_item_is_voided(stats: &Value, y_position: f64) -> bool {
+    let interior = strip_apostrophe(&string_at(stats, &["DungeonInfo", "Interior"]))
+        .trim()
+        .to_ascii_lowercase();
+    match interior.as_str() {
+        "facility" => y_position_matches(y_position, &[-241.7, -235.4]),
+        "mansion" if matches!(stats_version_number(stats), Some(40 | 45 | 49)) => {
+            y_position_matches(
+                y_position,
+                &[-239.1, -239.0, -238.9, -229.1, -229.0, -228.9],
+            )
+        }
+        _ => false,
+    }
+}
+
+fn y_position_matches(y_position: f64, targets: &[f64]) -> bool {
+    targets
+        .iter()
+        .any(|target| (y_position - target).abs() < 0.0001)
 }
 
 fn missed_item_section(label: &str, items: BTreeMap<String, Vec<String>>) -> String {
@@ -1251,10 +1295,47 @@ fn gift_bonus_total(stats: &Value) -> i64 {
     opened_bonus + missed_bonus + intish_at(stats, &["ExtraFromOldGift"])
 }
 
+fn gift_bonus_note(stats: &Value) -> Option<String> {
+    let mut lines = vec![];
+    lines.extend(
+        array_at_any(stats, &[&["GiftBoxesOpened"][..], &["GiftBoxes"][..]])
+            .iter()
+            .map(|gift| {
+                format!(
+                    "{}=>{}",
+                    gift_note_original_value(gift),
+                    gift_new_scrap_value(gift)
+                )
+            }),
+    );
+    lines.extend(array_at(stats, &["MissedItems"]).iter().filter_map(|item| {
+        (item.get("ItemType").and_then(Value::as_str) == Some("Gift box")).then(|| {
+            format!(
+                "{}=>{}",
+                item.get("Value")
+                    .map(value_as_i64)
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                intish_item_at(item, "ScrapInsideGiftValue")
+            )
+        })
+    }));
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
 fn gift_new_scrap_value(gift: &Value) -> i64 {
     value_at_any(gift, &[&["NewScrapValue"][..], &["GiftValue"][..]])
         .map(value_as_i64)
         .unwrap_or(0)
+}
+
+fn gift_note_original_value(gift: &Value) -> i64 {
+    value_at_any(
+        gift,
+        &[&["GiftScrapValue"][..], &["Value"][..], &["ScrapValue"][..]],
+    )
+    .map(value_as_i64)
+    .unwrap_or(0)
 }
 
 fn gift_original_value(gift: &Value) -> i64 {
@@ -1531,6 +1612,12 @@ mod tests {
     }
 
     #[test]
+    fn lost_scrap_total_cell_matches_reference_script() {
+        assert_eq!(LOST_SCRAP_TOTAL_COLUMN, "AS");
+        assert_eq!(LOST_SCRAP_TOTAL_ROW, 31);
+    }
+
+    #[test]
     fn bottom_line_includes_available_shotgun_values() {
         let stats = json!({
             "BottomLine": 500,
@@ -1552,14 +1639,43 @@ mod tests {
         let stats = json!({
             "MissedItems": [
                 { "ItemType": "Cash register", "Value": 80, "DespawnPosition": [0, -120, 0] },
-                { "ItemType": "Gift box", "Value": 20, "DespawnPosition": [0, 2, 0], "CollectedOnPreviousDay": true }
+                { "ItemType": "Gift box", "Value": 20, "ScrapInsideGiftValue": 45, "DespawnPosition": [0, 2, 0], "CollectedOnPreviousDay": true }
             ]
         });
 
         let note = missed_items_note(&stats).unwrap();
 
         assert!(note.contains("Inside :\nCash register : 80"));
-        assert!(note.contains("Outside :\nGift box : 20(lost)"));
+        assert!(note.contains("Outside :\nGift box : 20=>45(lost)"));
+    }
+
+    #[test]
+    fn missed_items_note_marks_voided_scrap() {
+        let stats = json!({
+            "Version": "45",
+            "DungeonInfo": { "Interior": "Mansion" },
+            "MissedItems": [
+                { "ItemType": "Gold bar", "Value": 210, "DespawnPosition": [0, -229.0, 0] }
+            ]
+        });
+
+        let note = missed_items_note(&stats).unwrap();
+
+        assert!(note.contains("Gold bar : 210(voided)"));
+    }
+
+    #[test]
+    fn gift_bonus_note_lists_opened_and_missed_gift_boxes() {
+        let stats = json!({
+            "GiftBoxesOpened": [
+                { "GiftScrapValue": 20, "NewScrapValue": 111 }
+            ],
+            "MissedItems": [
+                { "ItemType": "Gift box", "Value": 15, "ScrapInsideGiftValue": 60 }
+            ]
+        });
+
+        assert_eq!(gift_bonus_note(&stats).as_deref(), Some("20=>111\n15=>60"));
     }
 
     #[test]
