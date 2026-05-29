@@ -2533,7 +2533,13 @@ export default function LauncherPage({
     if (!gameStatus.running) return;
     const t = setInterval(() => {
       invoke("get_game_status")
-        .then((s) => setGameStatus(s ?? { running: false, pid: null }))
+        .then((s) => {
+          const nextStatus = s ?? { running: false, pid: null };
+          setGameStatus(nextStatus);
+          if (!nextStatus.running) {
+            setLcstatsTrackingEnabled(false);
+          }
+        })
         .catch(() => {});
     }, 1500);
     return () => clearInterval(t);
@@ -5382,6 +5388,7 @@ export default function LauncherPage({
       setRunningGames([]);
     } finally {
       setGameStatus({ running: false, pid: null });
+      setLcstatsTrackingEnabled(false);
     }
   }
 
@@ -5393,6 +5400,9 @@ export default function LauncherPage({
       running: list.length > 0,
       pid: typeof list[0]?.pid === "number" ? list[0].pid : null,
     });
+    if (list.length === 0) {
+      setLcstatsTrackingEnabled(false);
+    }
     return list;
   }
 

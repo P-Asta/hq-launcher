@@ -4820,6 +4820,7 @@ fn cancel_prepare(version: u32, state: State<'_, PrepareState>) -> Result<bool, 
 fn get_game_status(
     app: tauri::AppHandle,
     state: State<'_, GameState>,
+    lcstats_state: State<'_, lcstats_autosheet::LcStatsAutosheetState>,
 ) -> Result<GameStatus, String> {
     let mut guard = state
         .active
@@ -4853,6 +4854,7 @@ fn get_game_status(
     }
 
     if any_finished {
+        lcstats_autosheet::stop(&lcstats_state);
         if let Err(e) = restore_hqol_wesley_dont_store_backup_if_present(&app) {
             log::warn!("Failed to restore HQoL Wesley dont-store backup after exit: {e}");
         }
@@ -4868,6 +4870,7 @@ fn get_game_status(
 fn list_running_games(
     app: tauri::AppHandle,
     state: State<'_, GameState>,
+    lcstats_state: State<'_, lcstats_autosheet::LcStatsAutosheetState>,
 ) -> Result<Vec<RunningGameDto>, String> {
     let mut guard = state
         .active
@@ -4875,6 +4878,9 @@ fn list_running_games(
         .map_err(|_| "game state lock poisoned".to_string())?;
     let any_finished = cleanup_active_games(&app, &mut guard)?;
     if any_finished {
+        if guard.is_empty() {
+            lcstats_autosheet::stop(&lcstats_state);
+        }
         if let Err(e) = restore_hqol_wesley_dont_store_backup_if_present(&app) {
             log::warn!("Failed to restore HQoL Wesley dont-store backup after exit: {e}");
         }
@@ -4892,6 +4898,7 @@ fn stop_game_instance(
     app: tauri::AppHandle,
     id: u64,
     state: State<'_, GameState>,
+    lcstats_state: State<'_, lcstats_autosheet::LcStatsAutosheetState>,
 ) -> Result<bool, String> {
     let _launch_guard = state
         .launch_lock
@@ -4910,6 +4917,7 @@ fn stop_game_instance(
     let _ = active.child.wait();
 
     if guard.is_empty() {
+        lcstats_autosheet::stop(&lcstats_state);
         terminate_linux_game_processes_for_version(&app, active.version);
         if let Err(e) = restore_hqol_wesley_dont_store_backup_if_present(&app) {
             log::warn!(
@@ -4922,7 +4930,11 @@ fn stop_game_instance(
 }
 
 #[tauri::command]
-fn stop_game(app: tauri::AppHandle, state: State<'_, GameState>) -> Result<bool, String> {
+fn stop_game(
+    app: tauri::AppHandle,
+    state: State<'_, GameState>,
+    lcstats_state: State<'_, lcstats_autosheet::LcStatsAutosheetState>,
+) -> Result<bool, String> {
     let _launch_guard = state
         .launch_lock
         .lock()
@@ -4946,6 +4958,7 @@ fn stop_game(app: tauri::AppHandle, state: State<'_, GameState>) -> Result<bool,
         for version in versions {
             terminate_linux_game_processes_for_version(&app, version);
         }
+        lcstats_autosheet::stop(&lcstats_state);
         if let Err(e) = restore_hqol_wesley_dont_store_backup_if_present(&app) {
             log::warn!("Failed to restore HQoL Wesley dont-store backup after stop: {e}");
         }
