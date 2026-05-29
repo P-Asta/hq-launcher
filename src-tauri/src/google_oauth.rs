@@ -79,6 +79,10 @@ pub struct CustomLcStatsLayoutSettings {
     pub split_hive_count: bool,
     #[serde(default = "default_custom_beehive_collected_column")]
     pub beehive_collected_column: String,
+    #[serde(default = "default_custom_beehive_collected_value_column")]
+    pub beehive_collected_value_column: String,
+    #[serde(default = "default_custom_beehive_collected_notes_enabled")]
+    pub beehive_collected_notes_enabled: bool,
     #[serde(default = "default_custom_bee_value_column")]
     pub bee_value_column: String,
     #[serde(default = "default_custom_cheap_hive_column")]
@@ -121,6 +125,10 @@ pub struct CustomLcStatsLayoutSettings {
     pub sold_column: String,
     #[serde(default = "default_custom_sid_column")]
     pub sid_column: String,
+    #[serde(default = "default_custom_sid_item_column")]
+    pub sid_item_column: String,
+    #[serde(default = "default_custom_sid_notes_enabled")]
+    pub sid_notes_enabled: bool,
     #[serde(default = "default_custom_sid_write_false")]
     pub sid_write_false: bool,
     #[serde(default = "default_custom_infestation_column")]
@@ -163,6 +171,40 @@ pub struct CustomLcStatsLayoutSettings {
     pub death_notes_enabled: bool,
     #[serde(default = "default_custom_player_names_as_notes")]
     pub player_names_as_notes: bool,
+    #[serde(default = "default_custom_death_enemy_notes_enabled")]
+    pub death_enemy_notes_enabled: bool,
+    #[serde(default = "default_custom_enemy_write_false")]
+    pub enemy_write_false: bool,
+    #[serde(default = "default_custom_enemy_write_zero")]
+    pub enemy_write_zero: bool,
+    #[serde(default = "default_custom_jester_column")]
+    pub jester_column: String,
+    #[serde(default = "default_custom_barber_column")]
+    pub barber_column: String,
+    #[serde(default = "default_custom_bunker_spider_column")]
+    pub bunker_spider_column: String,
+    #[serde(default = "default_custom_bracken_column")]
+    pub bracken_column: String,
+    #[serde(default = "default_custom_cadaver_column")]
+    pub cadaver_column: String,
+    #[serde(default = "default_custom_ghost_girl_column")]
+    pub ghost_girl_column: String,
+    #[serde(default = "default_custom_maneater_column")]
+    pub maneater_column: String,
+    #[serde(default = "default_custom_backwater_gunkfish_column")]
+    pub backwater_gunkfish_column: String,
+    #[serde(default = "default_custom_coil_head_column")]
+    pub coil_head_column: String,
+    #[serde(default = "default_custom_hoarding_bug_column")]
+    pub hoarding_bug_column: String,
+    #[serde(default = "default_custom_masked_column")]
+    pub masked_column: String,
+    #[serde(default = "default_custom_snare_flea_column")]
+    pub snare_flea_column: String,
+    #[serde(default = "default_custom_spore_lizard_column")]
+    pub spore_lizard_column: String,
+    #[serde(default = "default_custom_thumper_column")]
+    pub thumper_column: String,
     #[serde(default = "default_custom_fog_column")]
     pub fog_column: String,
     #[serde(default = "default_custom_fog_write_false")]
@@ -193,6 +235,8 @@ impl Default for CustomLcStatsLayoutSettings {
             bee_amount_column: default_custom_bee_amount_column(),
             split_hive_count: false,
             beehive_collected_column: default_custom_beehive_collected_column(),
+            beehive_collected_value_column: default_custom_beehive_collected_value_column(),
+            beehive_collected_notes_enabled: default_custom_beehive_collected_notes_enabled(),
             bee_value_column: default_custom_bee_value_column(),
             cheap_hive_column: default_custom_cheap_hive_column(),
             expensive_hive_column: default_custom_expensive_hive_column(),
@@ -215,6 +259,8 @@ impl Default for CustomLcStatsLayoutSettings {
             outside_items_column: default_custom_outside_items_column(),
             sold_column: default_custom_sold_column(),
             sid_column: default_custom_sid_column(),
+            sid_item_column: default_custom_sid_item_column(),
+            sid_notes_enabled: default_custom_sid_notes_enabled(),
             sid_write_false: default_custom_sid_write_false(),
             infestation_column: default_custom_infestation_column(),
             infestation_write_false: default_custom_infestation_write_false(),
@@ -236,6 +282,23 @@ impl Default for CustomLcStatsLayoutSettings {
             late_dead_state: default_custom_late_dead_state(),
             death_notes_enabled: default_custom_death_notes_enabled(),
             player_names_as_notes: default_custom_player_names_as_notes(),
+            death_enemy_notes_enabled: default_custom_death_enemy_notes_enabled(),
+            enemy_write_false: default_custom_enemy_write_false(),
+            enemy_write_zero: default_custom_enemy_write_zero(),
+            jester_column: default_custom_jester_column(),
+            barber_column: default_custom_barber_column(),
+            bunker_spider_column: default_custom_bunker_spider_column(),
+            bracken_column: default_custom_bracken_column(),
+            cadaver_column: default_custom_cadaver_column(),
+            ghost_girl_column: default_custom_ghost_girl_column(),
+            maneater_column: default_custom_maneater_column(),
+            backwater_gunkfish_column: default_custom_backwater_gunkfish_column(),
+            coil_head_column: default_custom_coil_head_column(),
+            hoarding_bug_column: default_custom_hoarding_bug_column(),
+            masked_column: default_custom_masked_column(),
+            snare_flea_column: default_custom_snare_flea_column(),
+            spore_lizard_column: default_custom_spore_lizard_column(),
+            thumper_column: default_custom_thumper_column(),
             fog_column: default_custom_fog_column(),
             fog_write_false: default_custom_fog_write_false(),
             meteor_column: default_custom_meteor_column(),
@@ -281,6 +344,12 @@ fn default_custom_bee_amount_column() -> String {
 }
 fn default_custom_beehive_collected_column() -> String {
     String::new()
+}
+fn default_custom_beehive_collected_value_column() -> String {
+    String::new()
+}
+fn default_custom_beehive_collected_notes_enabled() -> bool {
+    true
 }
 fn default_custom_bee_value_column() -> String {
     "K".to_string()
@@ -341,6 +410,12 @@ fn default_custom_sold_column() -> String {
 }
 fn default_custom_sid_column() -> String {
     "Y".to_string()
+}
+fn default_custom_sid_item_column() -> String {
+    String::new()
+}
+fn default_custom_sid_notes_enabled() -> bool {
+    true
 }
 fn default_custom_sid_write_false() -> bool {
     false
@@ -404,6 +479,57 @@ fn default_custom_death_notes_enabled() -> bool {
 }
 fn default_custom_player_names_as_notes() -> bool {
     false
+}
+fn default_custom_death_enemy_notes_enabled() -> bool {
+    false
+}
+fn default_custom_enemy_write_false() -> bool {
+    false
+}
+fn default_custom_enemy_write_zero() -> bool {
+    false
+}
+fn default_custom_jester_column() -> String {
+    String::new()
+}
+fn default_custom_barber_column() -> String {
+    String::new()
+}
+fn default_custom_bunker_spider_column() -> String {
+    String::new()
+}
+fn default_custom_bracken_column() -> String {
+    String::new()
+}
+fn default_custom_cadaver_column() -> String {
+    String::new()
+}
+fn default_custom_ghost_girl_column() -> String {
+    String::new()
+}
+fn default_custom_maneater_column() -> String {
+    String::new()
+}
+fn default_custom_backwater_gunkfish_column() -> String {
+    String::new()
+}
+fn default_custom_coil_head_column() -> String {
+    String::new()
+}
+fn default_custom_hoarding_bug_column() -> String {
+    String::new()
+}
+fn default_custom_masked_column() -> String {
+    String::new()
+}
+fn default_custom_snare_flea_column() -> String {
+    String::new()
+}
+fn default_custom_spore_lizard_column() -> String {
+    String::new()
+}
+fn default_custom_thumper_column() -> String {
+    String::new()
 }
 fn default_custom_fog_column() -> String {
     "AG".to_string()

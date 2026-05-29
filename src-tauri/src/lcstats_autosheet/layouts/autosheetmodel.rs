@@ -7,8 +7,9 @@ use crate::lcstats_autosheet::sheets::{
     write_cells,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, bool_at, enemy_count, int_at, intish_value, missed_item_count,
-    normalize_column, string_at, strip_moon_number, sum_array_any, value_at,
+    array_at, array_at_any, bool_at, enemy_count, initial_available_value, int_at, intish_value,
+    missed_item_count, normalize_column, string_at, strip_moon_number, sum_array_any,
+    total_available_value, value_at,
 };
 
 pub async fn write(
@@ -159,9 +160,9 @@ fn process_stats(stats: &Value) -> Vec<Value> {
             &["KnivesCollected"],
         )),
         json!(int_at(stats, &["CollectedNoExtra"])),
-        json!(int_at(stats, &["BottomLine"])),
+        json!(initial_available_value(stats)),
         json!(int_at(stats, &["CollectedTotal"])),
-        json!(int_at(stats, &["BottomLineTrue"])),
+        json!(total_available_value(stats)),
         json!(string_at(stats, &["TakeOffTime"])),
         json!(int_at(stats, &["HazardInfo", "TurretCount"])),
         json!(int_at(stats, &["HazardInfo", "LandmineCount"])),

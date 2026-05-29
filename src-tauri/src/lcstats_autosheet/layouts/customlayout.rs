@@ -7,8 +7,8 @@ use crate::lcstats_autosheet::sheets::{
     batch_update_spreadsheet, batch_write_cells_user_entered, first_empty_row_from, get_sheet_id,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, bool_at, intish_value, players_at, string_at, strip_moon_number,
-    value_at, value_at_any,
+    array_at, array_at_any, bool_at, initial_available_value, intish_value, players_at, string_at,
+    strip_moon_number, total_available_value, value_at, value_at_any,
 };
 
 pub async fn write(
@@ -85,6 +85,8 @@ struct ResolvedCustomLayout {
     bee_amount_column: Option<String>,
     split_hive_count: bool,
     beehive_collected_column: Option<String>,
+    beehive_collected_value_column: Option<String>,
+    beehive_collected_notes_enabled: bool,
     bee_value_column: Option<String>,
     cheap_hive_column: Option<String>,
     expensive_hive_column: Option<String>,
@@ -106,6 +108,8 @@ struct ResolvedCustomLayout {
     outside_items_column: Option<String>,
     sold_column: Option<String>,
     sid_column: Option<String>,
+    sid_item_column: Option<String>,
+    sid_notes_enabled: bool,
     sid_write_false: bool,
     infestation_column: Option<String>,
     infestation_write_false: bool,
@@ -127,6 +131,10 @@ struct ResolvedCustomLayout {
     late_dead_state: String,
     death_notes_enabled: bool,
     player_names_as_notes: bool,
+    death_enemy_notes_enabled: bool,
+    enemy_write_false: bool,
+    enemy_write_zero: bool,
+    enemy_columns: Vec<EnemyColumnConfig>,
     fog_column: Option<String>,
     fog_write_false: bool,
     meteor_column: Option<String>,
@@ -161,6 +169,10 @@ impl ResolvedCustomLayout {
             bee_amount_column: normalize_optional_column(&settings.bee_amount_column),
             split_hive_count: settings.split_hive_count,
             beehive_collected_column: normalize_optional_column(&settings.beehive_collected_column),
+            beehive_collected_value_column: normalize_optional_column(
+                &settings.beehive_collected_value_column,
+            ),
+            beehive_collected_notes_enabled: settings.beehive_collected_notes_enabled,
             bee_value_column: normalize_optional_column(&settings.bee_value_column),
             cheap_hive_column: normalize_optional_column(&settings.cheap_hive_column),
             expensive_hive_column: normalize_optional_column(&settings.expensive_hive_column),
@@ -185,6 +197,8 @@ impl ResolvedCustomLayout {
             outside_items_column: normalize_optional_column(&settings.outside_items_column),
             sold_column: normalize_optional_column(&settings.sold_column),
             sid_column: normalize_optional_column(&settings.sid_column),
+            sid_item_column: normalize_optional_column(&settings.sid_item_column),
+            sid_notes_enabled: settings.sid_notes_enabled,
             sid_write_false: settings.sid_write_false,
             infestation_column: normalize_optional_column(&settings.infestation_column),
             infestation_write_false: settings.infestation_write_false,
@@ -214,6 +228,10 @@ impl ResolvedCustomLayout {
             late_dead_state: settings.late_dead_state.clone(),
             death_notes_enabled: settings.death_notes_enabled,
             player_names_as_notes: settings.player_names_as_notes,
+            death_enemy_notes_enabled: settings.death_enemy_notes_enabled,
+            enemy_write_false: settings.enemy_write_false,
+            enemy_write_zero: settings.enemy_write_zero,
+            enemy_columns: resolve_enemy_columns(settings),
             fog_column: normalize_optional_column(&settings.fog_column),
             fog_write_false: settings.fog_write_false,
             meteor_column: normalize_optional_column(&settings.meteor_column),
@@ -221,6 +239,82 @@ impl ResolvedCustomLayout {
             gifts_column: normalize_optional_column(&settings.gifts_column),
             gift_boxes_net_only: settings.gift_boxes_net_only,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum EnemyColumnKind {
+    Bool,
+    Count,
+}
+
+#[derive(Debug, Clone)]
+struct EnemyColumnConfig {
+    code_name: &'static str,
+    column: Option<String>,
+    kind: EnemyColumnKind,
+}
+
+fn resolve_enemy_columns(settings: &CustomLcStatsLayoutSettings) -> Vec<EnemyColumnConfig> {
+    vec![
+        enemy_column("Jester", &settings.jester_column, EnemyColumnKind::Bool),
+        enemy_column(
+            "ClaySurgeon",
+            &settings.barber_column,
+            EnemyColumnKind::Bool,
+        ),
+        enemy_column(
+            "SandSpider",
+            &settings.bunker_spider_column,
+            EnemyColumnKind::Bool,
+        ),
+        enemy_column("Flowerman", &settings.bracken_column, EnemyColumnKind::Bool),
+        enemy_column(
+            "Cadaver Growth",
+            &settings.cadaver_column,
+            EnemyColumnKind::Bool,
+        ),
+        enemy_column("Girl", &settings.ghost_girl_column, EnemyColumnKind::Bool),
+        enemy_column(
+            "CaveDweller",
+            &settings.maneater_column,
+            EnemyColumnKind::Bool,
+        ),
+        enemy_column(
+            "Stingray",
+            &settings.backwater_gunkfish_column,
+            EnemyColumnKind::Count,
+        ),
+        enemy_column("Spring", &settings.coil_head_column, EnemyColumnKind::Count),
+        enemy_column(
+            "Hoarding Bug",
+            &settings.hoarding_bug_column,
+            EnemyColumnKind::Count,
+        ),
+        enemy_column(
+            "MaskedPlayerEnemy",
+            &settings.masked_column,
+            EnemyColumnKind::Count,
+        ),
+        enemy_column(
+            "Centipede",
+            &settings.snare_flea_column,
+            EnemyColumnKind::Count,
+        ),
+        enemy_column(
+            "Puffer",
+            &settings.spore_lizard_column,
+            EnemyColumnKind::Count,
+        ),
+        enemy_column("Crawler", &settings.thumper_column, EnemyColumnKind::Count),
+    ]
+}
+
+fn enemy_column(code_name: &'static str, column: &str, kind: EnemyColumnKind) -> EnemyColumnConfig {
+    EnemyColumnConfig {
+        code_name,
+        column: normalize_optional_column(column),
+        kind,
     }
 }
 
@@ -270,6 +364,12 @@ struct NoteCell {
 }
 
 #[derive(Debug, Clone)]
+struct NormalizedEnemyValue {
+    column: String,
+    value: Value,
+}
+
+#[derive(Debug, Clone)]
 struct NormalizedStats {
     new_quota: i64,
     seed: String,
@@ -282,6 +382,7 @@ struct NormalizedStats {
     beehive_amount: String,
     beehive_value: String,
     beehive_collected: String,
+    beehive_collected_value: NoteCell,
     cheap_hive_value: Option<i64>,
     expensive_hive_value: Option<i64>,
     egg_available: NoteCell,
@@ -310,6 +411,7 @@ struct NormalizedStats {
     fog: bool,
     meteor: NoteCell,
     gifts: NoteCell,
+    enemy_values: Vec<NormalizedEnemyValue>,
 }
 
 impl NormalizedStats {
@@ -339,6 +441,7 @@ impl NormalizedStats {
             beehive_amount: beehive_amount(stats, layout.split_hive_count),
             beehive_value: beehive_value(stats),
             beehive_collected: beehive_collected(stats),
+            beehive_collected_value: collected_beehive_value_cell(stats),
             cheap_hive_value: cheap_hive_value(stats),
             expensive_hive_value: expensive_hive_value(stats),
             egg_available: egg_available_cell(stats),
@@ -356,8 +459,8 @@ impl NormalizedStats {
                 &["KnivesCollected"],
             ),
             collected_total: intish_at(stats, &["CollectedTotal"]),
-            available_total: intish_at(stats, &["BottomLine"]),
-            real_available_total: intish_at(stats, &["BottomLineTrue"]),
+            available_total: initial_available_value(stats),
+            real_available_total: total_available_value(stats),
             collected_no_extra: intish_at(stats, &["CollectedNoExtra"]),
             missing: missing_items_cell(stats, layout.filter_collected_gift_scrap_from_missing),
             outside_items: outside_items_cell(stats),
@@ -387,6 +490,7 @@ impl NormalizedStats {
                 note: meteor_time,
             },
             gifts: gifts_cell(stats, layout.gift_boxes_net_only),
+            enemy_values: enemy_values(stats, layout),
         }
     }
 }
@@ -449,6 +553,14 @@ fn build_value_updates(
         row,
         blank_or_x(&stats.beehive_collected),
     );
+    if layout.beehive_collected_value_column.is_some() && !layout.beehive_collected_notes_enabled {
+        push_value(
+            &mut updates,
+            &layout.beehive_collected_value_column,
+            row,
+            stats.beehive_collected_value.value.clone(),
+        );
+    }
     push_hive_text_value(
         &mut updates,
         &layout.bee_value_column,
@@ -561,6 +673,9 @@ fn build_value_updates(
         row,
         json!(stats.spiketrap_count),
     );
+    for enemy in &stats.enemy_values {
+        updates.push((enemy.column.clone(), row, enemy.value.clone()));
+    }
 
     if stats.new_quota != 0 {
         push_value(
@@ -585,6 +700,14 @@ fn build_value_updates(
             row,
             json!(stats.lost_scrap),
         );
+    }
+    if let Some(sid_item) = stats
+        .sid
+        .note
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        push_value(&mut updates, &layout.sid_item_column, row, json!(sid_item));
     }
     for (index, player) in stats
         .players
@@ -678,8 +801,29 @@ async fn write_note_cells(
             &stats.collected_egg,
         );
     }
+    if layout.beehive_collected_notes_enabled {
+        push_note_request(
+            &mut requests,
+            sheet_id,
+            &layout.beehive_collected_value_column,
+            row,
+            &stats.beehive_collected_value,
+        );
+    }
     if stats.sid.value.as_bool().unwrap_or(false) || layout.sid_write_false {
-        push_note_request(&mut requests, sheet_id, &layout.sid_column, row, &stats.sid);
+        push_note_request(
+            &mut requests,
+            sheet_id,
+            &layout.sid_column,
+            row,
+            &NoteCell {
+                note: layout
+                    .sid_notes_enabled
+                    .then(|| stats.sid.note.clone())
+                    .flatten(),
+                ..stats.sid.clone()
+            },
+        );
     }
     if stats.infestation.value.as_bool().unwrap_or(false) || layout.infestation_write_false {
         push_note_request(
@@ -838,6 +982,95 @@ fn google_user_value(value: Value) -> Value {
     }
 }
 
+fn player_death_enemy_note(stats: &Value, death_time: &str) -> Option<String> {
+    let sections = [
+        (
+            "Inside spawns before death:",
+            spawns_before_death(stats, &["IndoorSpawns"], death_time),
+        ),
+        (
+            "Day outside spawns before death:",
+            spawns_before_death(stats, &["DayTimeSpawns"], death_time),
+        ),
+        (
+            "Night outside spawns before death:",
+            spawns_before_death(stats, &["NightTimeSpawns"], death_time),
+        ),
+    ];
+    let lines = sections
+        .into_iter()
+        .filter(|(_, spawns)| !spawns.is_empty())
+        .flat_map(|(header, spawns)| {
+            let mut lines = vec![header.to_string()];
+            lines.extend(spawns);
+            lines
+        })
+        .collect::<Vec<_>>();
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+fn spawns_before_death(stats: &Value, path: &[&str], death_time: &str) -> Vec<String> {
+    let Some(death_minutes) = parse_time_to_minutes(death_time) else {
+        return vec![];
+    };
+    array_at(stats, path)
+        .iter()
+        .filter(|spawn| {
+            spawn
+                .get("SpawnTime")
+                .and_then(Value::as_str)
+                .and_then(parse_time_to_minutes)
+                .map(|spawn_minutes| spawn_minutes <= death_minutes)
+                .unwrap_or(false)
+        })
+        .map(format_spawn_note)
+        .collect()
+}
+
+fn format_spawn_note(spawn: &Value) -> String {
+    let enemy = spawn
+        .get("Enemy")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let spawn_time = spawn
+        .get("SpawnTime")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut note = format!("{enemy} - {spawn_time}");
+    if let Some(death_time) = spawn
+        .get("TimeOfDeath")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        note.push_str(&format!(" / died {death_time}"));
+    }
+    note
+}
+
+fn parse_time_to_minutes(value: &str) -> Option<i64> {
+    let normalized = value.trim().to_ascii_uppercase();
+    let mut parts = normalized.split_whitespace();
+    let time = parts.next()?;
+    let period = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let mut time_parts = time.split(':');
+    let mut hour = time_parts.next()?.parse::<i64>().ok()?;
+    let minute = time_parts.next()?.parse::<i64>().ok()?;
+    if time_parts.next().is_some() || !(0..60).contains(&minute) {
+        return None;
+    }
+    if period == "PM" && hour != 12 {
+        hour += 12;
+    } else if period == "AM" && hour == 12 {
+        hour = 0;
+    } else if period != "AM" && period != "PM" {
+        return None;
+    }
+    Some(hour * 60 + minute)
+}
+
 fn normalize_players(stats: &Value, layout: &ResolvedCustomLayout) -> Vec<NormalizedPlayer> {
     players_at(stats)
         .into_iter()
@@ -889,17 +1122,28 @@ fn normalize_players(stats: &Value, layout: &ResolvedCustomLayout) -> Vec<Normal
             }
             .to_string();
 
-            let note = if !layout.death_notes_enabled || status == layout.missing_state {
+            let note = if status == layout.missing_state {
                 None
             } else {
-                let mut parts = vec![];
-                if !death_time.is_empty() {
-                    parts.push(format!("Time of Death: {death_time}"));
+                let mut sections = vec![];
+                if layout.death_notes_enabled {
+                    let mut parts = vec![];
+                    if !death_time.is_empty() {
+                        parts.push(format!("Time of Death: {death_time}"));
+                    }
+                    if !cause.is_empty() {
+                        parts.push(format!("Cause of Death: {cause}"));
+                    }
+                    if !parts.is_empty() {
+                        sections.push(parts.join("\n"));
+                    }
                 }
-                if !cause.is_empty() {
-                    parts.push(format!("Cause of Death: {cause}"));
+                if layout.death_enemy_notes_enabled {
+                    if let Some(enemy_note) = player_death_enemy_note(stats, &death_time) {
+                        sections.push(enemy_note);
+                    }
                 }
-                (!parts.is_empty()).then(|| parts.join("\n"))
+                (!sections.is_empty()).then(|| sections.join("\n\n"))
             };
 
             NormalizedPlayer { name, status, note }
@@ -949,6 +1193,23 @@ fn beehive_collected(stats: &Value) -> String {
         format!("{small}|{large}")
     } else {
         values.len().to_string()
+    }
+}
+
+fn collected_beehive_value_cell(stats: &Value) -> NoteCell {
+    let mut values = int_values_any(stats, &[&["BeeInfo", "Collected"][..]]);
+    values.sort_unstable();
+    let total = values.iter().sum::<i64>();
+    let value = if values.is_empty() {
+        json!("X")
+    } else {
+        json!(total)
+    };
+    let note = (!values.is_empty()).then(|| egg_values_note("Collected bees", &values));
+    NoteCell {
+        column: String::new(),
+        value,
+        note,
     }
 }
 
@@ -1336,6 +1597,47 @@ fn enemy_count(stats: &Value, enemy: &str) -> usize {
         .count()
 }
 
+fn enemy_values(stats: &Value, layout: &ResolvedCustomLayout) -> Vec<NormalizedEnemyValue> {
+    layout
+        .enemy_columns
+        .iter()
+        .filter_map(|enemy| {
+            let column = enemy.column.as_ref()?;
+            let count = all_spawn_count(stats, enemy.code_name);
+            let value = match enemy.kind {
+                EnemyColumnKind::Bool if count > 0 => Some(json!(true)),
+                EnemyColumnKind::Bool if layout.enemy_write_false => Some(json!(false)),
+                EnemyColumnKind::Bool => None,
+                EnemyColumnKind::Count if count > 0 => Some(json!(count as i64)),
+                EnemyColumnKind::Count if layout.enemy_write_zero => Some(json!(0)),
+                EnemyColumnKind::Count => None,
+            }?;
+            Some(NormalizedEnemyValue {
+                column: column.clone(),
+                value,
+            })
+        })
+        .collect()
+}
+
+fn all_spawn_count(stats: &Value, enemy: &str) -> usize {
+    ["IndoorSpawns", "DayTimeSpawns", "NightTimeSpawns"]
+        .iter()
+        .map(|path| {
+            array_at(stats, &[*path])
+                .iter()
+                .filter(|spawn| {
+                    spawn
+                        .get("Enemy")
+                        .and_then(Value::as_str)
+                        .map(|value| value.eq_ignore_ascii_case(enemy))
+                        .unwrap_or(false)
+                })
+                .count()
+        })
+        .sum()
+}
+
 fn is_economy_moon(stats: &Value) -> bool {
     let moon = strip_moon_number(&strip_apostrophe(&string_at(stats, &["MoonInfo", "Name"])));
     let normalized = moon
@@ -1554,13 +1856,14 @@ mod tests {
         let stats = json!({
             "NewQuota": "'900",
             "ValueSold": "'130",
+            "Version": 70,
             "MoonInfo": { "Name": "'68 Artifice", "Weather": "'Mild" },
             "DungeonInfo": { "Interior": "'MineshaftFlow", "ItemCount": "'34" },
-            "BeeInfo": { "Available": [64, 132] },
+            "BeeInfo": { "Available": [64, 132], "Collected": [64] },
             "EggInfo": { "Available": [18, 12] },
             "IndoorSpawns": [{ "Enemy": "Nutcracker" }],
             "CollectedTotal": "'926",
-            "BottomLine": "'2133",
+            "InitialAvailableValue": "'2133",
             "IndoorFog": true,
             "Players": {
                 "1": { "Name": "'Aureo", "Alive": true, "Disconnected": false }
@@ -1580,6 +1883,8 @@ mod tests {
             bee_amount_column: "K".to_string(),
             split_hive_count: true,
             beehive_collected_column: "AQ".to_string(),
+            beehive_collected_value_column: "AV".to_string(),
+            beehive_collected_notes_enabled: false,
             bee_value_column: "".to_string(),
             cheap_hive_column: "AD".to_string(),
             expensive_hive_column: "AE".to_string(),
@@ -1601,6 +1906,8 @@ mod tests {
             outside_items_column: "AR".to_string(),
             sold_column: "R".to_string(),
             sid_column: "S".to_string(),
+            sid_item_column: "BD".to_string(),
+            sid_notes_enabled: true,
             sid_write_false: true,
             infestation_column: "T".to_string(),
             infestation_write_false: true,
@@ -1628,6 +1935,7 @@ mod tests {
             meteor_write_false: true,
             gifts_column: "AB".to_string(),
             gift_boxes_net_only: false,
+            ..Default::default()
         });
         let normalized = NormalizedStats::from_stats(&stats, &layout);
 
@@ -1641,6 +1949,7 @@ mod tests {
         assert_eq!(cell_value(&updates, "K"), Some(&json!("1|1")));
         assert_eq!(cell_value(&updates, "AD"), Some(&json!(64)));
         assert_eq!(cell_value(&updates, "AE"), Some(&json!(132)));
+        assert_eq!(cell_value(&updates, "AV"), Some(&json!(64)));
         assert_eq!(cell_value(&updates, "L"), Some(&json!("12|18")));
         assert_eq!(cell_value(&updates, "M"), Some(&json!(1)));
         assert_eq!(cell_value(&updates, "AG"), Some(&json!(0)));
@@ -1652,7 +1961,7 @@ mod tests {
         assert_eq!(cell_value_at(&updates, "AB", 56), Some(&json!("Aureo")));
         assert_eq!(cell_value(&updates, "Y"), Some(&json!(true)));
         assert_eq!(cell_value(&updates, "K").is_some(), true);
-        assert_eq!(cell_value(&updates, "AQ"), Some(&json!("X")));
+        assert_eq!(cell_value(&updates, "AQ"), Some(&json!("1|0")));
         assert_eq!(cell_value(&updates, "AU"), None);
         assert_eq!(cell_value(&updates, "AA"), None);
     }
@@ -1681,6 +1990,147 @@ mod tests {
         let updates = build_value_updates(&normalized, &layout, 7);
 
         assert_eq!(cell_value(&updates, "AI"), Some(&json!("10183014")));
+    }
+
+    #[test]
+    fn sid_item_column_writes_item_name_only_for_sid() {
+        let layout = ResolvedCustomLayout::from_settings(&CustomLcStatsLayoutSettings {
+            sid_item_column: "BA".to_string(),
+            sid_notes_enabled: true,
+            ..Default::default()
+        });
+
+        let normalized =
+            NormalizedStats::from_stats(&json!({ "SIDType": "'Cash register" }), &layout);
+        let updates = build_value_updates(&normalized, &layout, 7);
+        assert_eq!(cell_value(&updates, "BA"), Some(&json!("Cash register")));
+        assert_eq!(normalized.sid.note.as_deref(), Some("Cash register"));
+
+        let sid_note_request = value_with_note_request(
+            123,
+            &NoteCell {
+                column: "Y".to_string(),
+                value: normalized.sid.value.clone(),
+                note: normalized.sid.note.clone(),
+            },
+            7,
+        );
+        assert_eq!(
+            sid_note_request["updateCells"]["rows"][0]["values"][0]["userEnteredValue"]
+                ["boolValue"],
+            json!(true)
+        );
+        assert_eq!(
+            sid_note_request["updateCells"]["rows"][0]["values"][0]["note"],
+            json!("Cash register")
+        );
+
+        let sid_without_note_request = value_with_note_request(
+            123,
+            &NoteCell {
+                column: "Y".to_string(),
+                value: normalized.sid.value.clone(),
+                note: None,
+            },
+            7,
+        );
+        assert!(
+            sid_without_note_request["updateCells"]["rows"][0]["values"][0]
+                .get("note")
+                .is_none()
+        );
+
+        let normalized = NormalizedStats::from_stats(&json!({ "SIDType": "" }), &layout);
+        let updates = build_value_updates(&normalized, &layout, 7);
+        assert_eq!(cell_value(&updates, "BA"), None);
+    }
+
+    #[test]
+    fn enemy_group_writes_bool_and_count_columns() {
+        let stats = json!({
+            "IndoorSpawns": [
+                { "Enemy": "Flowerman", "SpawnTime": "9:00 PM" },
+                { "Enemy": "Spring", "SpawnTime": "9:10 PM" },
+                { "Enemy": "Spring", "SpawnTime": "9:20 PM" }
+            ],
+            "DayTimeSpawns": [
+                { "Enemy": "Stingray", "SpawnTime": "1:00 PM" }
+            ],
+            "NightTimeSpawns": [
+                { "Enemy": "MaskedPlayerEnemy", "SpawnTime": "10:00 PM" }
+            ]
+        });
+        let settings = CustomLcStatsLayoutSettings {
+            jester_column: "BA".to_string(),
+            bracken_column: "BB".to_string(),
+            coil_head_column: "BC".to_string(),
+            backwater_gunkfish_column: "BD".to_string(),
+            masked_column: "BE".to_string(),
+            snare_flea_column: "BF".to_string(),
+            ..Default::default()
+        };
+        let layout = ResolvedCustomLayout::from_settings(&settings);
+        let normalized = NormalizedStats::from_stats(&stats, &layout);
+        let updates = build_value_updates(&normalized, &layout, 7);
+
+        assert_eq!(cell_value(&updates, "BA"), None);
+        assert_eq!(cell_value(&updates, "BB"), Some(&json!(true)));
+        assert_eq!(cell_value(&updates, "BC"), Some(&json!(2)));
+        assert_eq!(cell_value(&updates, "BD"), Some(&json!(1)));
+        assert_eq!(cell_value(&updates, "BE"), Some(&json!(1)));
+        assert_eq!(cell_value(&updates, "BF"), None);
+
+        let layout = ResolvedCustomLayout::from_settings(&CustomLcStatsLayoutSettings {
+            enemy_write_false: true,
+            enemy_write_zero: true,
+            ..settings
+        });
+        let normalized = NormalizedStats::from_stats(&stats, &layout);
+        let updates = build_value_updates(&normalized, &layout, 7);
+
+        assert_eq!(cell_value(&updates, "BA"), Some(&json!(false)));
+        assert_eq!(cell_value(&updates, "BF"), Some(&json!(0)));
+    }
+
+    #[test]
+    fn death_enemy_notes_append_after_death_reason() {
+        let stats = json!({
+            "IndoorSpawns": [
+                { "Enemy": "Flowerman", "SpawnTime": "9:00 PM" },
+                { "Enemy": "Spring", "SpawnTime": "11:00 PM" }
+            ],
+            "NightTimeSpawns": [
+                { "Enemy": "MaskedPlayerEnemy", "SpawnTime": "9:30 PM", "TimeOfDeath": "9:45 PM" }
+            ],
+            "Players": {
+                "1": {
+                    "Name": "'Aureo",
+                    "Alive": false,
+                    "Disconnected": false,
+                    "TimeOfDeath": "'10:00 PM",
+                    "CauseOfDeath": "'Blunt force trauma"
+                }
+            }
+        });
+        let layout = ResolvedCustomLayout::from_settings(&CustomLcStatsLayoutSettings {
+            death_enemy_notes_enabled: true,
+            death_notes_enabled: true,
+            ..Default::default()
+        });
+        let normalized = NormalizedStats::from_stats(&stats, &layout);
+        let note = normalized
+            .players
+            .first()
+            .and_then(|player| player.note.as_deref())
+            .unwrap_or_default();
+
+        assert!(note.contains("Cause of Death: Blunt force trauma"));
+        assert!(note.contains("Inside spawns before death:\nFlowerman - 9:00 PM"));
+        assert!(!note.contains("Spring - 11:00 PM"));
+        assert!(note.contains(
+            "Night outside spawns before death:\nMaskedPlayerEnemy - 9:30 PM / died 9:45 PM"
+        ));
+        assert!(note.find("Cause of Death") < note.find("Inside spawns before death"));
     }
 
     #[test]
@@ -1747,6 +2197,8 @@ mod tests {
         });
         let layout = ResolvedCustomLayout::from_settings(&CustomLcStatsLayoutSettings {
             beehive_collected_column: "AV".to_string(),
+            beehive_collected_value_column: "BC".to_string(),
+            beehive_collected_notes_enabled: false,
             outside_items_column: "AW".to_string(),
             knife_column: "AX".to_string(),
             shotgun_column: "AY".to_string(),
@@ -1760,6 +2212,11 @@ mod tests {
         let updates = build_value_updates(&normalized, &layout, 7);
 
         assert_eq!(cell_value(&updates, "AV"), Some(&json!("1|0")));
+        assert_eq!(cell_value(&updates, "BC"), Some(&json!(64)));
+        assert_eq!(
+            normalized.beehive_collected_value.note.as_deref(),
+            Some("Collected bees: 64")
+        );
         assert_eq!(cell_value(&updates, "AZ"), Some(&json!(true)));
         assert_eq!(
             normalized

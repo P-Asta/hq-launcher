@@ -6,8 +6,8 @@ use crate::lcstats_autosheet::sheets::{
     batch_update_spreadsheet, batch_write_cells_user_entered, first_empty_row_from, get_sheet_id,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, bool_at, intish_value, players_at, string_at, strip_moon_number,
-    value_at, value_at_any,
+    array_at, array_at_any, bool_at, initial_available_value, intish_value, players_at, string_at,
+    strip_moon_number, value_at, value_at_any,
 };
 
 const START_ROW: usize = 3;
@@ -165,7 +165,7 @@ impl NormalizedStats {
             nutcracker_count: enemy_count(stats, "Nutcracker"),
             butler_count: enemy_count(stats, "Butler"),
             collected_total: intish_at(stats, &["CollectedTotal"]),
-            available_total: intish_at(stats, &["BottomLine"]),
+            available_total: initial_available_value(stats),
             missing: missing_items_cell(stats),
             value_sold: intish_at(stats, &["ValueSold"]),
             sid: NoteCell {
@@ -648,7 +648,7 @@ mod tests {
                 { "Enemy": "Butler" }
             ],
             "CollectedTotal": "'926",
-            "BottomLine": "'2133",
+            "InitialAvailableValue": "'2133",
             "SIDType": "'Mineshaft",
             "InfestationType": "'Spiders",
             "IndoorFog": true,

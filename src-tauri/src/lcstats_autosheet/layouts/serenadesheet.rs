@@ -7,8 +7,8 @@ use crate::lcstats_autosheet::sheets::{
     number_value, read_number,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, bool_at, intish_value, players_at, string_at, strip_moon_number,
-    value_at, value_at_any,
+    array_at, array_at_any, bool_at, initial_available_value, intish_value, players_at, string_at,
+    strip_moon_number, value_at, value_at_any,
 };
 
 const START_ROW: usize = 4;
@@ -243,7 +243,7 @@ impl NormalizedStats {
                 .sum(),
             butler_count: enemy_count(stats, "Butler"),
             topline: intish_at(stats, &["CollectedTotal"]),
-            bottomline: intish_at(stats, &["BottomLine"]),
+            bottomline: initial_available_value(stats),
             gift_net: gifts.0,
             gift_opened_value: gifts.1,
             value_sold: intish_at(stats, &["ValueSold"]),
@@ -847,7 +847,7 @@ fn is_gordion_stats(stats: &Value) -> bool {
         .filter(|ch| ch.is_ascii_alphabetic())
         .collect::<String>()
         .to_ascii_uppercase();
-    normalized == "GORDION" || normalized == "GORION"
+    normalized == "GORDION" || normalized == "GORION" || normalized == "GALETRY"
 }
 
 fn intish_at(stats: &Value, path: &[&str]) -> i64 {
@@ -938,6 +938,15 @@ mod tests {
         assert_eq!(cell_value_at(&updates, QUOTA_COLUMN, 8), Some(&json!(900)));
         assert_eq!(cell_value_at(&updates, MOON_COLUMN, 8), None);
         assert_eq!(cell_value_at(&updates, TOPLINE_COLUMN, 8), None);
+    }
+
+    #[test]
+    fn galetry_stats_use_gordion_economy_path() {
+        let stats = json!({
+            "MoonInfo": { "Name": "'Galetry" }
+        });
+
+        assert!(is_gordion_stats(&stats));
     }
 
     fn cell_value<'a>(values: &'a [(String, usize, Value)], column: &str) -> Option<&'a Value> {

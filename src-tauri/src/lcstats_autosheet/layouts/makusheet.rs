@@ -9,7 +9,7 @@ use crate::lcstats_autosheet::sheets::{
 };
 use crate::lcstats_autosheet::stats::{
     array_at, array_at_any, intish_value, object_at, players_at, string_at, strip_moon_number,
-    value_at,
+    total_available_value, value_at,
 };
 
 const CHECK_COLUMN: &str = "K";
@@ -282,7 +282,7 @@ fn build_values(
     row: usize,
 ) -> Vec<(String, usize, Value)> {
     let collected = intish_at(stats, &["CollectedTotal"]);
-    let available = intish_at(stats, &["BottomLineTrue"]);
+    let available = total_available_value(stats);
     let lost_scrap = lost_scrap(stats);
     let mut values = vec![
         (MOON_COLUMN.to_string(), row, json!(maku_moon_name(stats))),
@@ -515,7 +515,7 @@ fn is_gordion_stats(stats: &Value) -> bool {
         .filter(|ch| ch.is_ascii_alphabetic())
         .collect::<String>()
         .to_ascii_uppercase();
-    normalized == "GORDION" || normalized == "GORION"
+    normalized == "GORDION" || normalized == "GORION" || normalized == "GALETRY"
 }
 
 fn value_with_note_request(
@@ -575,7 +575,7 @@ mod tests {
             "DungeonInfo": { "Interior": "Mineshaft", "ItemCount": 34 },
             "BeeInfo": { "Available": [64, 88, 64] },
             "CollectedTotal": 926,
-            "BottomLineTrue": 2133
+            "TotalAvailableValue": 2133
         });
 
         let values = build_values(&stats, &HashMap::new(), 7);
@@ -592,7 +592,7 @@ mod tests {
             "DungeonInfo": { "Interior": "'Mineshaft", "ItemCount": "'34" },
             "BeeInfo": { "Available": [64, 88, 64] },
             "CollectedTotal": "'926",
-            "BottomLineTrue": "'2133",
+            "TotalAvailableValue": "'2133",
             "MissedItems": [
                 { "Value": "'40", "CollectedOnPreviousDay": true }
             ],
@@ -636,7 +636,16 @@ mod tests {
             "MoonInfo": { "Name": "'71 Gorion", "Weather": "Mild" },
             "DungeonInfo": { "Interior": "Mineshaft", "ItemCount": 34 },
             "CollectedTotal": 926,
-            "BottomLineTrue": 2133
+            "TotalAvailableValue": 2133
+        });
+
+        assert!(is_gordion_stats(&stats));
+    }
+
+    #[test]
+    fn galetry_stats_are_economy_only() {
+        let stats = json!({
+            "MoonInfo": { "Name": "'Galetry" }
         });
 
         assert!(is_gordion_stats(&stats));

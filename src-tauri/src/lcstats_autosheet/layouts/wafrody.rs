@@ -8,8 +8,8 @@ use crate::lcstats_autosheet::sheets::{
     first_empty_row_from, get_sheet_id, number_value, quote_sheet_name, read_number, read_range,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, bool_at, object_at, players_at, string_at, strip_moon_number, value_at,
-    value_at_any,
+    array_at, array_at_any, bool_at, initial_available_value, object_at, players_at, string_at,
+    strip_moon_number, value_at, value_at_any,
 };
 
 const TARGET_SHEET_CELL: &str = "A1";
@@ -36,7 +36,6 @@ const KNIVES_COLLECTED_COLUMN: &str = "V";
 const BUTLER_COUNT_COLUMN: &str = "W";
 const COLLECTED_TOTAL_COLUMN: &str = "X";
 const BOTTOM_LINE_COLUMN: &str = "Y";
-const REAL_LINE_COLUMN: &str = "Z";
 const MISSED_ITEMS_NOTE_COLUMN: &str = "AA";
 const VALUE_SOLD_COLUMN: &str = "AJ";
 const GIFT_BONUS_COLUMN: &str = "AK";
@@ -286,7 +285,6 @@ struct NormalizedStats {
     butler_count: usize,
     collected_total: i64,
     bottom_line: i64,
-    real_line: i64,
     value_sold: i64,
     gift_bonus: i64,
     new_quota: i64,
@@ -314,7 +312,7 @@ impl NormalizedStats {
         let meteor_shower_time = non_false_text(&string_at(stats, &["MeteorShowerTime"]));
         let shotgun_available = intish_array_any(stats, &[&["ShotgunInfo", "Available"][..]]);
         let knife_available = intish_array_any(stats, &[&["KnifeInfo", "Available"][..]]);
-        let bottom_line = intish_at(stats, &["BottomLine"]) + shotgun_available.iter().sum::<i64>();
+        let bottom_line = initial_available_value(stats) + shotgun_available.iter().sum::<i64>();
         Self {
             moon_name: strip_apostrophe(&string_at(stats, &["MoonInfo", "Name"])),
             weather: wafrody_weather(&string_at(stats, &["MoonInfo", "Weather"])),
@@ -342,7 +340,6 @@ impl NormalizedStats {
             butler_count: indoor_enemy_count(stats, "Butler"),
             collected_total: intish_at(stats, &["CollectedTotal"]),
             bottom_line,
-            real_line: intish_at(stats, &["BottomLineTrue"]),
             value_sold: intish_at(stats, &["ValueSold"]),
             gift_bonus: gift_bonus_total(stats),
             new_quota: intish_at(stats, &["NewQuota"]),
@@ -460,7 +457,6 @@ fn build_value_updates(
             row,
             json!(stats.bottom_line),
         ),
-        (REAL_LINE_COLUMN.to_string(), row, json!(stats.real_line)),
         (SEED_COLUMN.to_string(), row, json!(stats.seed)),
     ];
 
@@ -940,7 +936,7 @@ fn is_gordion_stats(stats: &Value) -> bool {
         .filter(|ch| ch.is_ascii_alphabetic())
         .collect::<String>()
         .to_ascii_uppercase();
-    normalized == "GORDION" || normalized == "GORION"
+    normalized == "GORDION" || normalized == "GORION" || normalized == "GALETRY"
 }
 
 fn wafrody_weather(value: &str) -> String {
@@ -1620,7 +1616,7 @@ mod tests {
     #[test]
     fn bottom_line_includes_available_shotgun_values() {
         let stats = json!({
-            "BottomLine": 500,
+            "InitialAvailableValue": 500,
             "ShotgunInfo": { "Available": [60, 70], "Collected": [] }
         });
 
@@ -1735,6 +1731,15 @@ mod tests {
         assert_eq!(run_block_start_row(5), 4);
         assert_eq!(run_block_start_row(7), 4);
         assert_eq!(run_block_start_row(8), 7);
+    }
+
+    #[test]
+    fn galetry_stats_use_gordion_economy_path() {
+        let stats = json!({
+            "MoonInfo": { "Name": "'Galetry" }
+        });
+
+        assert!(is_gordion_stats(&stats));
     }
 
     fn cell_value<'a>(updates: &'a [(String, usize, Value)], column: &str) -> Option<&'a Value> {

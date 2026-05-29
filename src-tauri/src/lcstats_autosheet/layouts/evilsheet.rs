@@ -8,7 +8,8 @@ use crate::lcstats_autosheet::sheets::{
     first_empty_row_from, get_sheet_id, number_value, quote_sheet_name, read_number, read_range,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, object_at, players_at, string_at, strip_moon_number, value_at,
+    array_at, array_at_any, initial_available_value, object_at, players_at, string_at,
+    strip_moon_number, value_at,
 };
 
 const TARGET_SHEET_CELL: &str = "A1";
@@ -260,7 +261,7 @@ impl NormalizedStats {
             )
             .len(),
             collected_total: intish_at(stats, &["CollectedTotal"]),
-            available_total: intish_at(stats, &["BottomLine"]),
+            available_total: initial_available_value(stats),
             value_sold: intish_at(stats, &["ValueSold"]),
             lost_scrap: lost_scrap(stats),
             new_quota: intish_at(stats, &["NewQuota"]),
@@ -517,7 +518,7 @@ fn is_gordion_stats(stats: &Value) -> bool {
         .filter(|ch| ch.is_ascii_alphabetic())
         .collect::<String>()
         .to_ascii_uppercase();
-    normalized == "GORDION" || normalized == "GORION"
+    normalized == "GORDION" || normalized == "GORION" || normalized == "GALETRY"
 }
 
 fn evilsheet_weather(value: &str) -> String {
@@ -613,7 +614,7 @@ mod tests {
             "DungeonInfo": { "Interior": "'Mineshaft", "ItemCount": "'34" },
             "BeeInfo": { "Available": [64, 132] },
             "CollectedTotal": "'926",
-            "BottomLine": "'2133",
+            "InitialAvailableValue": "'2133",
             "MissedItems": [
                 { "Value": 30, "CollectedOnPreviousDay": true }
             ],
@@ -654,6 +655,15 @@ mod tests {
         assert_eq!(run_block_start_row(5), 4);
         assert_eq!(run_block_start_row(7), 4);
         assert_eq!(run_block_start_row(8), 7);
+    }
+
+    #[test]
+    fn galetry_stats_use_gordion_economy_path() {
+        let stats = json!({
+            "MoonInfo": { "Name": "'Galetry" }
+        });
+
+        assert!(is_gordion_stats(&stats));
     }
 
     fn cell_value<'a>(values: &'a [(String, usize, Value)], column: &str) -> Option<&'a Value> {

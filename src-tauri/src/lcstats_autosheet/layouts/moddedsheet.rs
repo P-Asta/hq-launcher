@@ -6,7 +6,7 @@ use crate::lcstats_autosheet::sheets::{
     batch_write_cells_user_entered, first_empty_row_from, number_value, read_number,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, int_at, intish_value, string_at, strip_moon_number, value_at,
+    array_at, int_at, intish_value, string_at, strip_moon_number, total_available_value, value_at,
 };
 
 const QUOTA_COLUMN: &str = "B";
@@ -146,7 +146,7 @@ fn build_values(
             (
                 BOTTOMLINE_COLUMN.to_string(),
                 day_row,
-                json!(int_at(stats, &["BottomLineTrue"])),
+                json!(total_available_value(stats)),
             ),
         ]);
     }
@@ -219,7 +219,7 @@ impl StatsKind {
 fn stats_kind(stats: &Value) -> StatsKind {
     let moon = string_at(stats, &["MoonInfo", "Name"]);
     let collected = int_at(stats, &["CollectedTotal"]);
-    let bottomline = int_at(stats, &["BottomLineTrue"]);
+    let bottomline = total_available_value(stats);
     let interior = string_at(stats, &["DungeonInfo", "Interior"]);
     let weather = string_at(stats, &["MoonInfo", "Weather"]);
     if !moon.trim().is_empty()
@@ -272,7 +272,7 @@ fn is_gordion_stats(stats: &Value) -> bool {
         .filter(|ch| ch.is_ascii_alphabetic())
         .collect::<String>()
         .to_ascii_uppercase();
-    normalized == "GORDION" || normalized == "GORION"
+    normalized == "GORDION" || normalized == "GORION" || normalized == "GALETRY"
 }
 
 fn strip_apostrophe(value: &str) -> String {
@@ -317,7 +317,7 @@ mod tests {
                 "Interior": "ToystoreFlow"
             },
             "CollectedTotal": 420,
-            "BottomLineTrue": 680,
+            "TotalAvailableValue": 680,
             "MissedItems": [
                 { "Value": "'20", "CollectedOnPreviousDay": true },
                 { "Value": 30, "CollectedOnPreviousDay": false }
@@ -378,7 +378,7 @@ mod tests {
                 "Interior": "Factory"
             },
             "CollectedTotal": 0,
-            "BottomLineTrue": 446
+            "TotalAvailableValue": 446
         });
 
         let values = build_economy_values(&stats, 5, 4);
@@ -411,6 +411,19 @@ mod tests {
         assert_eq!(cell_value(&values, LOST_SOLD_COLUMN), None);
         assert_eq!(cell_value(&values, QUOTA_COLUMN), Some(&json!(900)));
         assert_eq!(cell_row(&values, QUOTA_COLUMN), Some(8));
+    }
+
+    #[test]
+    fn galetry_events_are_economy_events() {
+        let stats = json!({
+            "MoonInfo": {
+                "Name": "'Galetry"
+            },
+            "CollectedTotal": 120
+        });
+
+        assert!(is_gordion_stats(&stats));
+        assert!(is_economy_stats(&stats));
     }
 
     #[test]

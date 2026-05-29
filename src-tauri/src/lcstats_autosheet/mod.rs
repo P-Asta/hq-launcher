@@ -4,7 +4,7 @@ mod stats;
 
 use futures_util::StreamExt;
 use serde_json::Value;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,6 +16,7 @@ const LCSTATS_WRITE_TIMEOUT: Duration = Duration::from_secs(45);
 #[derive(Clone, Default)]
 pub struct LcStatsAutosheetState {
     running: Arc<AtomicBool>,
+    generation: Arc<AtomicU64>,
 }
 
 pub fn start_for_launch(
@@ -47,17 +48,52 @@ pub fn start_for_launch(
         return;
     }
 
+    let generation = state.generation.fetch_add(1, Ordering::AcqRel) + 1;
     let state = state.inner().clone();
     tauri::async_runtime::spawn(async move {
-        let result = run_listener(app).await;
+        let result = run_listener(app, state.clone(), generation).await;
         if let Err(e) = result {
             log::warn!("LCStatsTracker AutoSheet listener stopped: {e}");
         }
-        state.running.store(false, Ordering::Release);
+        if state.generation.load(Ordering::Acquire) == generation {
+            state.running.store(false, Ordering::Release);
+        }
     });
 }
 
-async fn run_listener(app: tauri::AppHandle) -> Result<(), String> {
+pub fn start_manual(
+    app: tauri::AppHandle,
+    state: &tauri::State<'_, LcStatsAutosheetState>,
+) -> Result<bool, String> {
+    if !crate::google_oauth::auth_status(app.clone())?.authenticated {
+        return Err("Google login is required to track LCStatsTracker.".to_string());
+    }
+    let settings = crate::google_oauth::get_settings(app.clone())?;
+    if settings.spreadsheet_id.trim().is_empty() || settings.active_sheet_name.trim().is_empty() {
+        return Err("Spreadsheet and sheet are required to track LCStatsTracker.".to_string());
+    }
+    if !layouts::is_supported_layout(&settings.layout) {
+        return Err(format!("Layout {} has no writer yet.", settings.layout));
+    }
+
+    start_for_launch(app, true, state);
+    Ok(is_running(state))
+}
+
+pub fn stop(state: &tauri::State<'_, LcStatsAutosheetState>) {
+    state.generation.fetch_add(1, Ordering::AcqRel);
+    state.running.store(false, Ordering::Release);
+}
+
+pub fn is_running(state: &tauri::State<'_, LcStatsAutosheetState>) -> bool {
+    state.running.load(Ordering::Acquire)
+}
+
+async fn run_listener(
+    app: tauri::AppHandle,
+    state: LcStatsAutosheetState,
+    generation: u64,
+) -> Result<(), String> {
     if !crate::google_oauth::auth_status(app.clone())?.authenticated {
         log::info!("LCStatsTracker AutoSheet listener skipped: Google login is not connected");
         return Ok(());
@@ -80,7 +116,9 @@ async fn run_listener(app: tauri::AppHandle) -> Result<(), String> {
         .build()
         .map_err(|e| e.to_string())?;
 
-    loop {
+    while state.running.load(Ordering::Acquire)
+        && state.generation.load(Ordering::Acquire) == generation
+    {
         match tokio::time::timeout(LCSTATS_PAYLOAD_TIMEOUT, receive_lcstats_payload(&client)).await
         {
             Ok(Ok(payload)) => {
@@ -142,6 +180,8 @@ async fn run_listener(app: tauri::AppHandle) -> Result<(), String> {
             }
         }
     }
+
+    Ok(())
 }
 
 async fn receive_lcstats_payload(client: &reqwest::Client) -> Result<String, String> {

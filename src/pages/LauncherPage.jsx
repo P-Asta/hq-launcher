@@ -230,7 +230,7 @@ const LCSTATS_LAYOUTS = [
   // "AutoSheetModel",
   "BreadSheet",
   "WafrodyAutoSheet",
-  "SerenadeSheet",
+  // "SerenadeSheet",
   "CharlyAutoSheet",
   "Evilsheet",
   "MakuSheet 1.0",
@@ -255,6 +255,8 @@ const DEFAULT_CUSTOM_LCSTATS_LAYOUT = {
   beeAmountColumn: "J",
   splitHiveCount: false,
   beehiveCollectedColumn: "",
+  beehiveCollectedValueColumn: "",
+  beehiveCollectedNotesEnabled: true,
   beeValueColumn: "K",
   cheapHiveColumn: "",
   expensiveHiveColumn: "",
@@ -276,6 +278,8 @@ const DEFAULT_CUSTOM_LCSTATS_LAYOUT = {
   outsideItemsColumn: "",
   soldColumn: "X",
   sidColumn: "Y",
+  sidItemColumn: "",
+  sidNotesEnabled: true,
   sidWriteFalse: false,
   infestationColumn: "Z",
   infestationWriteFalse: false,
@@ -297,6 +301,23 @@ const DEFAULT_CUSTOM_LCSTATS_LAYOUT = {
   lateDeadState: "SX",
   deathNotesEnabled: true,
   playerNamesAsNotes: false,
+  deathEnemyNotesEnabled: false,
+  enemyWriteFalse: false,
+  enemyWriteZero: false,
+  jesterColumn: "",
+  barberColumn: "",
+  bunkerSpiderColumn: "",
+  brackenColumn: "",
+  cadaverColumn: "",
+  ghostGirlColumn: "",
+  maneaterColumn: "",
+  backwaterGunkfishColumn: "",
+  coilHeadColumn: "",
+  hoardingBugColumn: "",
+  maskedColumn: "",
+  snareFleaColumn: "",
+  sporeLizardColumn: "",
+  thumperColumn: "",
   fogColumn: "AG",
   fogWriteFalse: false,
   meteorColumn: "AH",
@@ -561,6 +582,11 @@ function normalizeCustomLcstatsLayout(layout = {}) {
     beeAmountColumn: normalizeSheetColumn(source.beeAmountColumn, ""),
     splitHiveCount: source.splitHiveCount === true,
     beehiveCollectedColumn: normalizeSheetColumn(source.beehiveCollectedColumn, ""),
+    beehiveCollectedValueColumn: normalizeSheetColumn(
+      source.beehiveCollectedValueColumn,
+      "",
+    ),
+    beehiveCollectedNotesEnabled: source.beehiveCollectedNotesEnabled !== false,
     beeValueColumn: normalizeSheetColumn(source.beeValueColumn, ""),
     cheapHiveColumn: normalizeSheetColumn(source.cheapHiveColumn, ""),
     expensiveHiveColumn: normalizeSheetColumn(source.expensiveHiveColumn, ""),
@@ -583,6 +609,8 @@ function normalizeCustomLcstatsLayout(layout = {}) {
     outsideItemsColumn: normalizeSheetColumn(source.outsideItemsColumn, ""),
     soldColumn: normalizeSheetColumn(source.soldColumn, ""),
     sidColumn: normalizeSheetColumn(source.sidColumn, ""),
+    sidItemColumn: normalizeSheetColumn(source.sidItemColumn, ""),
+    sidNotesEnabled: source.sidNotesEnabled !== false,
     sidWriteFalse: source.sidWriteFalse === true,
     infestationColumn: normalizeSheetColumn(source.infestationColumn, ""),
     infestationWriteFalse: source.infestationWriteFalse === true,
@@ -607,6 +635,23 @@ function normalizeCustomLcstatsLayout(layout = {}) {
     lateDeadState: String(source.lateDeadState ?? "SX"),
     deathNotesEnabled: source.deathNotesEnabled !== false,
     playerNamesAsNotes: source.playerNamesAsNotes === true,
+    deathEnemyNotesEnabled: source.deathEnemyNotesEnabled === true,
+    enemyWriteFalse: source.enemyWriteFalse === true,
+    enemyWriteZero: source.enemyWriteZero === true,
+    jesterColumn: normalizeSheetColumn(source.jesterColumn, ""),
+    barberColumn: normalizeSheetColumn(source.barberColumn, ""),
+    bunkerSpiderColumn: normalizeSheetColumn(source.bunkerSpiderColumn, ""),
+    brackenColumn: normalizeSheetColumn(source.brackenColumn, ""),
+    cadaverColumn: normalizeSheetColumn(source.cadaverColumn, ""),
+    ghostGirlColumn: normalizeSheetColumn(source.ghostGirlColumn, ""),
+    maneaterColumn: normalizeSheetColumn(source.maneaterColumn, ""),
+    backwaterGunkfishColumn: normalizeSheetColumn(source.backwaterGunkfishColumn, ""),
+    coilHeadColumn: normalizeSheetColumn(source.coilHeadColumn, ""),
+    hoardingBugColumn: normalizeSheetColumn(source.hoardingBugColumn, ""),
+    maskedColumn: normalizeSheetColumn(source.maskedColumn, ""),
+    snareFleaColumn: normalizeSheetColumn(source.snareFleaColumn, ""),
+    sporeLizardColumn: normalizeSheetColumn(source.sporeLizardColumn, ""),
+    thumperColumn: normalizeSheetColumn(source.thumperColumn, ""),
     fogColumn: normalizeSheetColumn(source.fogColumn, ""),
     fogWriteFalse: source.fogWriteFalse === true,
     meteorColumn: normalizeSheetColumn(source.meteorColumn, ""),
@@ -1233,6 +1278,8 @@ export default function LauncherPage({
   const [selectedMod, setSelectedMod] = useState(null);
   const [modEnabled, setModEnabled] = useState(true);
   const [modToggleBusy, setModToggleBusy] = useState(false);
+  const [lcstatsTrackingBusy, setLcstatsTrackingBusy] = useState(false);
+  const [lcstatsTrackingEnabled, setLcstatsTrackingEnabled] = useState(false);
   const [modToggleBusyKeys, setModToggleBusyKeys] = useState(() => new Set());
   const [disabledMods, setDisabledMods] = useState([]); // [{dev,name}] normalized by backend
   const [installedModVersionsByVersion, setInstalledModVersionsByVersion] =
@@ -1532,6 +1579,24 @@ export default function LauncherPage({
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!isLcStatsTrackerMod(selectedMod)) return;
+    let cancelled = false;
+    invoke("get_lcstats_autosheet_tracking")
+      .then((running) => {
+        if (cancelled) return;
+        setLcstatsTrackingEnabled(!!running);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error(error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedMod]);
 
   useEffect(() => {
     if (!isLcStatsTrackerMod(selectedMod)) return;
@@ -3882,6 +3947,14 @@ export default function LauncherPage({
             ["Bee amount", "beeAmountColumn", "J"],
             ["Split count", "splitHiveCount", "", "checkbox", "Cheap/exp"],
             ["Bee collected", "beehiveCollectedColumn", ""],
+            ["Collected bee value", "beehiveCollectedValueColumn", ""],
+            [
+              "Collected bee note",
+              "beehiveCollectedNotesEnabled",
+              "",
+              "checkbox",
+              "Add note",
+            ],
             ["Bee value", "beeValueColumn", "K"],
             ["Cheap hive", "cheapHiveColumn", ""],
             ["Exp hive", "expensiveHiveColumn", ""],
@@ -3948,7 +4021,9 @@ export default function LauncherPage({
           ],
           [
             ["SID", "sidColumn", "Y"],
+            ["SID note", "sidNotesEnabled", "", "checkbox", "Add note"],
             ["SID false", "sidWriteFalse", "", "checkbox", "Write false"],
+            ["SID item", "sidItemColumn", ""],
             ["Infes", "infestationColumn", "Z"],
             ["Infes false", "infestationWriteFalse", "", "checkbox", "Write false"],
           ],
@@ -3967,6 +4042,45 @@ export default function LauncherPage({
             ["Turrets", "turretColumn", ""],
             ["Landmines", "landmineColumn", ""],
             ["Spiketraps", "spiketrapColumn", ""],
+          ],
+        ],
+      },
+      {
+        title: "Enemy",
+        columns: "grid-cols-[repeat(auto-fit,minmax(13rem,1fr))]",
+        groups: [
+          [
+            [
+              "Death enemy note",
+              "deathEnemyNotesEnabled",
+              "",
+              "checkbox",
+              "Add note",
+            ],
+            ["Write false", "enemyWriteFalse", "", "checkbox", "Write false"],
+            ["Write 0", "enemyWriteZero", "", "checkbox", "Write 0"],
+          ],
+          [
+            ["Jester (Jester)", "jesterColumn", ""],
+            ["Barber (ClaySurgeon)", "barberColumn", ""],
+            ["Bunker Spider (SandSpider)", "bunkerSpiderColumn", ""],
+            ["Bracken (Flowerman)", "brackenColumn", ""],
+          ],
+          [
+            ["Cadaver (Cadaver Growth)", "cadaverColumn", ""],
+            ["Ghost Girl (Girl)", "ghostGirlColumn", ""],
+            ["Maneater (CaveDweller)", "maneaterColumn", ""],
+          ],
+          [
+            ["Backwater Gunkfish (Stingray)", "backwaterGunkfishColumn", ""],
+            ["Coil Head (Spring)", "coilHeadColumn", ""],
+            ["Hoarding Bug (Hoarding Bug)", "hoardingBugColumn", ""],
+            ["Masked (MaskedPlayerEnemy)", "maskedColumn", ""],
+          ],
+          [
+            ["Snare Flea (Centipede)", "snareFleaColumn", ""],
+            ["Spore Lizard (Puffer)", "sporeLizardColumn", ""],
+            ["Thumper (Crawler)", "thumperColumn", ""],
           ],
         ],
       },
@@ -4022,6 +4136,16 @@ export default function LauncherPage({
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="text-xs font-semibold text-white/50">Custom columns</div>
           <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              className="h-8 px-3 text-xs"
+              onClick={() => {
+                openCustomLayoutDocs().catch(console.error);
+              }}
+            >
+              <Info className="h-3.5 w-3.5" />
+              Docs
+            </Button>
             <Button
               variant="secondary"
               className="h-8 px-3 text-xs"
@@ -4242,7 +4366,7 @@ export default function LauncherPage({
 
     return (
       <div className="min-h-0 flex flex-1 flex-col gap-3 overflow-hidden">
-        <div>
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
           <Button
             variant={googleOauthStatus.authenticated ? "secondary" : "default"}
             className="h-10 w-full"
@@ -4250,6 +4374,23 @@ export default function LauncherPage({
             onClick={handleGoogleOauthButtonClick}
           >
             {googleButtonLabel}
+          </Button>
+          <Button
+            variant="secondary"
+            className="h-10 w-full"
+            disabled={lcstatsTrackingBusy || !selectedLcStatsTracker}
+            onClick={() => {
+              toggleLcstatsAutosheetTracking().catch(console.error);
+            }}
+          >
+            {lcstatsTrackingBusy ? (
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+            ) : lcstatsTrackingEnabled ? (
+              <X className="h-4 w-4" />
+            ) : (
+              <CheckCircle2 className="h-4 w-4" />
+            )}
+            {lcstatsTrackingEnabled ? "Stop Tracking" : "Track Current Game"}
           </Button>
         </div>
         <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-panel-outline bg-black/10 p-4">
@@ -4580,6 +4721,40 @@ export default function LauncherPage({
     if (!selectedMod) return;
     if (isPresetSummaryMod(selectedMod)) return;
     return toggleModEnabledForMod(selectedMod, nextEnabled);
+  }
+
+  async function toggleLcstatsAutosheetTracking() {
+    if (!selectedLcStatsTracker) return;
+
+    const nextEnabled = !lcstatsTrackingEnabled;
+    setLcstatsTrackingBusy(true);
+    setLcstatsError("");
+
+    try {
+      const running = await invoke("set_lcstats_autosheet_tracking", {
+        enabled: nextEnabled,
+      });
+      setLcstatsTrackingEnabled(!!running);
+    } catch (e) {
+      console.error(e);
+      setLcstatsError(e?.message ?? String(e));
+      if (nextEnabled && String(e?.message ?? e).includes("Google login")) {
+        setGoogleOauthError("");
+        setGoogleOauthDialogOpen(true);
+      }
+    } finally {
+      setLcstatsTrackingBusy(false);
+    }
+  }
+
+  async function openCustomLayoutDocs() {
+    setLcstatsError("");
+    try {
+      await invoke("open_custom_layout_docs");
+    } catch (e) {
+      console.error(e);
+      setLcstatsError(e?.message ?? String(e));
+    }
   }
 
   async function resetFreeMoonsMod(version) {

@@ -3221,6 +3221,13 @@ async fn open_version_folder(app: tauri::AppHandle) -> Result<bool, String> {
     Ok(true)
 }
 
+#[tauri::command]
+async fn open_custom_layout_docs() -> Result<bool, String> {
+    opener::open("https://github.com/P-Asta/hq-launcher/blob/main/docs/CUSTOM_LAYOUT.md")
+        .map_err(|e| format!("failed to open Custom Layout docs: {e}"))?;
+    Ok(true)
+}
+
 fn open_folder_path(path: &Path) -> Result<(), String> {
     open_path_with_fallbacks(path, true)
 }
@@ -5065,6 +5072,27 @@ fn get_lcstats_settings(app: tauri::AppHandle) -> Result<google_oauth::LcStatsSe
 }
 
 #[tauri::command]
+fn get_lcstats_autosheet_tracking(
+    lcstats_state: State<'_, lcstats_autosheet::LcStatsAutosheetState>,
+) -> Result<bool, String> {
+    Ok(lcstats_autosheet::is_running(&lcstats_state))
+}
+
+#[tauri::command]
+fn set_lcstats_autosheet_tracking(
+    app: tauri::AppHandle,
+    enabled: bool,
+    lcstats_state: State<'_, lcstats_autosheet::LcStatsAutosheetState>,
+) -> Result<bool, String> {
+    if enabled {
+        lcstats_autosheet::start_manual(app, &lcstats_state)
+    } else {
+        lcstats_autosheet::stop(&lcstats_state);
+        Ok(false)
+    }
+}
+
+#[tauri::command]
 fn set_lcstats_settings(
     app: tauri::AppHandle,
     settings: google_oauth::LcStatsSettings,
@@ -6014,6 +6042,8 @@ pub fn run() {
             google_lcstats_pick_spreadsheet,
             google_lcstats_logout,
             get_lcstats_settings,
+            get_lcstats_autosheet_tracking,
+            set_lcstats_autosheet_tracking,
             set_lcstats_settings,
             list_lcstats_sheet_names,
             list_lcstats_sheet_infos,
@@ -6057,6 +6087,7 @@ pub fn run() {
             installer::install_proton_ge,
             installer::get_current_proton_dir,
             delete_installed_version,
+            open_custom_layout_docs,
             open_version_folder,
             open_downloader_folder,
             open_mod_folder,

@@ -1,6 +1,16 @@
 use serde_json::Value;
 
 pub fn value_at<'a>(stats: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    if path.len() == 1 {
+        if let Some(value) = aliased_value_at(stats, path[0]) {
+            return Some(value);
+        }
+    }
+
+    raw_value_at(stats, path)
+}
+
+fn raw_value_at<'a>(stats: &'a Value, path: &[&str]) -> Option<&'a Value> {
     let mut value = stats;
     for key in path {
         value = value.get(*key)?;
@@ -8,8 +18,75 @@ pub fn value_at<'a>(stats: &'a Value, path: &[&str]) -> Option<&'a Value> {
     Some(value)
 }
 
+fn aliased_value_at<'a>(stats: &'a Value, key: &str) -> Option<&'a Value> {
+    match key {
+        "CollectedNoExtra" => raw_value_at(stats, &["PerformanceInfo", "CollectedNoExtra"])
+            .or_else(|| raw_value_at(stats, &["CollectedNoExtra"])),
+        "CollectedTotal" => raw_value_at(stats, &["PerformanceInfo", "CollectedTotal"])
+            .or_else(|| raw_value_at(stats, &["CollectedTotal"])),
+        "InitialAvailableValue" | "BottomLine" => {
+            raw_value_at(stats, &["PerformanceInfo", "InitialAvailableValue"])
+                .or_else(|| raw_value_at(stats, &["InitialAvailableValue"]))
+                .or_else(|| raw_value_at(stats, &["BottomLine"]))
+        }
+        "TotalAvailableValue" | "BottomLineTrue" => {
+            raw_value_at(stats, &["PerformanceInfo", "TotalAvailableValue"])
+                .or_else(|| raw_value_at(stats, &["TotalAvailableValue"]))
+                .or_else(|| raw_value_at(stats, &["BottomLineTrue"]))
+        }
+        "ExtraFromOldGift" | "ExtraFromOldGiftbox" => {
+            raw_value_at(stats, &["PerformanceInfo", "ExtraFromOldGift"])
+                .or_else(|| raw_value_at(stats, &["ExtraFromOldGift"]))
+                .or_else(|| raw_value_at(stats, &["ExtraFromOldGiftbox"]))
+        }
+        "ValueSold" => raw_value_at(stats, &["QuotaInfo", "ValueSold"])
+            .or_else(|| raw_value_at(stats, &["ValueSold"])),
+        "NewQuota" => raw_value_at(stats, &["QuotaInfo", "NewQuota"])
+            .or_else(|| raw_value_at(stats, &["NewQuota"])),
+        "AppSpawned" => raw_value_at(stats, &["EventInfo", "AppSpawned"])
+            .or_else(|| raw_value_at(stats, &["AppSpawned"])),
+        "IndoorFog" => raw_value_at(stats, &["EventInfo", "IndoorFog"])
+            .or_else(|| raw_value_at(stats, &["IndoorFog"])),
+        "TakeOffTime" => raw_value_at(stats, &["EventInfo", "TakeOffTime"])
+            .or_else(|| raw_value_at(stats, &["TakeOffTime"])),
+        "SIDType" => raw_value_at(stats, &["EventInfo", "SIDType"])
+            .or_else(|| raw_value_at(stats, &["SIDType"])),
+        "InfestationType" => raw_value_at(stats, &["EventInfo", "InfestationType"])
+            .or_else(|| raw_value_at(stats, &["InfestationType"])),
+        "MeteorShowerTime" => raw_value_at(stats, &["EventInfo", "MeteorShowerTime"])
+            .or_else(|| raw_value_at(stats, &["MeteorShowerTime"])),
+        _ => None,
+    }
+}
+
 pub fn int_at(stats: &Value, path: &[&str]) -> i64 {
     value_at(stats, path).map(intish_value).unwrap_or(0)
+}
+
+pub fn int_at_any(stats: &Value, paths: &[&[&str]]) -> i64 {
+    value_at_any(stats, paths).map(intish_value).unwrap_or(0)
+}
+
+pub fn initial_available_value(stats: &Value) -> i64 {
+    int_at_any(
+        stats,
+        &[
+            &["PerformanceInfo", "InitialAvailableValue"][..],
+            &["InitialAvailableValue"][..],
+            &["BottomLine"][..],
+        ],
+    )
+}
+
+pub fn total_available_value(stats: &Value) -> i64 {
+    int_at_any(
+        stats,
+        &[
+            &["PerformanceInfo", "TotalAvailableValue"][..],
+            &["TotalAvailableValue"][..],
+            &["BottomLineTrue"][..],
+        ],
+    )
 }
 
 pub fn bool_at(stats: &Value, path: &[&str]) -> bool {
@@ -170,6 +247,83 @@ mod tests {
         let stats = json!({ "CollectedTotal": "'225" });
 
         assert_eq!(int_at(&stats, &["CollectedTotal"]), 225);
+    }
+
+    #[test]
+    fn available_values_prefer_new_payload_keys_and_fall_back_to_old_keys() {
+        let new_stats = json!({
+            "PerformanceInfo": {
+                "InitialAvailableValue": "'300",
+                "TotalAvailableValue": "'400"
+            },
+            "InitialAvailableValue": "'200",
+            "TotalAvailableValue": "'250",
+            "BottomLine": "'30",
+            "BottomLineTrue": "'40"
+        });
+        let flat_new_stats = json!({
+            "InitialAvailableValue": "'200",
+            "TotalAvailableValue": "'250",
+            "BottomLine": "'30",
+            "BottomLineTrue": "'40"
+        });
+        let old_stats = json!({
+            "BottomLine": "'30",
+            "BottomLineTrue": "'40"
+        });
+
+        assert_eq!(initial_available_value(&new_stats), 300);
+        assert_eq!(total_available_value(&new_stats), 400);
+        assert_eq!(initial_available_value(&flat_new_stats), 200);
+        assert_eq!(total_available_value(&flat_new_stats), 250);
+        assert_eq!(initial_available_value(&old_stats), 30);
+        assert_eq!(total_available_value(&old_stats), 40);
+    }
+
+    #[test]
+    fn aliased_root_keys_prefer_nested_latest_payload_values() {
+        let stats = json!({
+            "PerformanceInfo": {
+                "CollectedTotal": "'100",
+                "CollectedNoExtra": "'80",
+                "ExtraFromOldGift": "'15"
+            },
+            "QuotaInfo": {
+                "ValueSold": "'200",
+                "NewQuota": "'900"
+            },
+            "EventInfo": {
+                "AppSpawned": true,
+                "IndoorFog": true,
+                "TakeOffTime": "'11:00 PM",
+                "SIDType": "'Mineshaft",
+                "InfestationType": "'Spiders",
+                "MeteorShowerTime": "'8:30 PM"
+            },
+            "CollectedTotal": "'1",
+            "CollectedNoExtra": "'2",
+            "ExtraFromOldGift": "'3",
+            "ValueSold": "'4",
+            "NewQuota": "'5",
+            "AppSpawned": false,
+            "IndoorFog": false,
+            "TakeOffTime": "'old",
+            "SIDType": "'old",
+            "InfestationType": "'old",
+            "MeteorShowerTime": "'old"
+        });
+
+        assert_eq!(int_at(&stats, &["CollectedTotal"]), 100);
+        assert_eq!(int_at(&stats, &["CollectedNoExtra"]), 80);
+        assert_eq!(int_at(&stats, &["ExtraFromOldGiftbox"]), 15);
+        assert_eq!(int_at(&stats, &["ValueSold"]), 200);
+        assert_eq!(int_at(&stats, &["NewQuota"]), 900);
+        assert!(bool_at(&stats, &["AppSpawned"]));
+        assert!(bool_at(&stats, &["IndoorFog"]));
+        assert_eq!(string_at(&stats, &["TakeOffTime"]), "'11:00 PM");
+        assert_eq!(string_at(&stats, &["SIDType"]), "'Mineshaft");
+        assert_eq!(string_at(&stats, &["InfestationType"]), "'Spiders");
+        assert_eq!(string_at(&stats, &["MeteorShowerTime"]), "'8:30 PM");
     }
 
     #[test]
