@@ -1,10 +1,13 @@
 # Version (YYYY-MM-DD)
 - Content
 
-# 1.11.0 (2026-05-25)
+# 1.11.1 (2026-05-25)
+- Can enable LCStatsTracker on practice mode
 - Added more **Custom Layout** options, including bee collected, outside items, shotgun/knife notes, app-less, late-death state, player names as notes, gift filtering, and gift net-only handling.
 - Added **Custom Layout** documentation at `docs/CUSTOM_LAYOUT.md`, including setup steps, field behavior, examples, enemy column rules, death-note examples, and a full preset JSON.
 - Added a **Track Current Game / Stop Tracking** control for LCStatsTracker AutoSheet so tracking can be started or stopped manually from the LCStatsTracker settings panel.
+- Launching the game now refreshes the LCStatsTracker AutoSheet tracking state so active launch tracking can be stopped from the same button.
+- LCStatsTracker can now stay enabled in practice runs without requiring the `DEV` build environment flag.
 - Added **Custom Layout** SID options:
   - `SID note` toggles the existing SID item note on the SID true/false cell.
   - `SID item` writes the SID item name into a separate column only when SID happens.

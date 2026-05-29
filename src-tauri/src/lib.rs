@@ -57,15 +57,6 @@ use crate::{
 
 const INSTALL_COMPLETE_MARKER: &str = ".hq_install_complete";
 const DISABLEMOD_FILE_VERSION: u32 = 5;
-const LCSTATS_TRACKER_ID: (&str, &str) = ("MikuOreo", "LCStatsTracker");
-
-fn env_flag_enabled(value: Option<&str>) -> bool {
-    value.map(|value| value.trim() == "1").unwrap_or(false)
-}
-
-fn keep_lcstats_enabled_in_practice() -> bool {
-    env_flag_enabled(option_env!("DEV"))
-}
 
 fn manifest_state_has_version(app: &tauri::AppHandle, version: u32) -> bool {
     let Ok(app_data) = app.path().app_data_dir() else {
@@ -2810,34 +2801,17 @@ fn practice_mode_mod_ids() -> Vec<(String, String)> {
 fn practice_mode_forced_disabled_ids() -> Vec<(String, String)> {
     let mut mods = practice_mode_mod_ids();
     mods.push(("HQHQTeam".to_string(), "VLog".to_string()));
-    if !keep_lcstats_enabled_in_practice() {
-        mods.push((
-            LCSTATS_TRACKER_ID.0.to_string(),
-            LCSTATS_TRACKER_ID.1.to_string(),
-        ));
-    }
     mods
 }
 
 fn practice_mode_forced_enabled_ids() -> Vec<(String, String)> {
-    if keep_lcstats_enabled_in_practice() {
-        vec![(
-            LCSTATS_TRACKER_ID.0.to_string(),
-            LCSTATS_TRACKER_ID.1.to_string(),
-        )]
-    } else {
-        vec![]
-    }
+    vec![]
 }
 
 fn sync_practice_locked_mods_for_version(
     version_plugins_dir: &std::path::Path,
 ) -> Result<(), String> {
-    let mut locked_mods = vec![("HQHQTeam", "VLog")];
-    if !keep_lcstats_enabled_in_practice() {
-        locked_mods.push(LCSTATS_TRACKER_ID);
-    }
-    for (dev, name) in locked_mods {
+    for (dev, name) in [("HQHQTeam", "VLog")] {
         if let Some(dir) = mod_dir_for(version_plugins_dir, dev, name) {
             let _ = set_mod_files_old_suffix(&dir, false);
         }
@@ -3004,11 +2978,7 @@ async fn prepare_practice_mods_for_version(
             rename_ops.push((dir, true, format!("{}-{}", m.dev, m.name)));
         }
     }
-    let mut locked_mods = vec![("HQHQTeam", "VLog")];
-    if !keep_lcstats_enabled_in_practice() {
-        locked_mods.push(LCSTATS_TRACKER_ID);
-    }
-    for (dev, name) in locked_mods {
+    for (dev, name) in [("HQHQTeam", "VLog")] {
         if let Some(dir) = mod_dir_for(&plugins, dev, name) {
             rename_ops.push((dir, false, format!("{dev}-{name}")));
         }
@@ -4995,9 +4965,6 @@ fn get_disabled_mods(app: tauri::AppHandle) -> Result<Vec<DisabledMod>, String> 
 }
 
 fn is_lcstats_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
-    if keep_lcstats_enabled_in_practice() {
-        return Ok(true);
-    }
     let disabled_keys = disabled_mod_keys(&read_disablemod(app)?.mods);
     Ok(!disabled_keys.contains(&normalize_mod_key("MikuOreo", "LCStatsTracker")))
 }
@@ -5011,9 +4978,6 @@ fn disable_lcstats_in_disablemod(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 fn ensure_lcstats_disabled_without_google_auth(app: &tauri::AppHandle) -> Result<(), String> {
-    if keep_lcstats_enabled_in_practice() {
-        return Ok(());
-    }
     if google_oauth::get_settings(app.clone())?.allow_without_google {
         return Ok(());
     }
@@ -5148,7 +5112,7 @@ async fn set_mod_enabled(
     let allow_without_google =
         allow_without_google.unwrap_or(false) || settings_allow_without_google;
 
-    if enabled && is_lcstats && !keep_lcstats_enabled_in_practice() && !allow_without_google {
+    if enabled && is_lcstats && !allow_without_google {
         let status = google_oauth::auth_status(app.clone())?;
         if !status.authenticated {
             return Err("Google login is required to enable MikuOreo-LCStatsTracker.".to_string());

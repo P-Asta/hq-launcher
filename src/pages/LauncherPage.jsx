@@ -202,11 +202,7 @@ function clampVersionToRange(version, range) {
 
 const PRACTICE_LOCKED_MOD_KEYS = new Set([
   "hqhqteam::vlog",
-  "mikuoreo::lcstatstracker",
 ]);
-
-const KEEP_LCSTATS_ENABLED_IN_PRACTICE =
-  String(__HQ_LAUNCHER_DEV_ENV__ ?? "").trim() === "1";
 
 const SMHQ_FORCED_MOD_KEYS = new Set([
   "slushyrh::freeeeeemoooooons",
@@ -1978,12 +1974,7 @@ export default function LauncherPage({
 
   const practiceLockedModKeys = useMemo(() => {
     if (!isPracticeRunMode(runMode)) return new Set();
-    if (!KEEP_LCSTATS_ENABLED_IN_PRACTICE) return PRACTICE_LOCKED_MOD_KEYS;
-    return new Set(
-      Array.from(PRACTICE_LOCKED_MOD_KEYS).filter(
-        (key) => key !== "mikuoreo::lcstatstracker"
-      )
-    );
+    return PRACTICE_LOCKED_MOD_KEYS;
   }, [runMode]);
 
   const smhqForcedModKeys = useMemo(() => {
@@ -4723,6 +4714,12 @@ export default function LauncherPage({
     return toggleModEnabledForMod(selectedMod, nextEnabled);
   }
 
+  async function refreshLcstatsAutosheetTracking() {
+    const running = await invoke("get_lcstats_autosheet_tracking");
+    setLcstatsTrackingEnabled(!!running);
+    return !!running;
+  }
+
   async function toggleLcstatsAutosheetTracking() {
     if (!selectedLcStatsTracker) return;
 
@@ -5527,6 +5524,9 @@ export default function LauncherPage({
       setGameStatus({
         running: true,
         pid: typeof pid === "number" ? pid : null,
+      });
+      refreshLcstatsAutosheetTracking().catch((error) => {
+        console.error(error);
       });
     } catch (e) {
       console.error(e);
