@@ -65,3 +65,33 @@ body {
 *[data-tauri-drag-region="false"] {
   app-region: no-drag;
 }
+
+button,
+a,
+summary,
+select,
+input[type="button"],
+input[type="checkbox"],
+input[type="color"],
+input[type="file"],
+input[type="radio"],
+input[type="range"],
+input[type="reset"],
+input[type="submit"],
+[role="button"],
+[role="checkbox"],
+[role="menuitem"],
+[role="option"],
+[role="radio"],
+[role="switch"],
+[data-clickable="true"] {
+  cursor: pointer;
+}
+
+button:disabled,
+select:disabled,
+input:disabled,
+[aria-disabled="true"],
+[data-disabled] {
+  cursor: not-allowed;
+}

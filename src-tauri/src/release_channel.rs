@@ -50,7 +50,7 @@ impl ReleaseChannel {
     pub fn manifest_url(self) -> &'static str {
         match self {
             Self::Stable => "https://f.asta.rs/hq-launcher/manifest.json",
-            Self::Beta => "https://file.asta.rs/files/hq-launcher/beta/manifest.json",
+            Self::Beta => "https://f.asta.rs/hq-launcher/beta/manifest.json",
         }
     }
 
@@ -59,7 +59,7 @@ impl ReleaseChannel {
             Self::Stable => {
                 "https://github.com/p-asta/hq-launcher/releases/latest/download/latest.json"
             }
-            Self::Beta => "https://file.asta.rs/files/hq-launcher/beta/latest.json",
+            Self::Beta => "https://f.asta.rs/hq-launcher/beta/latest.json",
         }
     }
 

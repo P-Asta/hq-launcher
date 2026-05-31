@@ -1,6 +1,10 @@
 # Version (YYYY-MM-DD)
 - Content
 
+# 1.11.4 (2026-06-01)
+- Added But/Nut note in **Custom Layout**
+- you can click hqlc logo in header :P
+
 # 1.11.2 (2026-05-25)
 - Can enable LCStatsTracker on practice mode
 - Added more **Custom Layout** options, including bee collected, outside items, shotgun/knife notes, app-less, late-death state, player names as notes, gift filtering, and gift net-only handling.

@@ -1,6 +1,6 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useEffect, useMemo, useState } from 'react';
-import { Beaker, Info, Minus, Settings, Square, X } from 'lucide-react';
+import { Beaker, Minus, Paintbrush, RotateCcw, Settings, Square, X } from 'lucide-react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { cn } from './lib/cn';
 import { invoke } from '@tauri-apps/api/core';
@@ -9,6 +9,15 @@ import { isRegistered, register, unregister, unregisterAll } from '@tauri-apps/p
 import { Dialog, DialogContent } from './components/ui/dialog';
 import { Button } from './components/ui/button';
 import { Switch } from './components/ui/switch';
+import { Input } from './components/ui/input';
+import {
+    DEFAULT_PRIMARY_COLOR,
+    loadStoredPrimaryColor,
+    normalizePrimaryColor,
+    persistAndBroadcastPrimaryColor,
+} from './lib/theme';
+
+const SHOW_THEME_SETTINGS = false;
 
 
 export default function Titlebar({ installedVersions, ...props }) {
@@ -17,10 +26,16 @@ export default function Titlebar({ installedVersions, ...props }) {
     const [configLinkBusy, setConfigLinkBusy] = useState(false);
     const [linkWarnOpen, setLinkWarnOpen] = useState(false);
     const [settingsOpen, setSettingsOpen] = useState(false);
+    const [settingsTab, setSettingsTab] = useState("general");
     const [releaseChannel, setReleaseChannel] = useState(null);
     const [releaseChannelBusy, setReleaseChannelBusy] = useState(false);
     const [releaseChannelError, setReleaseChannelError] = useState("");
+    const [primaryColor, setPrimaryColor] = useState(() => loadStoredPrimaryColor());
     const [selectedVersion, setSelectedVersion] = useState(null);
+    const normalizedPrimaryColor = useMemo(
+        () => normalizePrimaryColor(primaryColor),
+        [primaryColor]
+    );
     
     const appWindow = getCurrentWindow();
     useEffect(() => {
@@ -79,6 +94,11 @@ export default function Titlebar({ installedVersions, ...props }) {
         } finally {
             setReleaseChannelBusy(false);
         }
+    }
+
+    async function applyThemeColor(nextColor) {
+        const applied = await persistAndBroadcastPrimaryColor(nextColor);
+        setPrimaryColor(applied);
     }
 
     async function refreshConfigLinkState() {
@@ -244,14 +264,14 @@ export default function Titlebar({ installedVersions, ...props }) {
             <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
                 <DialogContent className="w-[min(760px,94vw)] overflow-hidden rounded-2xl p-0">
                     <div className="flex h-[min(560px,78vh)] min-h-[420px] flex-col">
-                        <div className="flex h-11 shrink-0 items-center justify-between border-b border-panel-outline bg-[#0b0c10]/95 px-4">
+                        <div className="flex h-11 shrink-0 items-center justify-between border-b border-panel-outline px-4">
                             <div className="flex items-center gap-2 text-sm font-semibold text-white">
                                 <Settings size={15} className="text-white/65" />
                                 Settings
                             </div>
                             <button
                                 data-tauri-drag-region="false"
-                                className="flex h-7 w-7 items-center justify-center rounded-sm bg-transparent p-0 text-white/70 shadow-none hover:bg-white/10 hover:text-white"
+                                className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-sm bg-transparent p-0 text-white/70 shadow-none hover:bg-white/10 hover:text-white"
                                 onClick={() => setSettingsOpen(false)}
                                 aria-label="Close settings"
                             >
@@ -259,64 +279,150 @@ export default function Titlebar({ installedVersions, ...props }) {
                             </button>
                         </div>
 
-                        <div className="grid min-h-0 flex-1 grid-cols-[230px_minmax(0,1fr)] bg-[#0f1116]">
-                            <aside className="border-r border-panel-outline bg-white/[0.02] p-4">
+                        <div className="grid min-h-0 flex-1 grid-cols-[230px_minmax(0,1fr)]">
+                            <aside className="border-r border-panel-outline p-4">
                                 <div className="flex flex-col gap-2">
-                                    <button className="relative flex h-11 items-center gap-3 rounded-md border border-white/10 bg-white/[0.08] px-3 text-left text-sm font-semibold text-white shadow-none">
-                                        <span className="absolute left-0 top-2 h-7 w-0.5 rounded-r bg-white/60" />
+                                    <button
+                                        className={cn(
+                                            "relative flex h-11 items-center gap-3 rounded-md px-3 text-left text-sm font-semibold shadow-none",
+                                            settingsTab === "general"
+                                                ? "border border-white/10 bg-white/[0.06] text-white"
+                                                : "bg-transparent text-white/55 hover:bg-white/5 hover:text-white/80"
+                                        )}
+                                        onClick={() => setSettingsTab("general")}
+                                    >
+                                        {settingsTab === "general" && (
+                                            <span className="absolute left-0 top-2 h-7 w-0.5 rounded-r bg-white/60" />
+                                        )}
                                         <span className="flex h-7 w-7 items-center justify-center rounded-md bg-white/10 text-white/80">
                                             <Settings size={16} />
                                         </span>
                                         General
                                     </button>
-                                    <button className="flex h-11 items-center gap-3 rounded-md bg-transparent px-3 text-left text-sm font-semibold text-white/55 shadow-none hover:bg-white/5 hover:text-white/80">
-                                        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-white/5 text-white/55">
-                                            <Info size={16} />
-                                        </span>
-                                        About
-                                    </button>
+                                    {SHOW_THEME_SETTINGS && (
+                                        <button
+                                            className={cn(
+                                                "relative flex h-11 items-center gap-3 rounded-md px-3 text-left text-sm font-semibold shadow-none",
+                                                settingsTab === "theme"
+                                                    ? "border border-white/10 bg-white/[0.06] text-white"
+                                                    : "bg-transparent text-white/55 hover:bg-white/5 hover:text-white/80"
+                                            )}
+                                            onClick={() => setSettingsTab("theme")}
+                                        >
+                                            {settingsTab === "theme" && (
+                                                <span className="absolute left-0 top-2 h-7 w-0.5 rounded-r bg-white/60" />
+                                            )}
+                                            <span className="flex h-7 w-7 items-center justify-center rounded-md bg-white/5 text-white/55">
+                                                <Paintbrush size={16} />
+                                            </span>
+                                            Theme
+                                        </button>
+                                    )}
                                 </div>
                             </aside>
 
                             <section className="min-w-0 overflow-y-auto p-5">
-                                <div className="space-y-4">
-                                    <div>
-                                        <div className="text-base font-semibold text-white">Release Channel</div>
-                                        <div className="mt-1 text-sm text-white/50">
-                                            Choose which launcher updates and remote manifest this app follows.
+                                {settingsTab === "general" && (
+                                    <div className="space-y-4">
+                                        <div>
+                                            <div className="text-base font-semibold text-white">Release Channel</div>
+                                            <div className="mt-1 text-sm text-white/50">
+                                                Choose which launcher updates and remote manifest this app follows.
+                                            </div>
                                         </div>
-                                    </div>
 
-                                    <div className="rounded-lg border border-panel-outline bg-white/[0.03] p-4 shadow-lg shadow-black/20">
-                                        <div className="flex items-start justify-between gap-4">
-                                            <div className="flex min-w-0 gap-3">
-                                                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-white/10 bg-black/20 text-white/75">
-                                                    <Beaker size={18} />
-                                                </div>
-                                                <div className="min-w-0">
-                                                    <div className="text-sm font-semibold text-white">Beta channel</div>
-                                                    <div className="mt-1 text-sm leading-5 text-white/55">
-                                                        Get faster and more frequent updates before they reach stable.
+                                        <div className="rounded-lg border border-panel-outline p-4">
+                                            <div className="flex items-start justify-between gap-4">
+                                                <div className="flex min-w-0 gap-3">
+                                                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-white/10 bg-black/20 text-white/75">
+                                                        <Beaker size={18} />
+                                                    </div>
+                                                    <div className="min-w-0">
+                                                        <div className="text-sm font-semibold text-white">Beta channel</div>
+                                                        <div className="mt-1 text-sm leading-5 text-white/55">
+                                                            Get faster and more frequent updates before they reach stable.
+                                                        </div>
                                                     </div>
                                                 </div>
+
+                                                <Switch
+                                                    checked={!!releaseChannel?.is_beta}
+                                                    disabled={releaseChannelBusy || !releaseChannel}
+                                                    onCheckedChange={setBetaEnabled}
+                                                    aria-label="Enable beta channel"
+                                                />
                                             </div>
 
-                                            <Switch
-                                                checked={!!releaseChannel?.is_beta}
-                                                disabled={releaseChannelBusy || !releaseChannel}
-                                                onCheckedChange={setBetaEnabled}
-                                                aria-label="Enable beta channel"
-                                            />
+                                            {releaseChannelError && (
+                                                <div className="mt-3 rounded-md border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+                                                    {releaseChannelError}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {settingsTab === "theme" && (
+                                    <div className="space-y-4">
+                                        <div className="flex items-start justify-between gap-4">
+                                            <div>
+                                                <div className="text-base font-semibold text-white">Theme</div>
+                                                <div className="mt-1 text-sm text-white/50">
+                                                    Adjust the launcher accent color.
+                                                </div>
+                                            </div>
+                                            <Button
+                                                variant="outline"
+                                                className="h-9 shrink-0"
+                                                onClick={() => {
+                                                    void applyThemeColor(DEFAULT_PRIMARY_COLOR);
+                                                }}
+                                            >
+                                                <RotateCcw className="h-4 w-4" />
+                                                Reset
+                                            </Button>
                                         </div>
 
-                                        {releaseChannelError && (
-                                            <div className="mt-3 rounded-md border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
-                                                {releaseChannelError}
-                                            </div>
-                                        )}
-                                    </div>
+                                        <div className="rounded-lg border border-panel-outline p-4">
+                                            <div className="flex items-center gap-3">
+                                                <label
+                                                    className="flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-md border border-white/10 p-1"
+                                                    style={{ backgroundColor: "color-mix(in srgb, var(--theme-accent) 18%, transparent)" }}
+                                                >
+                                                    <input
+                                                        type="color"
+                                                        className="h-full w-full cursor-pointer rounded border-0 bg-transparent p-0"
+                                                        value={normalizedPrimaryColor}
+                                                        onChange={(event) => {
+                                                            const nextColor = normalizePrimaryColor(event.target.value);
+                                                            setPrimaryColor(nextColor);
+                                                            void applyThemeColor(nextColor);
+                                                        }}
+                                                    />
+                                                </label>
 
-                                </div>
+                                                <div className="min-w-0 flex-1">
+                                                    <div className="mb-1 text-xs font-medium text-white/45">
+                                                        Primary color
+                                                    </div>
+                                                    <Input
+                                                        className="h-10 bg-black/20 font-mono text-sm shadow-none"
+                                                        value={primaryColor}
+                                                        onChange={(event) => setPrimaryColor(event.target.value)}
+                                                        onBlur={() => {
+                                                            void applyThemeColor(primaryColor);
+                                                        }}
+                                                        onKeyDown={(event) => {
+                                                            if (event.key === "Enter") {
+                                                                void applyThemeColor(primaryColor);
+                                                            }
+                                                        }}
+                                                    />
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
                             </section>
                         </div>
                     </div>
@@ -331,7 +437,7 @@ export default function Titlebar({ installedVersions, ...props }) {
                 <div className="flex items-center gap-1">
                     <button
                         data-tauri-drag-region="false"
-                        className="ml-1 flex h-8 w-8 items-center justify-center rounded-sm bg-transparent p-0 shadow-none hover:bg-white/10"
+                        className="ml-1 flex h-8 w-8 cursor-pointer items-center justify-center rounded-sm bg-transparent p-0 shadow-none hover:bg-white/10"
                         onClick={() => setSettingsOpen(true)}
                         aria-label="Open settings"
                     >
@@ -351,21 +457,21 @@ export default function Titlebar({ installedVersions, ...props }) {
                 <div className="flex items-center" data-tauri-drag-region="false">
                     <button
                         onClick={handleMinimize}
-                        className="w-8 h-8 flex items-center justify-center hover:bg-white/10 transition-colors rounded-sm"
+                        className="w-8 h-8 flex cursor-pointer items-center justify-center hover:bg-white/10 transition-colors rounded-sm"
                         aria-label="Minimize"
                     >
                         <Minus size={14} className="text-white/80" />
                     </button>
                     <button
                         onClick={handleMaximize}
-                        className="w-8 h-8 flex items-center justify-center hover:bg-white/10 transition-colors rounded-sm"
+                        className="w-8 h-8 flex cursor-pointer items-center justify-center hover:bg-white/10 transition-colors rounded-sm"
                         aria-label={isMaximized ? "Restore" : "Maximize"}
                     >
                         <Square size={12} className="text-white/80" />
                     </button>
                     <button
                         onClick={handleClose}
-                        className="w-8 h-8 flex items-center justify-center hover:bg-red-500/20 transition-colors rounded-sm"
+                        className="w-8 h-8 flex cursor-pointer items-center justify-center hover:bg-red-500/20 transition-colors rounded-sm"
                         aria-label="Close"
                     >
                         <X size={14} className="text-white/80" />
@@ -421,7 +527,7 @@ function TitlebarMenu({ name, items }) {
                 <button
                     data-tauri-drag-region="false"
                     className={cn(
-                        "text-xs font-light text-white/90 px-2 py-1 hover:bg-white/10 rounded transition-colors outline-none",
+                        "cursor-pointer text-xs font-light text-white/90 px-2 py-1 hover:bg-white/10 rounded transition-colors outline-none",
                         "data-[state=open]:bg-white/10"
                     )}
                 >
