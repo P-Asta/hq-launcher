@@ -7,8 +7,9 @@ use crate::lcstats_autosheet::sheets::{
     number_value, read_number,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, bool_at, initial_available_value, intish_value, players_at, string_at,
-    strip_moon_number, value_at, value_at_any,
+    array_at, array_at_any, bool_at, initial_available_value, intish_value, is_gordion_stats,
+    lcstats_payload, players_at, string_at, strip_apostrophe, strip_moon_number, value_at,
+    value_at_any,
 };
 
 const START_ROW: usize = 4;
@@ -92,8 +93,9 @@ async fn handle_gordion(
     target_row: usize,
     stats: &Value,
 ) -> Result<(), String> {
-    let value_sold = intish_at(stats, &["ValueSold"]);
-    let new_quota = intish_at(stats, &["NewQuota"]);
+    let payload = lcstats_payload(stats);
+    let value_sold = payload.value_sold();
+    let new_quota = payload.new_quota();
     let sold_row = gordion_sold_row(target_row);
     let current_sold = if value_sold == 0 {
         0.0
@@ -190,6 +192,7 @@ struct NormalizedStats {
 
 impl NormalizedStats {
     fn from_stats(stats: &Value) -> Self {
+        let payload = lcstats_payload(stats);
         let hive_collected = int_values_any(stats, &[&["BeeInfo", "Collected"][..]]);
         let hive_spawned = int_values_any(
             stats,
@@ -213,7 +216,7 @@ impl NormalizedStats {
         let shotgun_spawned = int_values_any(stats, &[&["ShotgunInfo", "Available"][..]]);
         let gifts = gifts_cells(stats);
         Self {
-            new_quota: intish_at(stats, &["NewQuota"]),
+            new_quota: payload.new_quota(),
             moon_name: serenade_moon(&string_at(stats, &["MoonInfo", "Name"])),
             weather: serenade_weather(&string_at(stats, &["MoonInfo", "Weather"])),
             interior: normalize_interior_name(&strip_apostrophe(&string_at(
@@ -246,7 +249,7 @@ impl NormalizedStats {
             bottomline: initial_available_value(stats),
             gift_net: gifts.0,
             gift_opened_value: gifts.1,
-            value_sold: intish_at(stats, &["ValueSold"]),
+            value_sold: payload.value_sold(),
             players: normalize_players(stats),
         }
     }
@@ -839,23 +842,8 @@ fn non_false_text(value: &str) -> Option<String> {
     }
 }
 
-fn is_gordion_stats(stats: &Value) -> bool {
-    let moon = strip_moon_number(&strip_apostrophe(&string_at(stats, &["MoonInfo", "Name"])));
-    let normalized = moon
-        .trim()
-        .chars()
-        .filter(|ch| ch.is_ascii_alphabetic())
-        .collect::<String>()
-        .to_ascii_uppercase();
-    normalized == "GORDION" || normalized == "GORION" || normalized == "GALETRY"
-}
-
 fn intish_at(stats: &Value, path: &[&str]) -> i64 {
     value_at(stats, path).map(intish_value).unwrap_or(0)
-}
-
-fn strip_apostrophe(value: &str) -> String {
-    value.trim_start_matches('\'').to_string()
 }
 
 fn column_to_index(column: &str) -> usize {

@@ -8,8 +8,8 @@ use crate::lcstats_autosheet::sheets::{
     first_empty_row_from, get_sheet_id, number_value, quote_sheet_name, read_number, read_range,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, initial_available_value, object_at, players_at, string_at,
-    strip_moon_number, value_at,
+    array_at, array_at_any, initial_available_value, is_gordion_stats, lcstats_payload, object_at,
+    players_at, string_at, strip_apostrophe, strip_moon_number, value_at,
 };
 
 const TARGET_SHEET_CELL: &str = "A1";
@@ -247,6 +247,7 @@ struct NormalizedStats {
 
 impl NormalizedStats {
     fn from_stats(stats: &Value) -> Self {
+        let payload = lcstats_payload(stats);
         Self {
             moon_name: strip_moon_number(&strip_apostrophe(&string_at(
                 stats,
@@ -262,9 +263,9 @@ impl NormalizedStats {
             .len(),
             collected_total: intish_at(stats, &["CollectedTotal"]),
             available_total: initial_available_value(stats),
-            value_sold: intish_at(stats, &["ValueSold"]),
+            value_sold: payload.value_sold(),
             lost_scrap: lost_scrap(stats),
-            new_quota: intish_at(stats, &["NewQuota"]),
+            new_quota: payload.new_quota(),
             players: normalize_players(stats),
         }
     }
@@ -409,8 +410,9 @@ async fn handle_gordion(
     target_row: usize,
     stats: &Value,
 ) -> Result<(), String> {
-    let value_sold = intish_at(stats, &["ValueSold"]);
-    let new_quota = intish_at(stats, &["NewQuota"]);
+    let payload = lcstats_payload(stats);
+    let value_sold = payload.value_sold();
+    let new_quota = payload.new_quota();
     let target_line = run_block_start_row(target_row);
     let mut updates = vec![];
 
@@ -510,17 +512,6 @@ fn lost_scrap(stats: &Value) -> i64 {
         .sum()
 }
 
-fn is_gordion_stats(stats: &Value) -> bool {
-    let moon = strip_moon_number(&strip_apostrophe(&string_at(stats, &["MoonInfo", "Name"])));
-    let normalized = moon
-        .trim()
-        .chars()
-        .filter(|ch| ch.is_ascii_alphabetic())
-        .collect::<String>()
-        .to_ascii_uppercase();
-    normalized == "GORDION" || normalized == "GORION" || normalized == "GALETRY"
-}
-
 fn evilsheet_weather(value: &str) -> String {
     let weather = strip_apostrophe(value);
     if weather.eq_ignore_ascii_case("Mild") {
@@ -584,10 +575,6 @@ fn value_as_i64(value: &Value) -> i64 {
                 .and_then(|text| strip_apostrophe(text).trim().parse::<i64>().ok())
         })
         .unwrap_or(0)
-}
-
-fn strip_apostrophe(value: &str) -> String {
-    value.trim_start_matches('\'').to_string()
 }
 
 fn normalize_player_name_key(value: &str) -> String {

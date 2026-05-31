@@ -8,8 +8,8 @@ use crate::lcstats_autosheet::sheets::{
 };
 use crate::lcstats_autosheet::stats::{
     array_at, array_at_any, bool_at, enemy_count, initial_available_value, int_at, intish_value,
-    missed_item_count, normalize_column, string_at, strip_moon_number, sum_array_any,
-    total_available_value, value_at,
+    lcstats_payload, missed_item_count, normalize_column, string_at, strip_moon_number,
+    sum_array_any, total_available_value, value_at,
 };
 
 pub async fn write(
@@ -114,12 +114,13 @@ pub async fn write(
 }
 
 fn process_stats(stats: &Value) -> Vec<Value> {
-    let new_quota = intish_at(stats, &["NewQuota"]);
-    let value_sold = intish_at(stats, &["ValueSold"]);
+    let payload = lcstats_payload(stats);
+    let new_quota = payload.new_quota();
+    let value_sold = payload.value_sold();
     if new_quota != 0 {
         return vec![json!(new_quota), json!(value_sold)];
     }
-    if !has_dungeon_info(stats) && value_sold != 0 {
+    if payload.is_sell_event_without_day_stats() {
         return vec![json!(value_sold)];
     }
 
@@ -185,16 +186,6 @@ fn collected_count_or_legacy_int(
     } else {
         int_at(stats, legacy_path)
     }
-}
-
-fn intish_at(stats: &Value, path: &[&str]) -> i64 {
-    value_at(stats, path).map(intish_value).unwrap_or(0)
-}
-
-fn has_dungeon_info(stats: &Value) -> bool {
-    value_at(stats, &["DungeonInfo"])
-        .map(|value| !value.is_null())
-        .unwrap_or(false)
 }
 
 fn lost_scrap(stats: &Value) -> i64 {

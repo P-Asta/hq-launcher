@@ -8,8 +8,8 @@ use crate::lcstats_autosheet::sheets::{
     first_empty_row_from, get_sheet_id, number_value, quote_sheet_name, read_number, read_range,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, bool_at, initial_available_value, object_at, players_at, string_at,
-    strip_moon_number, value_at, value_at_any,
+    array_at, array_at_any, bool_at, initial_available_value, is_gordion_stats, lcstats_payload,
+    object_at, players_at, string_at, strip_apostrophe, strip_moon_number, value_at, value_at_any,
 };
 
 const TARGET_SHEET_CELL: &str = "A1";
@@ -340,9 +340,9 @@ impl NormalizedStats {
             butler_count: indoor_enemy_count(stats, "Butler"),
             collected_total: intish_at(stats, &["CollectedTotal"]),
             bottom_line,
-            value_sold: intish_at(stats, &["ValueSold"]),
+            value_sold: lcstats_payload(stats).value_sold(),
             gift_bonus: gift_bonus_total(stats),
-            new_quota: intish_at(stats, &["NewQuota"]),
+            new_quota: lcstats_payload(stats).new_quota(),
             seed: strip_apostrophe(&string_at(stats, &["Seed"])),
             has_sid: sid_type.is_some(),
             sid_type,
@@ -609,8 +609,9 @@ async fn handle_gordion(
     target_row: usize,
     stats: &Value,
 ) -> Result<(), String> {
-    let value_sold = intish_at(stats, &["ValueSold"]);
-    let new_quota = intish_at(stats, &["NewQuota"]);
+    let payload = lcstats_payload(stats);
+    let value_sold = payload.value_sold();
+    let new_quota = payload.new_quota();
     let gift_bonus = gift_bonus_total(stats);
     let target_line = run_block_start_row(target_row);
     let mut updates = vec![];
@@ -922,21 +923,6 @@ fn google_user_value(value: Value) -> Value {
     } else {
         json!({ "stringValue": value.as_str().unwrap_or_default() })
     }
-}
-
-fn strip_apostrophe(value: &str) -> String {
-    value.trim_start_matches('\'').to_string()
-}
-
-fn is_gordion_stats(stats: &Value) -> bool {
-    let moon = strip_moon_number(&strip_apostrophe(&string_at(stats, &["MoonInfo", "Name"])));
-    let normalized = moon
-        .trim()
-        .chars()
-        .filter(|ch| ch.is_ascii_alphabetic())
-        .collect::<String>()
-        .to_ascii_uppercase();
-    normalized == "GORDION" || normalized == "GORION" || normalized == "GALETRY"
 }
 
 fn wafrody_weather(value: &str) -> String {

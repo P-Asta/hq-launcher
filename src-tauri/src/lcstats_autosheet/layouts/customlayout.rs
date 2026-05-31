@@ -7,8 +7,9 @@ use crate::lcstats_autosheet::sheets::{
     batch_update_spreadsheet, batch_write_cells_user_entered, first_empty_row_from, get_sheet_id,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, bool_at, initial_available_value, intish_value, players_at, string_at,
-    strip_moon_number, total_available_value, value_at, value_at_any,
+    array_at, array_at_any, bool_at, initial_available_value, intish_value, is_gordion_moon_name,
+    lcstats_payload, players_at, string_at, strip_apostrophe, strip_moon_number,
+    total_available_value, value_at, value_at_any,
 };
 
 pub async fn write(
@@ -97,8 +98,10 @@ struct ResolvedCustomLayout {
     collected_egg_notes_enabled: bool,
     nut_column: Option<String>,
     nut_collect_column: Option<String>,
+    nut_notes_enabled: bool,
     butler_column: Option<String>,
     butler_collect_column: Option<String>,
+    butler_notes_enabled: bool,
     collected_column: Option<String>,
     available_column: Option<String>,
     real_available_column: Option<String>,
@@ -118,8 +121,6 @@ struct ResolvedCustomLayout {
     turret_column: Option<String>,
     landmine_column: Option<String>,
     spiketrap_column: Option<String>,
-    knife_column: Option<String>,
-    shotgun_column: Option<String>,
     app_less_column: Option<String>,
     death_columns: Vec<String>,
     player_name_columns: Vec<String>,
@@ -183,8 +184,10 @@ impl ResolvedCustomLayout {
             collected_egg_notes_enabled: settings.collected_egg_notes_enabled,
             nut_column: normalize_optional_column(&settings.nut_column),
             nut_collect_column: normalize_optional_column(&settings.nut_collect_column),
+            nut_notes_enabled: settings.nut_notes_enabled,
             butler_column: normalize_optional_column(&settings.butler_column),
             butler_collect_column: normalize_optional_column(&settings.butler_collect_column),
+            butler_notes_enabled: settings.butler_notes_enabled,
             collected_column,
             available_column,
             real_available_column: normalize_optional_column(&settings.real_available_column),
@@ -207,8 +210,6 @@ impl ResolvedCustomLayout {
             turret_column: normalize_optional_column(&settings.turret_column),
             landmine_column: normalize_optional_column(&settings.landmine_column),
             spiketrap_column: normalize_optional_column(&settings.spiketrap_column),
-            knife_column: normalize_optional_column(&settings.knife_column),
-            shotgun_column: normalize_optional_column(&settings.shotgun_column),
             app_less_column: normalize_optional_column(&settings.app_less_column),
             death_columns: settings
                 .death_columns
@@ -328,8 +329,9 @@ async fn handle_economy_event(
     stats: &Value,
 ) -> Result<(), String> {
     let mut updates = vec![];
-    let value_sold = intish_at(stats, &["ValueSold"]);
-    let new_quota = intish_at(stats, &["NewQuota"]);
+    let payload = lcstats_payload(stats);
+    let value_sold = payload.value_sold();
+    let new_quota = payload.new_quota();
 
     if value_sold != 0 {
         if let Some(column) = &layout.sold_column {
@@ -405,8 +407,8 @@ struct NormalizedStats {
     turret_count: i64,
     landmine_count: i64,
     spiketrap_count: i64,
-    knife: NoteCell,
-    shotgun: NoteCell,
+    knife_note: Option<String>,
+    shotgun_note: Option<String>,
     players: Vec<NormalizedPlayer>,
     fog: bool,
     meteor: NoteCell,
@@ -416,6 +418,7 @@ struct NormalizedStats {
 
 impl NormalizedStats {
     fn from_stats(stats: &Value, layout: &ResolvedCustomLayout) -> Self {
+        let payload = lcstats_payload(stats);
         let sid_type = non_false_text(&string_at(stats, &["SIDType"]));
         let infestation_type = non_false_text(&string_at(stats, &["InfestationType"]));
         let meteor_time = non_false_text(&string_at(stats, &["MeteorShowerTime"]));
@@ -425,7 +428,7 @@ impl NormalizedStats {
         )));
         let apparatus_spawned = bool_at(stats, &["AppSpawned"]);
         Self {
-            new_quota: intish_at(stats, &["NewQuota"]),
+            new_quota: payload.new_quota(),
             seed: seed_text(stats),
             moon_name: strip_moon_number(&strip_apostrophe(&string_at(
                 stats,
@@ -464,7 +467,7 @@ impl NormalizedStats {
             collected_no_extra: intish_at(stats, &["CollectedNoExtra"]),
             missing: missing_items_cell(stats, layout.filter_collected_gift_scrap_from_missing),
             outside_items: outside_items_cell(stats),
-            value_sold: intish_at(stats, &["ValueSold"]),
+            value_sold: payload.value_sold(),
             sid: NoteCell {
                 column: String::new(),
                 value: json!(sid_type.is_some()),
@@ -480,8 +483,8 @@ impl NormalizedStats {
             turret_count: intish_at(stats, &["HazardInfo", "TurretCount"]),
             landmine_count: intish_at(stats, &["HazardInfo", "LandmineCount"]),
             spiketrap_count: intish_at(stats, &["HazardInfo", "SpiketrapCount"]),
-            knife: weapon_info_cell(stats, &["KnifeInfo"], "Knife"),
-            shotgun: weapon_info_cell(stats, &["ShotgunInfo"], "Shotgun"),
+            knife_note: weapon_missed_note(stats, &["KnifeInfo"], "Knife"),
+            shotgun_note: weapon_missed_note(stats, &["ShotgunInfo"], "Shotgun"),
             players: normalize_players(stats, layout),
             fog: bool_at(stats, &["IndoorFog"]),
             meteor: NoteCell {
@@ -769,20 +772,32 @@ async fn write_note_cells(
         row,
         &stats.outside_items,
     );
-    push_note_request(
-        &mut requests,
-        sheet_id,
-        &layout.knife_column,
-        row,
-        &stats.knife,
-    );
-    push_note_request(
-        &mut requests,
-        sheet_id,
-        &layout.shotgun_column,
-        row,
-        &stats.shotgun,
-    );
+    if layout.nut_notes_enabled {
+        push_note_request(
+            &mut requests,
+            sheet_id,
+            &layout.nut_collect_column,
+            row,
+            &NoteCell {
+                column: String::new(),
+                value: json!(stats.nutcracker_collected),
+                note: stats.shotgun_note.clone(),
+            },
+        );
+    }
+    if layout.butler_notes_enabled {
+        push_note_request(
+            &mut requests,
+            sheet_id,
+            &layout.butler_collect_column,
+            row,
+            &NoteCell {
+                column: String::new(),
+                value: json!(stats.butler_collected),
+                note: stats.knife_note.clone(),
+            },
+        );
+    }
     if layout.egg_notes_enabled {
         push_note_request(
             &mut requests,
@@ -1548,7 +1563,7 @@ fn outside_items_cell(stats: &Value) -> NoteCell {
     }
 }
 
-fn weapon_info_cell(stats: &Value, path: &[&str], label: &str) -> NoteCell {
+fn weapon_missed_note(stats: &Value, path: &[&str], label: &str) -> Option<String> {
     let collected_path = [path, &["Collected"][..]].concat();
     let available_path = [path, &["Available"][..]].concat();
     let collected = int_values_at(stats, &collected_path);
@@ -1558,18 +1573,13 @@ fn weapon_info_cell(stats: &Value, path: &[&str], label: &str) -> NoteCell {
         .skip(collected.len())
         .copied()
         .collect::<Vec<_>>();
-    let note = (!missed.is_empty()).then(|| {
+    (!missed.is_empty()).then(|| {
         missed
             .iter()
             .map(|value| format!("{label}: {value}"))
             .collect::<Vec<_>>()
             .join(" ; ")
-    });
-    NoteCell {
-        column: String::new(),
-        value: json!(collected.len() as i64),
-        note,
-    }
+    })
 }
 
 fn lost_scrap(stats: &Value) -> i64 {
@@ -1639,14 +1649,7 @@ fn all_spawn_count(stats: &Value, enemy: &str) -> usize {
 }
 
 fn is_economy_moon(stats: &Value) -> bool {
-    let moon = strip_moon_number(&strip_apostrophe(&string_at(stats, &["MoonInfo", "Name"])));
-    let normalized = moon
-        .trim()
-        .chars()
-        .filter(|ch| ch.is_ascii_alphabetic())
-        .collect::<String>()
-        .to_ascii_uppercase();
-    normalized == "GORDION" || normalized == "GORION" || normalized == "GALETRY"
+    is_gordion_moon_name(&string_at(stats, &["MoonInfo", "Name"]))
 }
 
 fn custom_weather(value: &str) -> String {
@@ -1805,10 +1808,6 @@ fn intish_at(stats: &Value, path: &[&str]) -> i64 {
     value_at(stats, path).map(intish_value).unwrap_or(0)
 }
 
-fn strip_apostrophe(value: &str) -> String {
-    value.trim_start_matches('\'').to_string()
-}
-
 fn normalize_optional_column(value: &str) -> Option<String> {
     let column = value
         .trim()
@@ -1895,8 +1894,10 @@ mod tests {
             collected_egg_notes_enabled: false,
             nut_column: "M".to_string(),
             nut_collect_column: "AG".to_string(),
+            nut_notes_enabled: true,
             butler_column: "N".to_string(),
             butler_collect_column: "AH".to_string(),
+            butler_notes_enabled: true,
             collected_column: "O".to_string(),
             available_column: "P".to_string(),
             real_available_column: "AK".to_string(),
@@ -1916,8 +1917,6 @@ mod tests {
             turret_column: "AN".to_string(),
             landmine_column: "AO".to_string(),
             spiketrap_column: "AP".to_string(),
-            knife_column: "AS".to_string(),
-            shotgun_column: "AT".to_string(),
             app_less_column: "AU".to_string(),
             death_columns: "U,V,W,X".to_string(),
             player_name_columns: "AB,AC,AD,AE".to_string(),
@@ -2200,8 +2199,10 @@ mod tests {
             beehive_collected_value_column: "BC".to_string(),
             beehive_collected_notes_enabled: false,
             outside_items_column: "AW".to_string(),
-            knife_column: "AX".to_string(),
-            shotgun_column: "AY".to_string(),
+            nut_collect_column: "AX".to_string(),
+            nut_notes_enabled: true,
+            butler_collect_column: "AY".to_string(),
+            butler_notes_enabled: true,
             app_less_column: "AZ".to_string(),
             death_columns: "BA".to_string(),
             gift_boxes_net_only: true,
@@ -2235,10 +2236,36 @@ mod tests {
             normalized.missing.note.as_deref(),
             Some("Cash register: 80")
         );
-        assert_eq!(normalized.knife.value, json!(1));
-        assert_eq!(normalized.knife.note.as_deref(), Some("Knife: 33"));
-        assert_eq!(normalized.shotgun.value, json!(1));
-        assert_eq!(normalized.shotgun.note.as_deref(), Some("Shotgun: 52"));
+        assert_eq!(cell_value(&updates, "AX"), Some(&json!(1)));
+        assert_eq!(cell_value(&updates, "AY"), Some(&json!(1)));
+        assert_eq!(normalized.knife_note.as_deref(), Some("Knife: 33"));
+        assert_eq!(normalized.shotgun_note.as_deref(), Some("Shotgun: 52"));
+        let shotgun_note_request = value_with_note_request(
+            123,
+            &NoteCell {
+                column: "AX".to_string(),
+                value: json!(normalized.nutcracker_collected),
+                note: normalized.shotgun_note.clone(),
+            },
+            7,
+        );
+        assert_eq!(
+            shotgun_note_request["updateCells"]["rows"][0]["values"][0]["note"],
+            json!("Shotgun: 52")
+        );
+        let knife_note_request = value_with_note_request(
+            123,
+            &NoteCell {
+                column: "AY".to_string(),
+                value: json!(normalized.butler_collected),
+                note: normalized.knife_note.clone(),
+            },
+            7,
+        );
+        assert_eq!(
+            knife_note_request["updateCells"]["rows"][0]["values"][0]["note"],
+            json!("Knife: 33")
+        );
         assert_eq!(normalized.gifts.value, json!("+91"));
         assert_eq!(
             normalized.gifts.note.as_deref(),

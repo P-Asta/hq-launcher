@@ -1,6 +1,6 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useEffect, useMemo, useState } from 'react';
-import { Minus, Square, X } from 'lucide-react';
+import { Beaker, Info, Minus, Settings, Square, X } from 'lucide-react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { cn } from './lib/cn';
 import { invoke } from '@tauri-apps/api/core';
@@ -8,6 +8,7 @@ import { emit, listen } from '@tauri-apps/api/event';
 import { isRegistered, register, unregister, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
 import { Dialog, DialogContent } from './components/ui/dialog';
 import { Button } from './components/ui/button';
+import { Switch } from './components/ui/switch';
 
 
 export default function Titlebar({ installedVersions, ...props }) {
@@ -15,6 +16,10 @@ export default function Titlebar({ installedVersions, ...props }) {
     const [configLinkState, setConfigLinkState] = useState(null);
     const [configLinkBusy, setConfigLinkBusy] = useState(false);
     const [linkWarnOpen, setLinkWarnOpen] = useState(false);
+    const [settingsOpen, setSettingsOpen] = useState(false);
+    const [releaseChannel, setReleaseChannel] = useState(null);
+    const [releaseChannelBusy, setReleaseChannelBusy] = useState(false);
+    const [releaseChannelError, setReleaseChannelError] = useState("");
     const [selectedVersion, setSelectedVersion] = useState(null);
     
     const appWindow = getCurrentWindow();
@@ -44,6 +49,37 @@ export default function Titlebar({ installedVersions, ...props }) {
         } catch {}
         appWindow.close();
     };
+
+    async function refreshReleaseChannel() {
+        try {
+            const channel = await invoke('get_release_channel');
+            setReleaseChannel(channel ?? null);
+            setReleaseChannelError("");
+        } catch (e) {
+            console.warn('Failed to read release channel', e);
+            setReleaseChannelError(e?.message ?? String(e));
+        }
+    }
+
+    useEffect(() => {
+        refreshReleaseChannel();
+    }, []);
+
+    async function setBetaEnabled(enabled) {
+        setReleaseChannelBusy(true);
+        setReleaseChannelError("");
+        try {
+            const channel = await invoke('set_release_channel', {
+                channel: enabled ? 'beta' : 'stable',
+            });
+            setReleaseChannel(channel ?? null);
+            await emit('release-channel://changed', channel ?? null);
+        } catch (e) {
+            setReleaseChannelError(e?.message ?? String(e));
+        } finally {
+            setReleaseChannelBusy(false);
+        }
+    }
 
     async function refreshConfigLinkState() {
         try {
@@ -205,13 +241,102 @@ export default function Titlebar({ installedVersions, ...props }) {
                 </DialogContent>
             </Dialog>
 
+            <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+                <DialogContent className="w-[min(760px,94vw)] overflow-hidden rounded-2xl p-0">
+                    <div className="flex h-[min(560px,78vh)] min-h-[420px] flex-col">
+                        <div className="flex h-11 shrink-0 items-center justify-between border-b border-panel-outline bg-[#0b0c10]/95 px-4">
+                            <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                                <Settings size={15} className="text-white/65" />
+                                Settings
+                            </div>
+                            <button
+                                data-tauri-drag-region="false"
+                                className="flex h-7 w-7 items-center justify-center rounded-sm bg-transparent p-0 text-white/70 shadow-none hover:bg-white/10 hover:text-white"
+                                onClick={() => setSettingsOpen(false)}
+                                aria-label="Close settings"
+                            >
+                                <X size={16} />
+                            </button>
+                        </div>
+
+                        <div className="grid min-h-0 flex-1 grid-cols-[230px_minmax(0,1fr)] bg-[#0f1116]">
+                            <aside className="border-r border-panel-outline bg-white/[0.02] p-4">
+                                <div className="flex flex-col gap-2">
+                                    <button className="relative flex h-11 items-center gap-3 rounded-md border border-white/10 bg-white/[0.08] px-3 text-left text-sm font-semibold text-white shadow-none">
+                                        <span className="absolute left-0 top-2 h-7 w-0.5 rounded-r bg-white/60" />
+                                        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-white/10 text-white/80">
+                                            <Settings size={16} />
+                                        </span>
+                                        General
+                                    </button>
+                                    <button className="flex h-11 items-center gap-3 rounded-md bg-transparent px-3 text-left text-sm font-semibold text-white/55 shadow-none hover:bg-white/5 hover:text-white/80">
+                                        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-white/5 text-white/55">
+                                            <Info size={16} />
+                                        </span>
+                                        About
+                                    </button>
+                                </div>
+                            </aside>
+
+                            <section className="min-w-0 overflow-y-auto p-5">
+                                <div className="space-y-4">
+                                    <div>
+                                        <div className="text-base font-semibold text-white">Release Channel</div>
+                                        <div className="mt-1 text-sm text-white/50">
+                                            Choose which launcher updates and remote manifest this app follows.
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-lg border border-panel-outline bg-white/[0.03] p-4 shadow-lg shadow-black/20">
+                                        <div className="flex items-start justify-between gap-4">
+                                            <div className="flex min-w-0 gap-3">
+                                                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-white/10 bg-black/20 text-white/75">
+                                                    <Beaker size={18} />
+                                                </div>
+                                                <div className="min-w-0">
+                                                    <div className="text-sm font-semibold text-white">Beta channel</div>
+                                                    <div className="mt-1 text-sm leading-5 text-white/55">
+                                                        Get faster and more frequent updates before they reach stable.
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <Switch
+                                                checked={!!releaseChannel?.is_beta}
+                                                disabled={releaseChannelBusy || !releaseChannel}
+                                                onCheckedChange={setBetaEnabled}
+                                                aria-label="Enable beta channel"
+                                            />
+                                        </div>
+
+                                        {releaseChannelError && (
+                                            <div className="mt-3 rounded-md border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+                                                {releaseChannelError}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                </div>
+                            </section>
+                        </div>
+                    </div>
+                </DialogContent>
+            </Dialog>
+
             <div 
                 data-tauri-drag-region 
                 className={cn('w-full flex items-center justify-between px-2 border-b border-panel-outline bg-[#0b0c10]/80 backdrop-blur-sm z-50', props.className)}
             >
                 {/* Left side - Menu items */}
                 <div className="flex items-center gap-1">
-                    <img src="/icon.svg" alt="logo" className='ml-2 w-6 h-6' />
+                    <button
+                        data-tauri-drag-region="false"
+                        className="ml-1 flex h-8 w-8 items-center justify-center rounded-sm bg-transparent p-0 shadow-none hover:bg-white/10"
+                        onClick={() => setSettingsOpen(true)}
+                        aria-label="Open settings"
+                    >
+                        <img src="/icon.svg" alt="logo" className='h-6 w-6' />
+                    </button>
                     <TitlebarMenu 
                         name="File" 
                         items={fileMenuItems} 

@@ -5,7 +5,9 @@ use crate::lcstats_autosheet::layouts::BREADSHEET_LAYOUT;
 use crate::lcstats_autosheet::sheets::{
     batch_write_cells_user_entered, first_empty_row_from, number_value, read_number,
 };
-use crate::lcstats_autosheet::stats::{intish_value, string_at, strip_moon_number, value_at};
+use crate::lcstats_autosheet::stats::{
+    intish_value, lcstats_payload, string_at, strip_moon_number, value_at,
+};
 
 const QUOTA_COLUMN: &str = "B";
 const MOON_COLUMN: &str = "G";
@@ -82,7 +84,7 @@ fn build_values(
         ));
     }
 
-    let new_quota = intish_at(stats, &["NewQuota"]);
+    let new_quota = lcstats_payload(stats).new_quota();
     if new_quota != 0 {
         values.push((QUOTA_COLUMN.to_string(), summary_row, json!(new_quota)));
     }
@@ -99,7 +101,7 @@ async fn add_sold_value(
     summary_row: usize,
     values: &mut Vec<(String, usize, Value)>,
 ) -> Result<(), String> {
-    let value_sold = intish_at(stats, &["ValueSold"]);
+    let value_sold = lcstats_payload(stats).value_sold();
     if value_sold == 0 {
         return Ok(());
     }
@@ -124,13 +126,8 @@ fn intish_at(stats: &Value, path: &[&str]) -> i64 {
 }
 
 fn is_economy_stats(stats: &Value) -> bool {
-    intish_at(stats, &["NewQuota"]) != 0 || !has_dungeon_info(stats)
-}
-
-fn has_dungeon_info(stats: &Value) -> bool {
-    value_at(stats, &["DungeonInfo"])
-        .map(|value| !value.is_null())
-        .unwrap_or(false)
+    let payload = lcstats_payload(stats);
+    payload.is_quota_event() || !payload.has_dungeon_info()
 }
 
 fn summary_row_for_day(day_row: usize) -> usize {

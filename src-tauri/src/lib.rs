@@ -8,6 +8,7 @@ mod logger;
 mod mod_config;
 mod mods;
 mod progress;
+mod release_channel;
 mod thunderstore;
 mod variable;
 mod zip_utils;
@@ -5742,22 +5743,6 @@ fn write_config_file(app: tauri::AppHandle, args: WriteConfigArgs) -> Result<boo
 // 🔹 AUTO-UPDATE COMMANDS
 // =========================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct GitHubRelease {
-    tag_name: String,
-    name: String,
-    published_at: String,
-    body: Option<String>,
-    assets: Vec<GitHubAsset>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct GitHubAsset {
-    name: String,
-    browser_download_url: String,
-    size: u64,
-}
-
 #[derive(Debug, Clone, Serialize)]
 struct UpdateInfo {
     available: bool,
@@ -5765,47 +5750,46 @@ struct UpdateInfo {
     version: Option<String>,
     date: Option<String>,
     body: Option<String>,
+    channel: release_channel::ReleaseChannel,
 }
 
 #[tauri::command]
 async fn check_app_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
-    use semver::Version;
-
+    use tauri_plugin_updater::UpdaterExt;
     let current_version_str = app.package_info().version.to_string();
+    let channel = release_channel::current();
+    let endpoint = channel
+        .updater_url()
+        .parse()
+        .map_err(|e| format!("Failed to parse updater endpoint: {e}"))?;
 
-    // GitHub Releases API에서 최신 릴리즈 가져오기
-    let client = reqwest::Client::new();
-    let github_release_url = "https://api.github.com/repos/p-asta/hq-launcher/releases/latest";
+    let updater = app
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|e| format!("Failed to configure updater endpoint: {e}"))?
+        .version_comparator(move |current_version, remote| {
+            remote.version > current_version
+                || (channel == release_channel::ReleaseChannel::Stable
+                    && !current_version.pre.is_empty()
+                    && remote.version != current_version)
+        })
+        .build()
+        .map_err(|e| format!("Failed to initialize updater: {e}"))?;
 
-    let github_release: GitHubRelease = client
-        .get(github_release_url)
-        .header("User-Agent", "hq-launcher-updater")
-        .send()
+    let update = updater
+        .check()
         .await
-        .map_err(|e| format!("Failed to fetch GitHub release: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse GitHub release: {e}"))?;
-
-    // 버전 비교 (tag_name에서 v 제거)
-    let latest_version_str = github_release.tag_name.trim_start_matches('v').to_string();
-    let current_version = Version::parse(&current_version_str)
-        .map_err(|e| format!("Failed to parse current version: {e}"))?;
-    let latest_version = Version::parse(&latest_version_str)
-        .map_err(|e| format!("Failed to parse latest version: {e}"))?;
-
-    let available = latest_version > current_version;
+        .map_err(|e| format!("Failed to check for updates: {e}"))?;
 
     Ok(UpdateInfo {
-        available,
+        available: update.is_some(),
         current_version: current_version_str,
-        version: if available {
-            Some(latest_version_str.clone())
-        } else {
-            None
-        },
-        date: Some(github_release.published_at),
-        body: github_release.body,
+        version: update.as_ref().map(|u| u.version.clone()),
+        date: update
+            .as_ref()
+            .and_then(|u| u.date.map(|date| date.to_string())),
+        body: update.and_then(|u| u.body),
+        channel,
     })
 }
 
@@ -5819,10 +5803,23 @@ struct UpdateProgress {
 #[tauri::command]
 async fn download_app_update(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_updater::UpdaterExt;
+    let channel = release_channel::current();
+    let endpoint = channel
+        .updater_url()
+        .parse()
+        .map_err(|e| format!("Failed to parse updater endpoint: {e}"))?;
 
     // Tauri updater 사용 (엔드포인트는 tauri.conf.json에서 설정, GitHub Releases latest.json)
     let updater = app
         .updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|e| format!("Failed to configure updater endpoint: {e}"))?
+        .version_comparator(move |current_version, remote| {
+            remote.version > current_version
+                || (channel == release_channel::ReleaseChannel::Stable
+                    && !current_version.pre.is_empty()
+                    && remote.version != current_version)
+        })
         .build()
         .map_err(|e| format!("Failed to initialize updater: {e}"))?;
 
@@ -5879,10 +5876,23 @@ async fn get_global_shortcut(_app: tauri::AppHandle, shortcut: String) -> Result
 #[tauri::command]
 async fn install_app_update(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_updater::UpdaterExt;
+    let channel = release_channel::current();
+    let endpoint = channel
+        .updater_url()
+        .parse()
+        .map_err(|e| format!("Failed to parse updater endpoint: {e}"))?;
 
     // Tauri updater 사용 (엔드포인트는 tauri.conf.json에서 설정, GitHub Releases latest.json)
     let updater = app
         .updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|e| format!("Failed to configure updater endpoint: {e}"))?
+        .version_comparator(move |current_version, remote| {
+            remote.version > current_version
+                || (channel == release_channel::ReleaseChannel::Stable
+                    && !current_version.pre.is_empty()
+                    && remote.version != current_version)
+        })
         .build()
         .map_err(|e| format!("Failed to initialize updater: {e}"))?;
 
@@ -5928,6 +5938,21 @@ fn get_app_version(app: tauri::AppHandle) -> Result<String, String> {
     Ok(app.package_info().version.to_string())
 }
 
+#[tauri::command]
+fn get_release_channel(app: tauri::AppHandle) -> Result<release_channel::ReleaseChannelDto, String> {
+    let channel = release_channel::load(&app)?;
+    Ok(channel.into_dto())
+}
+
+#[tauri::command]
+fn set_release_channel(
+    app: tauri::AppHandle,
+    channel: release_channel::ReleaseChannel,
+) -> Result<release_channel::ReleaseChannelDto, String> {
+    release_channel::save(&app, channel)?;
+    Ok(channel.into_dto())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -5949,6 +5974,11 @@ pub fn run() {
         .setup(|app| {
             // File logging (AppDataDir/logs/hq-launcher.log)
             logger::init(&app.handle()).map_err(|e| tauri::Error::Setup(e.into()))?;
+            release_channel::load(&app.handle()).map_err(|e| {
+                let err: Box<dyn std::error::Error> =
+                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e));
+                tauri::Error::Setup(err.into())
+            })?;
 
             // Startup housekeeping (best-effort, won't block UI):
             // - Disable installed base mods that remote manifest marks as enabled=false
@@ -6061,6 +6091,8 @@ pub fn run() {
             download_app_update,
             install_app_update,
             get_app_version,
+            get_release_channel,
+            set_release_channel,
             installer::install_proton_ge,
             installer::get_current_proton_dir,
             delete_installed_version,

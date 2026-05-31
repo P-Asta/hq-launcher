@@ -8,8 +8,8 @@ use crate::lcstats_autosheet::sheets::{
     first_empty_row_from, get_sheet_id, number_value, quote_sheet_name, read_number,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, intish_value, object_at, players_at, string_at, strip_moon_number,
-    total_available_value, value_at,
+    array_at, array_at_any, intish_value, is_gordion_stats, lcstats_payload, object_at, players_at,
+    string_at, strip_apostrophe, strip_moon_number, total_available_value, value_at,
 };
 
 const CHECK_COLUMN: &str = "K";
@@ -44,10 +44,11 @@ pub async fn write(
         return Err("spreadsheet or sheet is not set".to_string());
     }
 
-    if intish_at(stats, &["NewQuota"]) != 0 {
+    let payload = lcstats_payload(stats);
+    if payload.is_quota_event() {
         return handle_quota_event(client, token, spreadsheet_id, sheet_name, stats).await;
     }
-    if !has_dungeon_info(stats) {
+    if !payload.has_dungeon_info() {
         return handle_sell_event(client, token, spreadsheet_id, sheet_name, stats).await;
     }
 
@@ -98,7 +99,7 @@ async fn handle_quota_event(
     let quota_row = current_quota_row + 2;
     let mut updates = vec![];
 
-    let value_sold = intish_at(stats, &["ValueSold"]);
+    let value_sold = lcstats_payload(stats).value_sold();
     if value_sold != 0 {
         let current_value = read_number(
             client,
@@ -129,7 +130,7 @@ async fn handle_sell_event(
     sheet_name: &str,
     stats: &Value,
 ) -> Result<(), String> {
-    let value_sold = intish_at(stats, &["ValueSold"]);
+    let value_sold = lcstats_payload(stats).value_sold();
     if value_sold == 0 {
         return Ok(());
     }
@@ -337,7 +338,7 @@ fn build_values(
 }
 
 fn quota_amount_value(stats: &Value) -> Option<Value> {
-    let new_quota = intish_at(stats, &["NewQuota"]);
+    let new_quota = lcstats_payload(stats).new_quota();
     if new_quota == 0 {
         None
     } else {
@@ -408,12 +409,6 @@ fn death_status(player: &Value, takeoff_time: &str) -> String {
     "S".to_string()
 }
 
-fn has_dungeon_info(stats: &Value) -> bool {
-    value_at(stats, &["DungeonInfo"])
-        .map(|value| !value.is_null())
-        .unwrap_or(false)
-}
-
 fn convert_time_to_number(time: &str) -> i64 {
     let normalized = strip_apostrophe(time).to_ascii_uppercase();
     let numbers = normalized
@@ -439,10 +434,6 @@ fn convert_time_to_number(time: &str) -> i64 {
 
 fn intish_at(stats: &Value, path: &[&str]) -> i64 {
     value_at(stats, path).map(intish_value).unwrap_or(0)
-}
-
-fn strip_apostrophe(value: &str) -> String {
-    value.trim_start_matches('\'').to_string()
 }
 
 fn uppercase_text(value: &str) -> String {
@@ -505,17 +496,6 @@ fn death_note(player: &Value) -> String {
         ));
     }
     parts.join("\n")
-}
-
-fn is_gordion_stats(stats: &Value) -> bool {
-    let moon = strip_moon_number(&strip_apostrophe(&string_at(stats, &["MoonInfo", "Name"])));
-    let normalized = moon
-        .trim()
-        .chars()
-        .filter(|ch| ch.is_ascii_alphabetic())
-        .collect::<String>()
-        .to_ascii_uppercase();
-    normalized == "GORDION" || normalized == "GORION" || normalized == "GALETRY"
 }
 
 fn value_with_note_request(

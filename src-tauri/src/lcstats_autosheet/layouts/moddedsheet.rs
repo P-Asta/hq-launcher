@@ -6,7 +6,8 @@ use crate::lcstats_autosheet::sheets::{
     batch_write_cells_user_entered, first_empty_row_from, number_value, read_number,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, int_at, intish_value, string_at, strip_moon_number, total_available_value, value_at,
+    array_at, int_at, intish_value, lcstats_payload, string_at, strip_moon_number,
+    total_available_value,
 };
 
 const QUOTA_COLUMN: &str = "B";
@@ -94,7 +95,7 @@ fn build_economy_values(
     quota_row: usize,
     sell_row: usize,
 ) -> Vec<(String, usize, Value)> {
-    let new_quota = intish_at(stats, &["NewQuota"]);
+    let new_quota = lcstats_payload(stats).new_quota();
     let mut updates = vec![];
 
     if new_quota != 0 {
@@ -151,7 +152,7 @@ fn build_values(
         ]);
     }
 
-    let new_quota = intish_at(stats, &["NewQuota"]);
+    let new_quota = lcstats_payload(stats).new_quota();
     if new_quota != 0 {
         values.push((QUOTA_COLUMN.to_string(), day_row, json!(new_quota)));
     }
@@ -173,8 +174,9 @@ async fn add_sold_value(
     row: usize,
     values: &mut Vec<(String, usize, Value)>,
 ) -> Result<(), String> {
-    let mut value_sold = intish_at(stats, &["ValueSold"]);
-    if value_sold == 0 && intish_at(stats, &["NewQuota"]) != 0 {
+    let payload = lcstats_payload(stats);
+    let mut value_sold = payload.value_sold();
+    if value_sold == 0 && payload.new_quota() != 0 {
         value_sold = read_number(
             client,
             token,
@@ -235,9 +237,8 @@ fn stats_kind(stats: &Value) -> StatsKind {
 }
 
 fn is_economy_stats(stats: &Value) -> bool {
-    is_gordion_stats(stats)
-        || intish_at(stats, &["ValueSold"]) != 0
-        || intish_at(stats, &["NewQuota"]) != 0
+    let payload = lcstats_payload(stats);
+    payload.is_gordion_moon() || payload.is_sell_or_quota_event()
 }
 
 fn economy_row_for_stats(first_empty_collected_row: usize, stats_kind: StatsKind) -> usize {
@@ -258,25 +259,6 @@ fn lost_scrap(stats: &Value) -> i64 {
         })
         .map(|item| item.get("Value").map(intish_value).unwrap_or(0))
         .sum()
-}
-
-fn intish_at(stats: &Value, path: &[&str]) -> i64 {
-    value_at(stats, path).map(intish_value).unwrap_or(0)
-}
-
-fn is_gordion_stats(stats: &Value) -> bool {
-    let moon = strip_moon_number(&strip_apostrophe(&string_at(stats, &["MoonInfo", "Name"])));
-    let normalized = moon
-        .trim()
-        .chars()
-        .filter(|ch| ch.is_ascii_alphabetic())
-        .collect::<String>()
-        .to_ascii_uppercase();
-    normalized == "GORDION" || normalized == "GORION" || normalized == "GALETRY"
-}
-
-fn strip_apostrophe(value: &str) -> String {
-    value.trim_start_matches('\'').to_string()
 }
 
 fn moddedsheet_weather(value: &str) -> String {
@@ -305,6 +287,7 @@ fn moddedsheet_interior(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lcstats_autosheet::stats::{is_gordion_stats, lcstats_payload};
 
     #[test]
     fn maps_moddedsheet_columns_from_row_two() {
@@ -343,7 +326,7 @@ mod tests {
     fn reads_sold_value_from_string_numbers() {
         let stats = json!({ "ValueSold": "'55" });
 
-        assert_eq!(intish_at(&stats, &["ValueSold"]), 55);
+        assert_eq!(lcstats_payload(&stats).value_sold(), 55);
     }
 
     #[test]

@@ -141,10 +141,10 @@ Gift examples:
 | --- | --- |
 | `Nutcracker` | Nutcracker indoor spawn count. |
 | `Nut collect` | Collected shotgun count. |
-| `Shotgun` | Collected shotgun count, with a note for missed shotgun values. |
+| `Nut note` | Adds missed shotgun values as a note on the `Nut collect` cell. |
 | `Butler` | Butler indoor spawn count. |
 | `Butler collect` | Collected knife count. |
-| `Knife` | Collected knife count, with a note for missed knife values. |
+| `Butler note` | Adds missed knife values as a note on the `Butler collect` cell. |
 | `SID` | `true` when SID happened. Blank unless `SID false` is on when SID did not happen. |
 | `SID note` | Adds the SID item name as a note on the `SID` cell. |
 | `SID false` | Writes `false` into the `SID` column when SID did not happen. |
@@ -286,6 +286,8 @@ Some fields write notes to the same cell as the value. Examples:
 | --- | --- | --- |
 | `Missing` | missed item count, or `X` | missed item names and values |
 | `Outside items` | collected outside value, or `X` | missing bees/eggs |
+| `Nut collect` | collected shotgun count | missed shotgun values, if `Nut note` is on |
+| `Butler collect` | collected knife count | missed knife values, if `Butler note` is on |
 | `SID` | `true` or `false` | SID item name if `SID note` is on |
 | `Infes` | `true` or `false` | infestation type |
 | `Meteor` | `true` or `false` | meteor time |
@@ -327,8 +329,10 @@ Adjust the columns to match your sheet.
   "collectedEggNotesEnabled": true,
   "nutColumn": "M",
   "nutCollectColumn": "",
+  "nutNotesEnabled": false,
   "butlerColumn": "N",
   "butlerCollectColumn": "",
+  "butlerNotesEnabled": false,
   "collectedColumn": "O",
   "availableColumn": "P",
   "realAvailableColumn": "",
@@ -348,8 +352,6 @@ Adjust the columns to match your sheet.
   "turretColumn": "",
   "landmineColumn": "",
   "spiketrapColumn": "",
-  "knifeColumn": "",
-  "shotgunColumn": "",
   "appLessColumn": "",
   "deathColumns": "AC,AD,AE,AF",
   "playerNameColumns": "AC,AD,AE,AF",

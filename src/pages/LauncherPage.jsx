@@ -263,8 +263,10 @@ const DEFAULT_CUSTOM_LCSTATS_LAYOUT = {
   collectedEggNotesEnabled: true,
   nutColumn: "M",
   nutCollectColumn: "",
+  nutNotesEnabled: false,
   butlerColumn: "N",
   butlerCollectColumn: "",
+  butlerNotesEnabled: false,
   collectedColumn: "O",
   availableColumn: "P",
   realAvailableColumn: "",
@@ -284,8 +286,6 @@ const DEFAULT_CUSTOM_LCSTATS_LAYOUT = {
   turretColumn: "",
   landmineColumn: "",
   spiketrapColumn: "",
-  knifeColumn: "",
-  shotgunColumn: "",
   appLessColumn: "",
   deathColumns: "AC,AD,AE,AF",
   playerNameColumns: "",
@@ -593,8 +593,12 @@ function normalizeCustomLcstatsLayout(layout = {}) {
     collectedEggNotesEnabled: source.collectedEggNotesEnabled !== false,
     nutColumn: normalizeSheetColumn(source.nutColumn, ""),
     nutCollectColumn: normalizeSheetColumn(source.nutCollectColumn, ""),
+    nutNotesEnabled:
+      source.nutNotesEnabled === true || source.shotgunNotesEnabled === true,
     butlerColumn: normalizeSheetColumn(source.butlerColumn, ""),
     butlerCollectColumn: normalizeSheetColumn(source.butlerCollectColumn, ""),
+    butlerNotesEnabled:
+      source.butlerNotesEnabled === true || source.knifeNotesEnabled === true,
     collectedColumn: normalizeSheetColumn(source.collectedColumn, ""),
     availableColumn: normalizeSheetColumn(source.availableColumn, ""),
     realAvailableColumn: normalizeSheetColumn(source.realAvailableColumn, ""),
@@ -615,8 +619,6 @@ function normalizeCustomLcstatsLayout(layout = {}) {
     turretColumn: normalizeSheetColumn(source.turretColumn, ""),
     landmineColumn: normalizeSheetColumn(source.landmineColumn, ""),
     spiketrapColumn: normalizeSheetColumn(source.spiketrapColumn, ""),
-    knifeColumn: normalizeSheetColumn(source.knifeColumn, ""),
-    shotgunColumn: normalizeSheetColumn(source.shotgunColumn, ""),
     appLessColumn: normalizeSheetColumn(
       source.appLessColumn ?? source.appyLessColumn,
       ""
@@ -2360,6 +2362,54 @@ export default function LauncherPage({
     };
   }, [onInstalledVersionsChange]);
 
+  useEffect(() => {
+    let unlisten = null;
+    let disposed = false;
+
+    (async () => {
+      unlisten = await listen("release-channel://changed", async () => {
+        try {
+          const mf = await invoke("get_manifest");
+          if (disposed) return;
+
+          setManifest(
+            mf ?? { version: null, mods: [], manifests: {}, preset_tag_constraints: {} }
+          );
+          setSelectedMod(null);
+          setManifestUpdateInfo(null);
+
+          const remoteV =
+            mf?.manifests && typeof mf.manifests === "object"
+              ? Object.keys(mf.manifests)
+                  .map((k) => Number(k))
+                  .filter((n) => Number.isFinite(n))
+              : [];
+          remoteV.sort((a, b) => a - b);
+
+          const availableVersions = new Set([...installedVersions, ...remoteV]);
+          setSelectedVersion((prev) => {
+            const prevNum = Number(prev);
+            if (Number.isFinite(prevNum) && availableVersions.has(prevNum)) {
+              return prevNum;
+            }
+            if (installedVersions.length > 0) {
+              return installedVersions[installedVersions.length - 1];
+            }
+            if (remoteV.length > 0) return remoteV[remoteV.length - 1];
+            return Number.isFinite(prevNum) ? prevNum : null;
+          });
+        } catch (e) {
+          console.error(e);
+        }
+      });
+    })();
+
+    return () => {
+      disposed = true;
+      if (typeof unlisten === "function") unlisten();
+    };
+  }, [installedVersions]);
+
   // Let the Titlebar know what version is currently selected
   useEffect(() => {
     const v = Number(selectedVersion);
@@ -4009,12 +4059,12 @@ export default function LauncherPage({
           [
             ["Nutcracker", "nutColumn", "M"],
             ["Nut collect", "nutCollectColumn", ""],
-            ["Shotgun", "shotgunColumn", ""],
+            ["Nut note", "nutNotesEnabled", "", "checkbox", "Add note"],
           ],
           [
             ["Butler", "butlerColumn", "N"],
             ["Butler collect", "butlerCollectColumn", ""],
-            ["Knife", "knifeColumn", ""],
+            ["Butler note", "butlerNotesEnabled", "", "checkbox", "Add note"],
           ],
           [
             ["SID", "sidColumn", "Y"],

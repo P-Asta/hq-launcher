@@ -196,8 +196,7 @@ impl ModsConfig {
             log::info!("Using local manifest: {}", path.to_string_lossy());
             mf
         } else {
-            // Use stable remote manifest only.
-            let url = "https://f.asta.rs/hq-launcher/manifest.json";
+            let url = crate::release_channel::current().manifest_url();
             log::info!("Fetching manifest from {url}");
             Self::await_with_cancel(cancel, async {
                 client

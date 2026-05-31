@@ -103,10 +103,20 @@ pub struct CustomLcStatsLayoutSettings {
     pub nut_column: String,
     #[serde(default = "default_custom_nut_collect_column")]
     pub nut_collect_column: String,
+    #[serde(
+        default = "default_custom_nut_notes_enabled",
+        alias = "shotgunNotesEnabled"
+    )]
+    pub nut_notes_enabled: bool,
     #[serde(default = "default_custom_butler_column")]
     pub butler_column: String,
     #[serde(default = "default_custom_butler_collect_column")]
     pub butler_collect_column: String,
+    #[serde(
+        default = "default_custom_butler_notes_enabled",
+        alias = "knifeNotesEnabled"
+    )]
+    pub butler_notes_enabled: bool,
     #[serde(default = "default_custom_collected_column")]
     pub collected_column: String,
     #[serde(default = "default_custom_available_column")]
@@ -145,9 +155,11 @@ pub struct CustomLcStatsLayoutSettings {
     pub landmine_column: String,
     #[serde(default = "default_custom_spiketrap_column")]
     pub spiketrap_column: String,
-    #[serde(default = "default_custom_knife_column")]
+    #[allow(dead_code)]
+    #[serde(default = "default_custom_knife_column", skip_serializing)]
     pub knife_column: String,
-    #[serde(default = "default_custom_shotgun_column")]
+    #[allow(dead_code)]
+    #[serde(default = "default_custom_shotgun_column", skip_serializing)]
     pub shotgun_column: String,
     #[serde(default = "default_custom_app_less_column", alias = "appyLessColumn")]
     pub app_less_column: String,
@@ -247,8 +259,10 @@ impl Default for CustomLcStatsLayoutSettings {
             collected_egg_notes_enabled: default_custom_collected_egg_notes_enabled(),
             nut_column: default_custom_nut_column(),
             nut_collect_column: default_custom_nut_collect_column(),
+            nut_notes_enabled: default_custom_nut_notes_enabled(),
             butler_column: default_custom_butler_column(),
             butler_collect_column: default_custom_butler_collect_column(),
+            butler_notes_enabled: default_custom_butler_notes_enabled(),
             collected_column: default_custom_collected_column(),
             available_column: default_custom_available_column(),
             real_available_column: default_custom_real_available_column(),
@@ -378,11 +392,17 @@ fn default_custom_nut_column() -> String {
 fn default_custom_nut_collect_column() -> String {
     String::new()
 }
+fn default_custom_nut_notes_enabled() -> bool {
+    false
+}
 fn default_custom_butler_column() -> String {
     "N".to_string()
 }
 fn default_custom_butler_collect_column() -> String {
     String::new()
+}
+fn default_custom_butler_notes_enabled() -> bool {
+    false
 }
 fn default_custom_collected_column() -> String {
     "O".to_string()

@@ -6,8 +6,9 @@ use crate::lcstats_autosheet::sheets::{
     batch_update_spreadsheet, batch_write_cells_user_entered, first_empty_row_from, get_sheet_id,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, bool_at, initial_available_value, intish_value, players_at, string_at,
-    strip_moon_number, value_at, value_at_any,
+    array_at, array_at_any, bool_at, initial_available_value, intish_value, is_gordion_moon_name,
+    lcstats_payload, players_at, string_at, strip_apostrophe, strip_moon_number, value_at,
+    value_at_any,
 };
 
 const START_ROW: usize = 3;
@@ -87,8 +88,9 @@ async fn handle_economy_event(
     stats: &Value,
 ) -> Result<(), String> {
     let mut updates = vec![];
-    let value_sold = intish_at(stats, &["ValueSold"]);
-    let new_quota = intish_at(stats, &["NewQuota"]);
+    let payload = lcstats_payload(stats);
+    let value_sold = payload.value_sold();
+    let new_quota = payload.new_quota();
 
     if value_sold != 0 {
         updates.push((
@@ -144,11 +146,12 @@ struct NormalizedStats {
 
 impl NormalizedStats {
     fn from_stats(stats: &Value) -> Self {
+        let payload = lcstats_payload(stats);
         let sid_type = non_false_text(&string_at(stats, &["SIDType"]));
         let infestation_type = non_false_text(&string_at(stats, &["InfestationType"]));
         let meteor_time = non_false_text(&string_at(stats, &["MeteorShowerTime"]));
         Self {
-            new_quota: intish_at(stats, &["NewQuota"]),
+            new_quota: payload.new_quota(),
             moon_name: strip_moon_number(&strip_apostrophe(&string_at(
                 stats,
                 &["MoonInfo", "Name"],
@@ -167,7 +170,7 @@ impl NormalizedStats {
             collected_total: intish_at(stats, &["CollectedTotal"]),
             available_total: initial_available_value(stats),
             missing: missing_items_cell(stats),
-            value_sold: intish_at(stats, &["ValueSold"]),
+            value_sold: payload.value_sold(),
             sid: NoteCell {
                 column: SID_COLUMN,
                 value: json!(sid_type.is_some()),
@@ -560,14 +563,7 @@ fn enemy_count(stats: &Value, enemy: &str) -> usize {
 }
 
 fn is_economy_moon(stats: &Value) -> bool {
-    let moon = strip_moon_number(&strip_apostrophe(&string_at(stats, &["MoonInfo", "Name"])));
-    let normalized = moon
-        .trim()
-        .chars()
-        .filter(|ch| ch.is_ascii_alphabetic())
-        .collect::<String>()
-        .to_ascii_uppercase();
-    normalized == "GORDION" || normalized == "GORION" || normalized == "GALETRY"
+    is_gordion_moon_name(&string_at(stats, &["MoonInfo", "Name"]))
 }
 
 fn charly_weather(value: &str) -> String {
@@ -616,10 +612,6 @@ fn blank_or_x(value: &str) -> Value {
 
 fn intish_at(stats: &Value, path: &[&str]) -> i64 {
     value_at(stats, path).map(intish_value).unwrap_or(0)
-}
-
-fn strip_apostrophe(value: &str) -> String {
-    value.trim_start_matches('\'').to_string()
 }
 
 fn column_to_index(column: &str) -> usize {

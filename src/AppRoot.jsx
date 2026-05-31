@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import LauncherPage from "./pages/LauncherPage";
 import { LoginDialog } from "./components/auth/LoginDialog";
 import { UpdateDialog } from "./components/UpdateDialog";
@@ -29,6 +30,18 @@ export default function AppRoot() {
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const updateCheckedRef = useRef(false);
   const [installedVersions, setInstalledVersions] = useState([]);
+
+  async function checkForAppUpdate() {
+    const info = await invoke("check_app_update");
+    if (info?.available) {
+      setUpdateInfo(info);
+      setUpdateDialogOpen(true);
+    } else {
+      setUpdateInfo(info ?? null);
+      setUpdateDialogOpen(false);
+    }
+    return info;
+  }
 
   async function refreshLoginState() {
     try {
@@ -60,16 +73,35 @@ export default function AppRoot() {
 
     (async () => {
       try {
-        const info = await invoke("check_app_update");
-        if (info?.available) {
-          setUpdateInfo(info);
-          setUpdateDialogOpen(true);
-        }
+        await checkForAppUpdate();
       } catch (e) {
         console.error("Failed to check for updates:", e);
         // Silently ignore update check failures to avoid disrupting user experience
       }
     })();
+  }, []);
+
+  useEffect(() => {
+    let unlisten = null;
+    let disposed = false;
+
+    (async () => {
+      unlisten = await listen("release-channel://changed", async () => {
+        try {
+          const info = await checkForAppUpdate();
+          if (!disposed && !info?.available) {
+            setUpdateDialogOpen(false);
+          }
+        } catch (e) {
+          console.error("Failed to check for channel update:", e);
+        }
+      });
+    })();
+
+    return () => {
+      disposed = true;
+      if (typeof unlisten === "function") unlisten();
+    };
   }, []);
 
   function requestLogin() {
