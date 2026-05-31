@@ -5,6 +5,10 @@
   --color-panel-outline: #2F3034;
 }
 
+:root {
+  --theme-accent: #00c896;
+}
+
 /* App defaults */
 html,
 body,

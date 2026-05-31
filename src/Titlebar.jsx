@@ -17,7 +17,7 @@ import {
     persistAndBroadcastPrimaryColor,
 } from './lib/theme';
 
-const SHOW_THEME_SETTINGS = false;
+const SHOW_THEME_SETTINGS = true;
 
 
 export default function Titlebar({ installedVersions, ...props }) {
@@ -292,7 +292,7 @@ export default function Titlebar({ installedVersions, ...props }) {
                                         onClick={() => setSettingsTab("general")}
                                     >
                                         {settingsTab === "general" && (
-                                            <span className="absolute left-0 top-2 h-7 w-0.5 rounded-r bg-white/60" />
+                                            <span className="absolute left-0 top-2 h-7 w-0.5 rounded-r bg-[var(--theme-accent)]" />
                                         )}
                                         <span className="flex h-7 w-7 items-center justify-center rounded-md bg-white/10 text-white/80">
                                             <Settings size={16} />
@@ -310,7 +310,7 @@ export default function Titlebar({ installedVersions, ...props }) {
                                             onClick={() => setSettingsTab("theme")}
                                         >
                                             {settingsTab === "theme" && (
-                                                <span className="absolute left-0 top-2 h-7 w-0.5 rounded-r bg-white/60" />
+                                                <span className="absolute left-0 top-2 h-7 w-0.5 rounded-r bg-[var(--theme-accent)]" />
                                             )}
                                             <span className="flex h-7 w-7 items-center justify-center rounded-md bg-white/5 text-white/55">
                                                 <Paintbrush size={16} />

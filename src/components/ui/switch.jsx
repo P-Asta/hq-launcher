@@ -26,7 +26,7 @@ export function Switch({
         "relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border border-panel-outline bg-white/10 transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-panel-outline",
         "disabled:cursor-not-allowed disabled:opacity-50",
-        "data-[state=checked]:border-emerald-400 data-[state=checked]:bg-emerald-400",
+        "data-[state=checked]:border-[var(--theme-accent)] data-[state=checked]:bg-[var(--theme-accent)]",
         className
       )}
       {...props}

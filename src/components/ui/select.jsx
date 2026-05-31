@@ -97,7 +97,7 @@ export function SelectItem({ className, value, children, marker, ...props }) {
     >
       <span className="absolute left-2 inline-flex w-5 items-center justify-center">
         <SelectPrimitive.ItemIndicator>
-          <Check className="h-4 w-4 text-emerald-300" />
+          <Check className="h-4 w-4 text-[var(--theme-accent)]" />
         </SelectPrimitive.ItemIndicator>
         {marker ? (
           <span className="group-data-[state=checked]:hidden">{marker}</span>
