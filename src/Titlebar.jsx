@@ -9,12 +9,15 @@ import { isRegistered, register, unregister, unregisterAll } from '@tauri-apps/p
 import { Dialog, DialogContent } from './components/ui/dialog';
 import { Button } from './components/ui/button';
 import { Switch } from './components/ui/switch';
-import { Input } from './components/ui/input';
 import {
-    DEFAULT_PRIMARY_COLOR,
-    loadStoredPrimaryColor,
-    normalizePrimaryColor,
-    persistAndBroadcastPrimaryColor,
+    DEFAULT_THEME_HUE,
+    DEFAULT_THEME_BRIGHTNESS,
+    loadStoredThemeBrightness,
+    loadStoredThemeHue,
+    normalizeThemeBrightness,
+    normalizeThemeHue,
+    persistAndBroadcastThemeBrightness,
+    persistAndBroadcastThemeHue,
 } from './lib/theme';
 
 const SHOW_THEME_SETTINGS = true;
@@ -30,11 +33,16 @@ export default function Titlebar({ installedVersions, ...props }) {
     const [releaseChannel, setReleaseChannel] = useState(null);
     const [releaseChannelBusy, setReleaseChannelBusy] = useState(false);
     const [releaseChannelError, setReleaseChannelError] = useState("");
-    const [primaryColor, setPrimaryColor] = useState(() => loadStoredPrimaryColor());
+    const [themeHue, setThemeHue] = useState(() => loadStoredThemeHue());
+    const [themeBrightness, setThemeBrightness] = useState(() => loadStoredThemeBrightness());
     const [selectedVersion, setSelectedVersion] = useState(null);
-    const normalizedPrimaryColor = useMemo(
-        () => normalizePrimaryColor(primaryColor),
-        [primaryColor]
+    const normalizedThemeHue = useMemo(
+        () => normalizeThemeHue(themeHue),
+        [themeHue]
+    );
+    const normalizedThemeBrightness = useMemo(
+        () => normalizeThemeBrightness(themeBrightness),
+        [themeBrightness]
     );
     
     const appWindow = getCurrentWindow();
@@ -96,9 +104,14 @@ export default function Titlebar({ installedVersions, ...props }) {
         }
     }
 
-    async function applyThemeColor(nextColor) {
-        const applied = await persistAndBroadcastPrimaryColor(nextColor);
-        setPrimaryColor(applied);
+    async function applyThemeHueValue(nextHue) {
+        const applied = await persistAndBroadcastThemeHue(nextHue);
+        setThemeHue(applied);
+    }
+
+    async function applyThemeBrightnessValue(nextBrightness) {
+        const applied = await persistAndBroadcastThemeBrightness(nextBrightness);
+        setThemeBrightness(applied);
     }
 
     async function refreshConfigLinkState() {
@@ -271,7 +284,7 @@ export default function Titlebar({ installedVersions, ...props }) {
                             </div>
                             <button
                                 data-tauri-drag-region="false"
-                                className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-sm bg-transparent p-0 text-white/70 shadow-none hover:bg-white/10 hover:text-white"
+                                className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-sm bg-transparent p-0 text-white/70 shadow-none hover:bg-white/[0.07] hover:text-white"
                                 onClick={() => setSettingsOpen(false)}
                                 aria-label="Close settings"
                             >
@@ -294,7 +307,7 @@ export default function Titlebar({ installedVersions, ...props }) {
                                         {settingsTab === "general" && (
                                             <span className="absolute left-0 top-2 h-7 w-0.5 rounded-r bg-[var(--theme-accent)]" />
                                         )}
-                                        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-white/10 text-white/80">
+                                        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-black/20 text-white/80">
                                             <Settings size={16} />
                                         </span>
                                         General
@@ -375,7 +388,8 @@ export default function Titlebar({ installedVersions, ...props }) {
                                                 variant="outline"
                                                 className="h-9 shrink-0"
                                                 onClick={() => {
-                                                    void applyThemeColor(DEFAULT_PRIMARY_COLOR);
+                                                    void applyThemeHueValue(DEFAULT_THEME_HUE);
+                                                    void applyThemeBrightnessValue(DEFAULT_THEME_BRIGHTNESS);
                                                 }}
                                             >
                                                 <RotateCcw className="h-4 w-4" />
@@ -384,40 +398,85 @@ export default function Titlebar({ installedVersions, ...props }) {
                                         </div>
 
                                         <div className="rounded-lg border border-panel-outline p-4">
-                                            <div className="flex items-center gap-3">
-                                                <label
-                                                    className="flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-md border border-white/10 p-1"
-                                                    style={{ backgroundColor: "color-mix(in srgb, var(--theme-accent) 18%, transparent)" }}
-                                                >
+                                            <div className="space-y-5">
+                                                <div className="flex items-center justify-between gap-3">
+                                                    <div className="text-sm font-semibold text-white">Theme hue</div>
                                                     <input
-                                                        type="color"
-                                                        className="h-full w-full cursor-pointer rounded border-0 bg-transparent p-0"
-                                                        value={normalizedPrimaryColor}
+                                                        type="number"
+                                                        min="0"
+                                                        max="360"
+                                                        step="1"
+                                                        value={normalizedThemeHue}
                                                         onChange={(event) => {
-                                                            const nextColor = normalizePrimaryColor(event.target.value);
-                                                            setPrimaryColor(nextColor);
-                                                            void applyThemeColor(nextColor);
+                                                            const nextHue = normalizeThemeHue(event.target.value);
+                                                            setThemeHue(nextHue);
+                                                            void applyThemeHueValue(nextHue);
                                                         }}
+                                                        className="h-8 w-16 rounded-md border border-panel-outline bg-black/20 px-2 text-center text-sm font-semibold text-[var(--theme-accent)] outline-none focus:ring-2 focus:ring-panel-outline"
+                                                        aria-label="Theme hue value"
                                                     />
-                                                </label>
+                                                </div>
 
-                                                <div className="min-w-0 flex-1">
-                                                    <div className="mb-1 text-xs font-medium text-white/45">
-                                                        Primary color
-                                                    </div>
-                                                    <Input
-                                                        className="h-10 bg-black/20 font-mono text-sm shadow-none"
-                                                        value={primaryColor}
-                                                        onChange={(event) => setPrimaryColor(event.target.value)}
-                                                        onBlur={() => {
-                                                            void applyThemeColor(primaryColor);
-                                                        }}
-                                                        onKeyDown={(event) => {
-                                                            if (event.key === "Enter") {
-                                                                void applyThemeColor(primaryColor);
-                                                            }
+                                                <div className="relative h-7 rounded-md border border-white/10 p-1">
+                                                    <div
+                                                        className="absolute inset-1 rounded"
+                                                        style={{
+                                                            background:
+                                                                "linear-gradient(90deg, hsl(0 86% 64%), hsl(60 86% 64%), hsl(120 86% 64%), hsl(180 86% 64%), hsl(240 86% 64%), hsl(300 86% 64%), hsl(360 86% 64%))",
                                                         }}
                                                     />
+                                                    <input
+                                                        type="range"
+                                                        min="0"
+                                                        max="360"
+                                                        step="1"
+                                                        value={normalizedThemeHue}
+                                                        onChange={(event) => {
+                                                            const nextHue = normalizeThemeHue(event.target.value);
+                                                            setThemeHue(nextHue);
+                                                            void applyThemeHueValue(nextHue);
+                                                        }}
+                                                        className="theme-hue-slider absolute inset-0 h-full w-full cursor-pointer appearance-none bg-transparent"
+                                                        aria-label="Theme hue"
+                                                    />
+                                                </div>
+
+                                                <div className="space-y-3">
+                                                    <div className="flex items-center justify-between gap-3">
+                                                        <div className="text-sm font-semibold text-white">Brightness</div>
+                                                        <input
+                                                            type="number"
+                                                            min="0"
+                                                            max="100"
+                                                            step="1"
+                                                            value={normalizedThemeBrightness}
+                                                            onChange={(event) => {
+                                                                const nextBrightness = normalizeThemeBrightness(event.target.value);
+                                                                setThemeBrightness(nextBrightness);
+                                                                void applyThemeBrightnessValue(nextBrightness);
+                                                            }}
+                                                            className="h-8 w-16 rounded-md border border-panel-outline bg-black/20 px-2 text-center text-sm font-semibold text-white/70 outline-none focus:ring-2 focus:ring-panel-outline"
+                                                            aria-label="Theme brightness value"
+                                                        />
+                                                    </div>
+
+                                                    <div className="relative h-7 rounded-md border border-white/10 p-1">
+                                                        <div className="absolute inset-1 rounded bg-gradient-to-r from-black via-[#30343d] to-white" />
+                                                        <input
+                                                            type="range"
+                                                            min="0"
+                                                            max="100"
+                                                            step="1"
+                                                            value={normalizedThemeBrightness}
+                                                            onChange={(event) => {
+                                                                const nextBrightness = normalizeThemeBrightness(event.target.value);
+                                                                setThemeBrightness(nextBrightness);
+                                                                void applyThemeBrightnessValue(nextBrightness);
+                                                            }}
+                                                            className="theme-hue-slider absolute inset-0 h-full w-full cursor-pointer appearance-none bg-transparent"
+                                                            aria-label="Theme brightness"
+                                                        />
+                                                    </div>
                                                 </div>
                                             </div>
                                         </div>
@@ -431,13 +490,13 @@ export default function Titlebar({ installedVersions, ...props }) {
 
             <div 
                 data-tauri-drag-region 
-                className={cn('w-full flex items-center justify-between px-2 border-b border-panel-outline bg-[#0b0c10]/80 backdrop-blur-sm z-50', props.className)}
+                className={cn('w-full flex items-center justify-between px-2 border-b border-panel-outline bg-[color-mix(in_srgb,var(--theme-bg)_84%,transparent)] backdrop-blur-sm z-50', props.className)}
             >
                 {/* Left side - Menu items */}
                 <div className="flex items-center gap-1">
                     <button
                         data-tauri-drag-region="false"
-                        className="ml-1 flex h-8 w-8 cursor-pointer items-center justify-center rounded-sm bg-transparent p-0 shadow-none hover:bg-white/10"
+                        className="ml-1 flex h-8 w-8 cursor-pointer items-center justify-center rounded-sm bg-transparent p-0 shadow-none hover:bg-white/[0.07]"
                         onClick={() => setSettingsOpen(true)}
                         aria-label="Open settings"
                     >
@@ -457,14 +516,14 @@ export default function Titlebar({ installedVersions, ...props }) {
                 <div className="flex items-center" data-tauri-drag-region="false">
                     <button
                         onClick={handleMinimize}
-                        className="w-8 h-8 flex cursor-pointer items-center justify-center hover:bg-white/10 transition-colors rounded-sm"
+                        className="w-8 h-8 flex cursor-pointer items-center justify-center hover:bg-white/[0.07] transition-colors rounded-sm"
                         aria-label="Minimize"
                     >
                         <Minus size={14} className="text-white/80" />
                     </button>
                     <button
                         onClick={handleMaximize}
-                        className="w-8 h-8 flex cursor-pointer items-center justify-center hover:bg-white/10 transition-colors rounded-sm"
+                        className="w-8 h-8 flex cursor-pointer items-center justify-center hover:bg-white/[0.07] transition-colors rounded-sm"
                         aria-label={isMaximized ? "Restore" : "Maximize"}
                     >
                         <Square size={12} className="text-white/80" />
@@ -527,8 +586,8 @@ function TitlebarMenu({ name, items }) {
                 <button
                     data-tauri-drag-region="false"
                     className={cn(
-                        "cursor-pointer text-xs font-light text-white/90 px-2 py-1 hover:bg-white/10 rounded transition-colors outline-none",
-                        "data-[state=open]:bg-white/10"
+                        "cursor-pointer text-xs font-light text-white/90 px-2 py-1 hover:bg-white/[0.07] rounded transition-colors outline-none",
+                        "data-[state=open]:bg-white/[0.08]"
                     )}
                 >
                     {name}
@@ -538,7 +597,7 @@ function TitlebarMenu({ name, items }) {
             <DropdownMenu.Portal>
                 <DropdownMenu.Content
                     className={cn(
-                        "min-w-[200px] bg-[#1a1b23] border border-panel-outline rounded-md shadow-lg py-1 z-50",
+                        "min-w-[200px] bg-[var(--theme-surface)] border border-panel-outline rounded-md shadow-lg py-1 z-50",
                         "data-[state=open]:animate-in data-[state=closed]:animate-out",
                         "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
                         "data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
@@ -562,10 +621,10 @@ function TitlebarMenu({ name, items }) {
                                 "w-full text-left text-xs text-white/90 px-3 py-1.5",
                                 disabled
                                     ? "opacity-40 cursor-not-allowed"
-                                    : "hover:bg-white/10 transition-colors cursor-pointer",
+                                    : "hover:bg-white/[0.07] transition-colors cursor-pointer",
                                 "outline-none",
                                 "flex items-center justify-between",
-                                "focus:bg-white/10"
+                                "focus:bg-white/[0.07]"
                             )}
                         >
                             <span>{item.label}</span>

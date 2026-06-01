@@ -15,7 +15,7 @@ export function SelectTrigger({ className, children, showIcon = true, ...props }
   return (
     <SelectPrimitive.Trigger
       className={cn(
-        "flex h-10 w-full items-center justify-between rounded-xl border border-panel-outline bg-white/5 px-4 text-[14px] font-medium tracking-[-0.012em] text-white outline-none transition-colors duration-150 focus:ring-2 focus:ring-panel-outline disabled:cursor-not-allowed disabled:bg-white/[0.03] disabled:text-white/45 disabled:opacity-60",
+        "flex h-10 w-full items-center justify-between rounded-xl border border-panel-outline bg-black/20 px-4 text-[14px] font-medium tracking-[-0.012em] text-white outline-none transition-colors duration-150 hover:bg-white/[0.07] focus:ring-2 focus:ring-panel-outline disabled:cursor-not-allowed disabled:bg-black/10 disabled:text-white/45 disabled:opacity-60",
         className,
       )}
       {...props}
@@ -46,7 +46,7 @@ export function SelectContent({
         position="popper"
         sideOffset={8}
         className={cn(
-          "z-50 min-w-40 rounded-2xl border border-panel-outline bg-[#0f1116] shadow-2xl shadow-black/40",
+          "z-50 min-w-40 rounded-2xl border border-panel-outline bg-[var(--theme-surface)] shadow-2xl shadow-black/40",
           className,
         )}
         {...props}
@@ -78,7 +78,7 @@ export function SelectItem({ className, value, children, marker, ...props }) {
     <SelectPrimitive.Item
       value={value}
       className={cn(
-        "group relative flex cursor-pointer select-none items-center gap-2 rounded-xl px-3 py-2 text-[14px] font-medium tracking-[-0.012em] text-white/85 outline-none focus:bg-white/10 data-disabled:pointer-events-none data-disabled:opacity-40",
+        "group relative flex cursor-pointer select-none items-center gap-2 rounded-xl px-3 py-2 text-[14px] font-medium tracking-[-0.012em] text-white/85 outline-none focus:bg-white/[0.07] data-disabled:pointer-events-none data-disabled:opacity-40",
         className,
       )}
       onPointerDownCapture={(event) => {

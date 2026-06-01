@@ -5770,7 +5770,6 @@ async fn check_app_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
         .version_comparator(move |current_version, remote| {
             remote.version > current_version
                 || (channel == release_channel::ReleaseChannel::Stable
-                    && !current_version.pre.is_empty()
                     && remote.version != current_version)
         })
         .build()
@@ -5817,7 +5816,6 @@ async fn download_app_update(app: tauri::AppHandle) -> Result<bool, String> {
         .version_comparator(move |current_version, remote| {
             remote.version > current_version
                 || (channel == release_channel::ReleaseChannel::Stable
-                    && !current_version.pre.is_empty()
                     && remote.version != current_version)
         })
         .build()
@@ -5890,7 +5888,6 @@ async fn install_app_update(app: tauri::AppHandle) -> Result<bool, String> {
         .version_comparator(move |current_version, remote| {
             remote.version > current_version
                 || (channel == release_channel::ReleaseChannel::Stable
-                    && !current_version.pre.is_empty()
                     && remote.version != current_version)
         })
         .build()

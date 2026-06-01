@@ -1216,7 +1216,7 @@ function LauncherPageSkeleton({ statusText }) {
         <SkeletonBlock className="h-11 w-11 rounded-xl" />
       </div>
 
-      <div className="rounded-2xl border border-panel-outline bg-white/5 px-4 py-3">
+      <div className="rounded-2xl border border-panel-outline bg-black/20 px-4 py-3">
         <div className="flex items-center gap-2 text-sm font-medium text-white/85">
           <LoaderCircle className="h-4 w-4 animate-spin text-white/65" />
           <span>Preparing launcher</span>
@@ -1227,7 +1227,7 @@ function LauncherPageSkeleton({ statusText }) {
       </div>
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-4">
-        <div className="min-h-0 rounded-2xl border border-panel-outline bg-white/5 p-3">
+        <div className="min-h-0 rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-3">
           <div className="mb-3 flex items-center justify-between px-1">
             <SkeletonBlock className="h-4 w-20 rounded-md" />
             <SkeletonBlock className="h-4 w-14 rounded-md" />
@@ -3886,11 +3886,11 @@ export default function LauncherPage({
             href="https://youtu.be/6j4YYn5_mO8"
             target="_blank"
             rel="noreferrer"
-            className="group relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-panel-outline bg-white/5 text-white/55 transition hover:bg-white/10 hover:text-white"
+            className="group relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-panel-outline bg-black/20 text-white/55 transition hover:bg-white/[0.07] hover:text-white"
             aria-label="Custom Google OAuth setup guide"
           >
             <Info className="h-4 w-4" />
-            <span className="pointer-events-none absolute right-0 top-[calc(100%+0.5rem)] z-20 hidden w-56 rounded-lg border border-panel-outline bg-[#151821] px-3 py-2 text-left text-xs font-medium leading-5 text-white/75 shadow-xl group-hover:block">
+            <span className="pointer-events-none absolute right-0 top-[calc(100%+0.5rem)] z-20 hidden w-56 rounded-lg border border-panel-outline bg-[var(--theme-surface)] px-3 py-2 text-left text-xs font-medium leading-5 text-white/75 shadow-xl group-hover:block">
               Custom Google OAuth setup guide
             </span>
           </a>
@@ -4241,7 +4241,7 @@ export default function LauncherPage({
           {customLayoutSearch ? (
             <button
               type="button"
-              className="absolute right-2 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-white/40 transition hover:bg-white/10 hover:text-white"
+              className="absolute right-2 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-white/40 transition hover:bg-white/[0.07] hover:text-white"
               onClick={() => setCustomLayoutSearch("")}
               aria-label="Clear custom settings search"
             >
@@ -4255,7 +4255,7 @@ export default function LauncherPage({
               "rounded-xl border px-3 py-2 text-xs",
               customLayoutMessageKind === "error"
                 ? "border-red-400/30 bg-red-400/10 text-red-200"
-                : "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
+                : "border-[color-mix(in_srgb,var(--theme-accent)_35%,transparent)] bg-[var(--theme-accent-muted)] text-[var(--theme-accent)]"
             )}
           >
             {customLayoutMessage}
@@ -4313,7 +4313,7 @@ export default function LauncherPage({
                             {label}
                           </label>
                           {type === "checkbox" ? (
-                            <label className="flex h-10 min-w-0 items-center gap-2 overflow-hidden rounded-xl border border-panel-outline bg-white/5 px-3 text-sm text-white/70">
+                            <label className="flex h-10 min-w-0 items-center gap-2 overflow-hidden rounded-xl border border-panel-outline bg-black/20 px-3 text-sm text-white/70">
                               <Checkbox
                                 checked={!!customLayout[key]}
                                 disabled={disabled}
@@ -4440,7 +4440,7 @@ export default function LauncherPage({
             {lcstatsTrackingEnabled ? "Stop Tracking" : "Track Current Game"}
           </Button>
         </div>
-        <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-panel-outline bg-black/10 p-4">
+        <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-4">
           <div className="space-y-5">
             {renderCustomGoogleOauthFields()}
 
@@ -4470,7 +4470,7 @@ export default function LauncherPage({
                     <button
                       type="button"
                       className={cn(
-                        "flex h-10 w-full items-center justify-between gap-3 rounded-xl border border-panel-outline bg-white/5 px-4 text-left text-sm text-white outline-none transition hover:bg-white/10 focus:border-panel-outline focus:ring-2 focus:ring-panel-outline disabled:cursor-not-allowed disabled:bg-white/[0.03] disabled:text-white/45 disabled:opacity-60",
+                        "flex h-10 w-full items-center justify-between gap-3 rounded-xl border border-panel-outline bg-black/20 px-4 text-left text-sm text-white outline-none transition hover:bg-white/[0.07] focus:border-panel-outline focus:ring-2 focus:ring-panel-outline disabled:cursor-not-allowed disabled:bg-black/10 disabled:text-white/45 disabled:opacity-60",
                         !spreadsheetDisplayValue ? "text-white/40" : ""
                       )}
                       disabled={settingsDisabled}
@@ -4641,7 +4641,7 @@ export default function LauncherPage({
             ) : null}
 
             {lcstatsSaved ? (
-              <div className="rounded-2xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-200">
+              <div className="rounded-2xl border border-[color-mix(in_srgb,var(--theme-accent)_35%,transparent)] bg-[var(--theme-accent-muted)] px-4 py-3 text-sm text-[var(--theme-accent)]">
                 {lcstatsSaved}
               </div>
             ) : null}
@@ -5729,7 +5729,7 @@ export default function LauncherPage({
     selectedRunUpdatableMods.length > 0;
 
   return (
-    <div className="h-full text-white">
+    <div className="h-full bg-[var(--theme-bg)] text-white">
       <div className="mx-auto flex h-full max-w-[1600px] flex-col gap-4 p-4">
         {showBootstrapSkeleton ? (
           <LauncherPageSkeleton statusText={bootstrapStatus} />
@@ -5791,7 +5791,7 @@ export default function LauncherPage({
                   <ScrollableDropdownContent
                     sideOffset={8}
                     align="start"
-                    className="z-50 min-w-48 rounded-[18px] border border-white/10 bg-[#12141a] p-1 shadow-2xl shadow-black/45"
+                className="z-50 min-w-48 rounded-[18px] border border-white/10 bg-[var(--theme-surface)] p-1 shadow-2xl shadow-black/45"
                     scrollAreaClassName="max-h-64"
                   >
                     {RUN_OPTIONS.map((opt) =>
@@ -5813,7 +5813,7 @@ export default function LauncherPage({
                         >
                           <span className="inline-flex w-5 items-center justify-center">
                             {runMode === opt.value ? (
-                              <Check className="h-4 w-4 text-emerald-300" />
+                              <Check className="h-4 w-4 text-[var(--theme-accent)]" />
                             ) : null}
                           </span>
                           <span className="min-w-0 flex-1">{opt.label}</span>
@@ -5831,7 +5831,7 @@ export default function LauncherPage({
               <DropdownMenu.Trigger asChild>
                 <button
                   type="button"
-                  className="flex h-11 items-center gap-1 rounded-xl border border-panel-outline bg-white/5 pl-3 pr-2.5 text-[14px] font-medium tracking-[-0.012em] text-white outline-none transition-colors duration-150 hover:bg-white/10 focus:ring-2 focus:ring-panel-outline data-[state=open]:bg-white/10"
+                  className="flex h-11 items-center gap-1 rounded-xl border border-panel-outline bg-[var(--theme-surface)] pl-3 pr-2.5 text-[14px] font-medium tracking-[-0.012em] text-white outline-none transition-colors duration-150 hover:bg-white/[0.07] focus:ring-2 focus:ring-panel-outline data-[state=open]:bg-white/[0.08]"
                   onPointerDown={(e) => {
                     if (e.button !== 2) return;
                     e.preventDefault();
@@ -5847,7 +5847,7 @@ export default function LauncherPage({
                       {selectedVersionLabel}
                     </div>
                     {selectedInstalled ? (
-                      <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                      <CheckCircle2 className="h-4 w-4 text-[var(--theme-accent)]" />
                     ) : (
                       <Download className="h-4 w-4 text-amber-300" />
                     )}
@@ -5860,7 +5860,7 @@ export default function LauncherPage({
                 <ScrollableDropdownContent
                   sideOffset={8}
                   align="start"
-                  className="z-50 min-w-[170px] rounded-[18px] border border-panel-outline bg-[#12141a] p-1 shadow-2xl shadow-black/45"
+                  className="z-50 min-w-[170px] rounded-[18px] border border-panel-outline bg-[var(--theme-surface)] p-1 shadow-2xl shadow-black/45"
                   scrollAreaClassName="max-h-[min(20rem,calc(100vh-8rem))]"
                 >
                   {versionOptions.map((v) => {
@@ -5896,7 +5896,7 @@ export default function LauncherPage({
                       >
                         <span className="inline-flex min-w-0 items-center gap-2.5">
                           {active ? (
-                            <Check className="h-4 w-4 shrink-0 text-emerald-300" />
+                            <Check className="h-4 w-4 shrink-0 text-[var(--theme-accent)]" />
                           ) : !installed ? (
                             <Download className="h-4 w-4 shrink-0 text-amber-300" />
                           ) : (
@@ -5924,7 +5924,7 @@ export default function LauncherPage({
           {!selectedInstalled && (
             <Button
               variant="secondary"
-              className="h-11"
+              className="h-11 bg-[var(--theme-surface)] hover:bg-white/[0.07]"
               onClick={() => openDownloadPrompt(selectedVersion)}
             >
               <Download className="h-4 w-4" />
@@ -5938,13 +5938,13 @@ export default function LauncherPage({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search mods"
-              className="h-11 pl-10"
+              className="h-11 bg-[var(--theme-surface)] pl-10"
             />
           </div>
 
           {hasSelectedVersionUpdates && <Button
             variant="secondary"
-            className="h-11"
+            className="h-11 bg-[var(--theme-surface)] hover:bg-white/[0.07]"
             onClick={() => {
               const sameContext = checkUpdateMatchesSelectedRun;
               const alreadyChecked =
@@ -5973,18 +5973,13 @@ export default function LauncherPage({
             </span>
           </Button>}
           {loginState?.username != null && <div className="ml-2 flex items-center gap-2">
-            {loginState?.username ? (
-              <div className="hidden items-center gap-2 md:flex">
-                <div className="text-sm text-white/55">
-                  Logged in
-                </div>
-              </div>
-            ) : null}
             <Button
-              variant="secondary"
-              className="h-11"
+              variant="ghost"
+              size="sm"
+              className="h-11 w-11 border border-panel-outline bg-[var(--theme-surface)] p-0 text-white/60 hover:bg-white/[0.07] hover:text-white"
               onClick={() => onLogout?.()}
               title="Logout"
+              aria-label="Logout"
             >
               <LogOut className="h-4 w-4" />
             </Button>
@@ -6006,7 +6001,7 @@ export default function LauncherPage({
           {/* Mod list */}
           <div
             className={cn(
-              "min-h-0 rounded-2xl border border-panel-outline bg-white/5 p-3",
+              "min-h-0 rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-3",
               showResizablePanels ? "shrink-0 rounded-r-none border-r-0" : ""
             )}
             style={
@@ -6026,7 +6021,7 @@ export default function LauncherPage({
                 </div>
                 <button
                   type="button"
-                  className="inline-flex items-center gap-1 rounded-lg border border-panel-outline bg-white/5 px-2 py-1 text-[11px] font-medium text-white/65 transition hover:bg-white/10 hover:text-white"
+                  className="inline-flex items-center gap-1 rounded-lg border border-panel-outline bg-black/20 px-2 py-1 text-[11px] font-medium text-white/65 transition hover:bg-white/[0.07] hover:text-white"
                   onClick={() => {
                     setSteamOverlayDialogOpen(true);
                     setSteamOverlayError("");
@@ -6078,8 +6073,8 @@ export default function LauncherPage({
                       className={cn(
                         "group flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition",
                         selected
-                          ? "border-panel-outline bg-white/10"
-                          : "border-panel-outline bg-black/10 hover:bg-white/10",
+                          ? "border-panel-outline bg-white/[0.08]"
+                          : "border-panel-outline bg-black/20 hover:bg-white/[0.07]",
                         !presetSummary && !installedVer && "opacity-40"
                       )}
                       onClick={() => setSelectedMod(m)}
@@ -6111,7 +6106,7 @@ export default function LauncherPage({
                             </div>
                           ) : null} */}
                           {isPracticeMod ? (
-                            <div className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[11px] font-medium text-emerald-200">
+                            <div className="rounded-full border border-[color-mix(in_srgb,var(--theme-accent)_35%,transparent)] bg-[var(--theme-accent-muted)] px-2 py-0.5 text-[11px] font-medium text-[var(--theme-accent)]">
                               Practice
                             </div>
                           ) : null}
@@ -6146,7 +6141,7 @@ export default function LauncherPage({
                       </div>
                       <div className="self-stretch flex shrink-0 items-center">
                         {presetSummary ? (
-                          <div className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-medium text-white/65">
+                          <div className="rounded-full border border-white/10 bg-black/20 px-2.5 py-1 text-[11px] font-medium text-white/65">
                             {m.totalCount} mods
                           </div>
                         ) : (
@@ -6198,7 +6193,7 @@ export default function LauncherPage({
                     className={cn(
                       "pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-[#2C313A] transition-colors",
                       isResizingPanels
-                        ? "bg-[#00C896]"
+                        ? "bg-[var(--theme-accent)]"
                         : "group-hover:bg-[#434B58]"
                     )}
                   />
@@ -6206,7 +6201,7 @@ export default function LauncherPage({
                     className={cn(
                       "pointer-events-none absolute left-1/2 top-1/2 h-14 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#3A404A] transition-colors",
                       isResizingPanels
-                        ? "bg-[#00C896]"
+                        ? "bg-[var(--theme-accent)]"
                         : "group-hover:bg-[#596273]"
                     )}
                   />
@@ -6215,7 +6210,7 @@ export default function LauncherPage({
             ) : null}
             <div
               className={cn(
-                "min-h-0 rounded-2xl border border-panel-outline bg-white/5 p-4",
+                "min-h-0 rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-4",
                 showResizablePanels ? "min-w-0 flex-1 rounded-l-none border-l-0" : ""
               )}
             >
@@ -6310,7 +6305,7 @@ export default function LauncherPage({
                     </div> */}
 
                     <div className="min-h-0 flex flex-1 overflow-hidden">
-                      <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-panel-outline bg-black/10 p-3">
+                      <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-3">
                         {selectedPresetSummary.summaryItems.length === 0 ? (
                           <div className="flex h-full items-center justify-center text-sm text-white/40">
                             No preset-tagged mods are available for this version.
@@ -6328,7 +6323,7 @@ export default function LauncherPage({
                               return (
                                 <div
                                   key={modKey(mod)}
-                                  className="flex items-center gap-3 rounded-2xl border border-panel-outline bg-white/5 px-3 py-3"
+                                  className="flex items-center gap-3 rounded-2xl border border-panel-outline bg-black/20 px-3 py-3"
                                   onContextMenu={(e) => openModContextMenu(e, mod)}
                                 >
                                   <ModCover
@@ -6470,7 +6465,7 @@ export default function LauncherPage({
                   </div>
                 ) : (
                   <div className="min-h-0 flex flex-1 overflow-hidden">
-                    <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-panel-outline bg-black/10 p-3">
+                    <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-3">
                     
                       {(() => {
                         const s =
@@ -6486,7 +6481,7 @@ export default function LauncherPage({
                               return (
                                 <div
                                   key={id}
-                                  className="rounded-2xl border border-panel-outline bg-white/5 p-3"
+                                  className="rounded-2xl border border-panel-outline bg-black/15 p-3"
                                 >
                                   <div className="flex items-start justify-between gap-3">
                                     <div className="min-w-0">
@@ -6734,21 +6729,21 @@ export default function LauncherPage({
       {modContextMenu.open && modContextMenu.mod && (
         <div
           ref={modContextMenuRef}
-          className="fixed z-[70] min-w-[220px] overflow-hidden rounded-2xl border border-panel-outline bg-[#14161c] p-1.5 shadow-2xl shadow-black/40"
+          className="fixed z-[70] min-w-[220px] overflow-hidden rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-1.5 shadow-2xl shadow-black/40"
           style={{
             left: modContextMenu.x,
             top: modContextMenu.y,
           }}
         >
           <button
-            className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/10"
+            className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/[0.07]"
             onClick={() => openSelectedModFolder(modContextMenu.mod)}
           >
             Open Mod Folder
           </button>
           {modContextMenu.configPath ? (
             <button
-              className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/10"
+              className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/[0.07]"
               onClick={() => openSelectedConfigFile(modContextMenu.configPath)}
             >
               Open Config File
@@ -6760,14 +6755,14 @@ export default function LauncherPage({
       {versionContextMenu.open && Number.isFinite(versionContextMenu.version) && (
         <div
           ref={versionContextMenuRef}
-          className="fixed z-[70] min-w-[220px] overflow-hidden rounded-2xl border border-panel-outline bg-[#14161c] p-1.5 shadow-2xl shadow-black/40"
+          className="fixed z-[70] min-w-[220px] overflow-hidden rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-1.5 shadow-2xl shadow-black/40"
           style={{
             left: versionContextMenu.x,
             top: versionContextMenu.y,
           }}
         >
           <button
-            className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/10 disabled:pointer-events-none disabled:opacity-40"
+            className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/[0.07] disabled:pointer-events-none disabled:opacity-40"
             disabled={gameStatus.running || deleteVersionBusy}
             onClick={() => {
               setDeleteVersionPrompt({
@@ -6786,14 +6781,14 @@ export default function LauncherPage({
       {launchContextMenu.open && (
         <div
           ref={launchContextMenuRef}
-          className="fixed z-[70] min-w-[220px] overflow-hidden rounded-2xl border border-panel-outline bg-[#14161c] p-1.5 shadow-2xl shadow-black/40"
+          className="fixed z-[70] min-w-[220px] overflow-hidden rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-1.5 shadow-2xl shadow-black/40"
           style={{
             left: launchContextMenu.x,
             top: launchContextMenu.y,
           }}
         >
           <button
-            className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/10 disabled:pointer-events-none disabled:text-white/30 disabled:opacity-60"
+            className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/[0.07] disabled:pointer-events-none disabled:text-white/30 disabled:opacity-60"
             disabled={
               !gameStatus.running ||
               launchBusy ||
@@ -6812,7 +6807,7 @@ export default function LauncherPage({
           </button>
           {gameStatus.running ? (
             <button
-              className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/10"
+              className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/[0.07]"
               onClick={() => {
                 closeLaunchContextMenu();
                 openRunningGamesDialog();
@@ -6836,7 +6831,7 @@ export default function LauncherPage({
             <button
               type="button"
               onClick={() => setRunningGamesDialogOpen(false)}
-              className="rounded-lg p-2 text-white/60 transition hover:bg-white/10 hover:text-white"
+              className="rounded-lg p-2 text-white/60 transition hover:bg-white/[0.07] hover:text-white"
               aria-label="Close running games"
             >
               <X className="h-4 w-4" />
@@ -6845,7 +6840,7 @@ export default function LauncherPage({
 
           <div className="max-h-[min(62vh,560px)] overflow-y-auto px-5 py-4">
             {runningGames.length === 0 ? (
-              <div className="rounded-2xl border border-panel-outline bg-white/5 px-4 py-5 text-sm text-white/55">
+              <div className="rounded-2xl border border-panel-outline bg-black/20 px-4 py-5 text-sm text-white/55">
                 No running games.
               </div>
             ) : (
@@ -6925,7 +6920,7 @@ export default function LauncherPage({
             aria-label="Close"
           />
 
-          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
+          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-5 shadow-2xl shadow-black/50">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-lg font-semibold">
@@ -6940,7 +6935,7 @@ export default function LauncherPage({
 
             {/* Progress (from Rust emit) */}
             {(promptIsWorking || promptIsDone || promptIsError) && (
-              <div className="mt-4 rounded-2xl border border-panel-outline bg-white/5 p-3">
+              <div className="mt-4 rounded-2xl border border-panel-outline bg-black/20 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-semibold">
@@ -6975,7 +6970,7 @@ export default function LauncherPage({
                   <div
                     className={cn(
                       "h-full rounded-full transition-[width]",
-                      task.status === "error" ? "bg-red-400" : "bg-emerald-400"
+                      task.status === "error" ? "bg-red-400" : "bg-[var(--theme-accent)]"
                     )}
                     style={{
                       width: `${Math.max(
@@ -7087,7 +7082,7 @@ export default function LauncherPage({
             aria-label="Close"
           />
 
-          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
+          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-5 shadow-2xl shadow-black/50">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-lg font-semibold">
@@ -7106,7 +7101,7 @@ export default function LauncherPage({
             {(deleteVersionBusy ||
               deleteVersionPrompt.status === "working" ||
               deleteVersionPrompt.status === "done") && (
-              <div className="mt-4 rounded-2xl border border-panel-outline bg-white/5 p-3">
+              <div className="mt-4 rounded-2xl border border-panel-outline bg-black/20 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-semibold">
@@ -7127,7 +7122,7 @@ export default function LauncherPage({
                 </div>
                 <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-white/10">
                   <div
-                    className="h-full rounded-full bg-emerald-400 transition-[width]"
+                    className="h-full rounded-full bg-[var(--theme-accent)] transition-[width]"
                     style={{
                       width: `${Math.max(
                         0,
@@ -7189,7 +7184,7 @@ export default function LauncherPage({
             aria-label="Close"
           />
 
-          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
+          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-5 shadow-2xl shadow-black/50">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-lg font-semibold">
@@ -7209,7 +7204,7 @@ export default function LauncherPage({
                       "h-full rounded-full transition-[width]",
                       checkUpdateTask.status === "error"
                         ? "bg-red-400"
-                        : "bg-emerald-400"
+                        : "bg-[var(--theme-accent)]"
                     )}
                     style={{
                       width: `${Math.max(
@@ -7285,7 +7280,7 @@ export default function LauncherPage({
             aria-label="Close"
           />
 
-          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
+          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-5 shadow-2xl shadow-black/50">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-lg font-semibold">
@@ -7306,7 +7301,7 @@ export default function LauncherPage({
             </div>
 
             {manifestUpdateInfo && !updateIsWorking && !updateIsDone && !updateIsError && (
-              <div className="mt-4 rounded-2xl border border-panel-outline bg-white/5 p-3 text-sm text-white/70">
+              <div className="mt-4 rounded-2xl border border-panel-outline bg-black/20 p-3 text-sm text-white/70">
                 <div>
                   Installed version: v{manifestUpdateInfo.version ?? selectedVersion}
                 </div>
@@ -7322,7 +7317,7 @@ export default function LauncherPage({
             )}
 
             {(updateIsWorking || updateIsDone || updateIsError) && (
-              <div className="mt-4 rounded-2xl border border-panel-outline bg-white/5 p-3">
+              <div className="mt-4 rounded-2xl border border-panel-outline bg-black/20 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-semibold">
@@ -7356,7 +7351,7 @@ export default function LauncherPage({
                   <div
                     className={cn(
                       "h-full rounded-full transition-[width]",
-                      updateIsError ? "bg-red-400" : "bg-emerald-400"
+                      updateIsError ? "bg-red-400" : "bg-[var(--theme-accent)]"
                     )}
                     style={{
                       width: `${Math.max(
@@ -7471,7 +7466,7 @@ export default function LauncherPage({
             aria-label="Close"
           />
 
-          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
+          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-5 shadow-2xl shadow-black/50">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-lg font-semibold">
@@ -7485,7 +7480,7 @@ export default function LauncherPage({
               </div>
             </div>
 
-            <div className="mt-4 rounded-2xl border border-panel-outline bg-white/5 p-3">
+            <div className="mt-4 rounded-2xl border border-panel-outline bg-black/20 p-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <div className="truncate text-sm font-semibold">
@@ -7521,7 +7516,7 @@ export default function LauncherPage({
                 <div
                   className={cn(
                     "h-full rounded-full transition-[width]",
-                    practiceTask?.status === "error" ? "bg-red-400" : "bg-emerald-400"
+                    practiceTask?.status === "error" ? "bg-red-400" : "bg-[var(--theme-accent)]"
                   )}
                   style={{
                     width: `${Math.max(
@@ -7585,7 +7580,7 @@ export default function LauncherPage({
             aria-label="Close"
           />
 
-          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[#0f1116] p-5 shadow-2xl shadow-black/50">
+          <div className="relative w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-5 shadow-2xl shadow-black/50">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-lg font-semibold">
@@ -7599,7 +7594,7 @@ export default function LauncherPage({
               </div>
             </div>
 
-            <div className="mt-4 rounded-2xl border border-panel-outline bg-white/5 p-3">
+            <div className="mt-4 rounded-2xl border border-panel-outline bg-black/20 p-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <div className="truncate text-sm font-semibold">
@@ -7635,7 +7630,7 @@ export default function LauncherPage({
                 <div
                   className={cn(
                     "h-full rounded-full transition-[width]",
-                    presetTask?.status === "error" ? "bg-red-400" : "bg-emerald-400"
+                    presetTask?.status === "error" ? "bg-red-400" : "bg-[var(--theme-accent)]"
                   )}
                   style={{
                     width: `${Math.max(
@@ -7692,7 +7687,7 @@ export default function LauncherPage({
         onOpenChange={setLaunchOptionsDialogOpen}
       >
         <DialogContent className="max-h-[calc(100vh-4.5rem)] w-[min(720px,94vw)] overflow-hidden p-0">
-          <div className="flex max-h-[calc(100vh-4.5rem)] flex-col rounded-3xl border border-panel-outline bg-[#0f1116] text-white">
+          <div className="flex max-h-[calc(100vh-4.5rem)] flex-col rounded-3xl border border-panel-outline bg-[var(--theme-surface)] text-white">
             <div className="flex items-start justify-between gap-4">
               <div className="p-6 pb-0">
                 <div className="text-lg font-semibold tracking-[-0.02em]">
@@ -7704,7 +7699,7 @@ export default function LauncherPage({
               </div>
               <button
                 type="button"
-                className="m-6 mb-0 rounded-xl border border-panel-outline bg-white/5 p-2 text-white/70 transition hover:bg-white/10 hover:text-white"
+                className="m-6 mb-0 rounded-xl border border-panel-outline bg-black/20 p-2 text-white/70 transition hover:bg-white/[0.07] hover:text-white"
                 onClick={() => {
                   setLaunchOptionsDialogOpen(false);
                 }}
@@ -7715,7 +7710,7 @@ export default function LauncherPage({
             </div>
 
             <div className="mt-6 flex-1 space-y-5 overflow-y-auto px-6 pb-6">
-              <div className="flex items-center justify-between gap-4 rounded-2xl border border-panel-outline bg-white/[0.04] px-4 py-3">
+              <div className="flex items-center justify-between gap-4 rounded-2xl border border-panel-outline bg-black/20 px-4 py-3">
                 <div>
                   <div className="text-sm font-medium text-white">
                     Enable custom launch options
@@ -7758,7 +7753,7 @@ export default function LauncherPage({
                     >
                       <button
                         type="button"
-                        className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-panel-outline bg-white/5 text-white/60 transition hover:bg-white/10 hover:text-white"
+                        className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-panel-outline bg-black/20 text-white/60 transition hover:bg-white/[0.07] hover:text-white"
                         onClick={() => {
                           removeLaunchOptionEntry(index);
                         }}
@@ -7826,7 +7821,7 @@ export default function LauncherPage({
         }}
       >
         <DialogContent className="w-[min(640px,92vw)] p-0">
-          <div className="rounded-3xl border border-panel-outline bg-[#0f1116] p-6 text-white">
+          <div className="rounded-3xl border border-panel-outline bg-[var(--theme-surface)] p-6 text-white">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="text-lg font-semibold tracking-[-0.02em]">
@@ -7838,7 +7833,7 @@ export default function LauncherPage({
               </div>
               <button
                 type="button"
-                className="rounded-xl border border-panel-outline bg-white/5 p-2 text-white/70 transition hover:bg-white/10 hover:text-white"
+                className="rounded-xl border border-panel-outline bg-black/20 p-2 text-white/70 transition hover:bg-white/[0.07] hover:text-white"
                 onClick={cancelGoogleOauthLogin}
                 aria-label="Close Google login"
               >
@@ -7932,7 +7927,7 @@ export default function LauncherPage({
         }}
       >
         <DialogContent className="w-[min(640px,92vw)] p-0">
-          <div className="rounded-3xl border border-panel-outline bg-[#0f1116] p-6 text-white">
+          <div className="rounded-3xl border border-panel-outline bg-[var(--theme-surface)] p-6 text-white">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="text-lg font-semibold tracking-[-0.02em]">
@@ -7944,7 +7939,7 @@ export default function LauncherPage({
               </div>
               <button
                 type="button"
-                className="rounded-xl border border-panel-outline bg-white/5 p-2 text-white/70 transition hover:bg-white/10 hover:text-white"
+                className="rounded-xl border border-panel-outline bg-black/20 p-2 text-white/70 transition hover:bg-white/[0.07] hover:text-white"
                 onClick={() => {
                   if (steamOverlaySaveBusy) return;
                   setSteamOverlayDialogOpen(false);
@@ -8030,7 +8025,7 @@ export default function LauncherPage({
               ) : null}
 
               {steamOverlaySaved ? (
-                <div className="rounded-2xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-200">
+                <div className="rounded-2xl border border-[color-mix(in_srgb,var(--theme-accent)_35%,transparent)] bg-[var(--theme-accent-muted)] px-4 py-3 text-sm text-[var(--theme-accent)]">
                   {steamOverlaySaved}
                 </div>
               ) : null}

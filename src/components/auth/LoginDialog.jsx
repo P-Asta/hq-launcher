@@ -324,7 +324,7 @@ export function LoginDialog({ open, onOpenChange, onLoggedIn }) {
           </div>
 
           {logs.length > 0 && (
-            <div className="rounded-2xl border border-panel-outline bg-black/20 px-3 py-2 text-[11px] text-white/60">
+            <div className="rounded-2xl border border-panel-outline bg-[var(--theme-surface)] px-3 py-2 text-[11px] text-white/60">
               <div className="mb-2 text-xs font-semibold text-white/70">
                 DepotDownloader log
               </div>
@@ -340,14 +340,14 @@ export function LoginDialog({ open, onOpenChange, onLoggedIn }) {
           )}
 
           {gameDownloadProgress > 0 && (
-            <div className="rounded-2xl border border-panel-outline bg-black/30 px-3 py-2 text-[11px] text-white/70">
+            <div className="rounded-2xl border border-panel-outline bg-[var(--theme-surface)] px-3 py-2 text-[11px] text-white/70">
               <div className="mb-1 flex items-center justify-between">
                 <span className="font-semibold">Depot download progress</span>
                 <span>{gameDownloadProgress.toFixed(1)}%</span>
               </div>
               <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
                 <div
-                  className="h-full rounded-full bg-emerald-400 transition-[width]"
+                  className="h-full rounded-full bg-[var(--theme-accent)] transition-[width]"
                   style={{
                     width: `${Math.max(
                       0,
@@ -373,7 +373,7 @@ export function LoginDialog({ open, onOpenChange, onLoggedIn }) {
           )}
 
           {!error && hint && (
-            <div className="rounded-2xl border border-panel-outline bg-white/5 px-3 py-2 text-xs text-white/70">
+            <div className="rounded-2xl border border-panel-outline bg-black/20 px-3 py-2 text-xs text-white/70">
               {hint}
             </div>
           )}

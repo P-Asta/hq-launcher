@@ -6,7 +6,17 @@
 }
 
 :root {
-  --theme-accent: #00c896;
+  --theme-hue: 160;
+  --theme-brightness: 0;
+  --theme-accent: hsl(var(--theme-hue) 82% 62%);
+  --theme-accent-strong: hsl(var(--theme-hue) 84% 56%);
+  --theme-accent-muted: hsl(var(--theme-hue) 44% 18% / 0.38);
+  --theme-bg: hsl(var(--theme-hue) 18% 4.5%);
+  --theme-surface: hsl(var(--theme-hue) 14% 7%);
+  --theme-panel: hsl(var(--theme-hue) 13% 8.5%);
+  --theme-elevated: hsl(var(--theme-hue) 12% 10%);
+  --theme-border: hsl(var(--theme-hue) 10% 17%);
+  --color-panel-outline: var(--theme-border);
 }
 
 /* App defaults */
@@ -18,7 +28,7 @@ body,
 
 body {
   margin: 0;
-  background: #0b0c10;
+  background: var(--theme-bg);
 }
 
 ::-webkit-scrollbar {
@@ -98,4 +108,34 @@ input:disabled,
 [aria-disabled="true"],
 [data-disabled] {
   cursor: not-allowed;
+}
+
+.theme-hue-slider::-webkit-slider-runnable-track {
+  height: 100%;
+  background: transparent;
+}
+
+.theme-hue-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 10px;
+  height: 22px;
+  margin-top: 2px;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  background: var(--theme-accent);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25), 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+.theme-hue-slider::-moz-range-track {
+  height: 100%;
+  background: transparent;
+}
+
+.theme-hue-slider::-moz-range-thumb {
+  width: 10px;
+  height: 22px;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  background: var(--theme-accent);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25), 0 4px 12px rgba(0, 0, 0, 0.35);
 }
