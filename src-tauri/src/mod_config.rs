@@ -2,11 +2,41 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering as AtomicOrdering;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde::Deserializer;
 use serde::{Deserialize, Serialize};
+
+const REMOTE_MANIFEST_CACHE_TTL: Duration = Duration::from_secs(60);
+
+type ManifestFetchResult = (
+    u32,
+    ModsConfig,
+    Vec<Vec<String>>,
+    BTreeMap<u32, String>,
+    BTreeMap<String, TagConstraint>,
+);
+
+#[derive(Clone)]
+struct CachedRemoteManifest {
+    channel: crate::release_channel::ReleaseChannel,
+    fetched_at: Instant,
+    manifest: RemoteManifest,
+}
+
+#[derive(Default)]
+struct RemoteManifestCache {
+    cached: Option<CachedRemoteManifest>,
+    fetching: Option<crate::release_channel::ReleaseChannel>,
+}
+
+static REMOTE_MANIFEST_CACHE: OnceLock<(Mutex<RemoteManifestCache>, Condvar)> = OnceLock::new();
+
+fn remote_manifest_cache() -> &'static (Mutex<RemoteManifestCache>, Condvar) {
+    REMOTE_MANIFEST_CACHE
+        .get_or_init(|| (Mutex::new(RemoteManifestCache::default()), Condvar::new()))
+}
 
 /// New config format (requested):
 /// - dev: thunderstore namespace/author
@@ -133,34 +163,14 @@ impl ModsConfig {
 
     /// you can check json in https://f.asta.rs/hq-launcher/manifest.json
     /// output: (manifest_version, cfg, chain_config, manifests, preset_tag_constraints)
-    pub async fn fetch_manifest(
-        client: &reqwest::Client,
-    ) -> Result<
-        (
-            u32,
-            Self,
-            Vec<Vec<String>>,
-            BTreeMap<u32, String>,
-            BTreeMap<String, TagConstraint>,
-        ),
-        String,
-    > {
+    pub async fn fetch_manifest(client: &reqwest::Client) -> Result<ManifestFetchResult, String> {
         Self::fetch_manifest_with_cancel(client, None).await
     }
 
     pub async fn fetch_manifest_with_cancel(
         client: &reqwest::Client,
         cancel: Option<&Arc<AtomicBool>>,
-    ) -> Result<
-        (
-            u32,
-            Self,
-            Vec<Vec<String>>,
-            BTreeMap<u32, String>,
-            BTreeMap<String, TagConstraint>,
-        ),
-        String,
-    > {
+    ) -> Result<ManifestFetchResult, String> {
         // Test mode: if a local `manifest.json` exists next to the repo/current folder,
         // prefer it over the remote manifest. This enables rapid iteration without publishing.
         fn try_read_local_manifest() -> Option<(std::path::PathBuf, RemoteManifest)> {
@@ -196,37 +206,96 @@ impl ModsConfig {
             log::info!("Using local manifest: {}", path.to_string_lossy());
             mf
         } else {
-            let url = crate::release_channel::current().manifest_url();
-            log::info!("Fetching manifest from {url}");
-            Self::await_with_cancel(cancel, async {
-                client
-                    .get(url)
-                    .timeout(Duration::from_secs(12))
-                    .send()
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .error_for_status()
-                    .map_err(|e| e.to_string())?
-                    .json::<RemoteManifest>()
-                    .await
-                    .map_err(|e| e.to_string())
-            })
-            .await?
+            Self::fetch_remote_manifest_cached(client, cancel).await?
         };
 
-        let manifests = manifest.manifests.clone();
-        let preset_tag_constraints = manifest.preset_tag_constraints.clone();
-        let mut cfg = ModsConfig {
-            mods: manifest.mods,
-        };
+        Ok(manifest.into_fetch_result())
+    }
+
+    async fn fetch_remote_manifest_cached(
+        client: &reqwest::Client,
+        cancel: Option<&Arc<AtomicBool>>,
+    ) -> Result<RemoteManifest, String> {
+        let channel = crate::release_channel::current();
+        let now = Instant::now();
+        let (cache_lock, cache_ready) = remote_manifest_cache();
+
+        {
+            let mut cache = cache_lock
+                .lock()
+                .map_err(|_| "remote manifest cache lock poisoned".to_string())?;
+            loop {
+                if let Some(cached) = cache.cached.as_ref() {
+                    if cached.channel == channel
+                        && now.duration_since(cached.fetched_at) < REMOTE_MANIFEST_CACHE_TTL
+                    {
+                        return Ok(cached.manifest.clone());
+                    }
+                }
+
+                if cancel.is_none() && cache.fetching == Some(channel) {
+                    cache = cache_ready
+                        .wait(cache)
+                        .map_err(|_| "remote manifest cache lock poisoned".to_string())?;
+                    continue;
+                }
+
+                if cancel.is_none() {
+                    cache.fetching = Some(channel);
+                }
+                break;
+            }
+        }
+
+        let url = channel.manifest_url();
+        log::info!("Fetching manifest from {url}");
+        let fetch_result = Self::await_with_cancel(cancel, async {
+            client
+                .get(url)
+                .timeout(Duration::from_secs(12))
+                .send()
+                .await
+                .map_err(|e| e.to_string())?
+                .error_for_status()
+                .map_err(|e| e.to_string())?
+                .json::<RemoteManifest>()
+                .await
+                .map_err(|e| e.to_string())
+        })
+        .await;
+
+        if cancel.is_none() {
+            let mut cache = cache_lock
+                .lock()
+                .map_err(|_| "remote manifest cache lock poisoned".to_string())?;
+            cache.fetching = None;
+            if let Ok(manifest) = fetch_result.as_ref() {
+                cache.cached = Some(CachedRemoteManifest {
+                    channel,
+                    fetched_at: Instant::now(),
+                    manifest: manifest.clone(),
+                });
+            }
+            cache_ready.notify_all();
+        }
+
+        fetch_result
+    }
+}
+
+impl RemoteManifest {
+    fn into_fetch_result(self) -> ManifestFetchResult {
+        let manifests = self.manifests.clone();
+        let preset_tag_constraints = self.preset_tag_constraints.clone();
+        let mut cfg = ModsConfig { mods: self.mods };
         let _ = normalize_aliases(&mut cfg);
-        Ok((
-            manifest.version,
+        (
+            self.version,
             cfg,
-            manifest.chain_config,
+            self.chain_config,
             manifests,
             preset_tag_constraints,
-        ))
+        )
     }
 }
 

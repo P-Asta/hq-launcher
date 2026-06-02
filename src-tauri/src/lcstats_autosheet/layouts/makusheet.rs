@@ -367,9 +367,7 @@ fn death_status(player: &PlayerStats, takeoff_time: &str) -> String {
         }
         return "A".to_string();
     }
-    if strip_apostrophe(&player.cause_of_death)
-    .eq_ignore_ascii_case("Abandoned")
-    {
+    if strip_apostrophe(&player.cause_of_death).eq_ignore_ascii_case("Abandoned") {
         return "M".to_string();
     }
     if convert_time_to_number(&player.time_of_death) + 120 < convert_time_to_number(takeoff_time) {

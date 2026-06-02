@@ -102,6 +102,15 @@ input[type="submit"],
   cursor: pointer;
 }
 
+[data-resize-handle="true"] {
+  cursor: ew-resize;
+}
+
+body.is-resizing-panels,
+body.is-resizing-panels * {
+  cursor: ew-resize !important;
+}
+
 button:disabled,
 select:disabled,
 input:disabled,

@@ -1647,12 +1647,14 @@ export default function LauncherPage({
 
     const prevCursor = document.body.style.cursor;
     const prevUserSelect = document.body.style.userSelect;
-    document.body.style.cursor = "col-resize";
+    document.body.style.cursor = "ew-resize";
     document.body.style.userSelect = "none";
+    document.body.classList.add("is-resizing-panels");
 
     return () => {
       document.body.style.cursor = prevCursor;
       document.body.style.userSelect = prevUserSelect;
+      document.body.classList.remove("is-resizing-panels");
     };
   }, [isResizingPanels]);
 
@@ -6214,7 +6216,8 @@ export default function LauncherPage({
                 <button
                   type="button"
                   aria-label="Resize panels"
-                  className="group absolute inset-y-0 left-1/2 w-6 -translate-x-1/2 cursor-col-resize"
+                  data-resize-handle="true"
+                  className="group absolute inset-y-0 left-1/2 w-6 -translate-x-1/2 cursor-ew-resize"
                   onPointerDown={startPanelResize}
                 >
                   <span

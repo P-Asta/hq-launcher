@@ -63,7 +63,8 @@ pub async fn write(
     .await?;
     let payload = lcstats(stats);
     if is_economy_moon(&payload) {
-        return handle_economy_event(client, token, spreadsheet_id, sheet_name, row, &payload).await;
+        return handle_economy_event(client, token, spreadsheet_id, sheet_name, row, &payload)
+            .await;
     }
 
     let normalized = NormalizedStats::from_stats(&payload);
@@ -318,11 +319,11 @@ fn normalize_players(stats: &LcStats) -> Vec<NormalizedPlayer> {
             let alive = player.stats.alive;
             let disconnected = player.stats.disconnected;
             let cause = strip_apostrophe(&player.stats.cause_of_death)
-            .trim()
-            .to_string();
+                .trim()
+                .to_string();
             let death_time = strip_apostrophe(&player.stats.time_of_death)
-            .trim()
-            .to_string();
+                .trim()
+                .to_string();
 
             let status = if disconnected {
                 "DC"
@@ -443,8 +444,7 @@ fn gifts_cell(stats: &LcStats) -> NoteCell {
 }
 
 fn missing_items_cell(stats: &LcStats) -> NoteCell {
-    let missing = stats.active_missed_items()
-        .collect::<Vec<_>>();
+    let missing = stats.active_missed_items().collect::<Vec<_>>();
     if missing.is_empty() {
         return NoteCell {
             column: MISSING_COLUMN,

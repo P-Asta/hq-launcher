@@ -475,11 +475,11 @@ fn normalize_players(stats: &LcStats) -> Vec<NormalizedPlayer> {
             let alive = player.stats.alive;
             let disconnected = player.stats.disconnected;
             let cause = strip_apostrophe(&player.stats.cause_of_death)
-            .trim()
-            .to_string();
+                .trim()
+                .to_string();
             let death_time = strip_apostrophe(&player.stats.time_of_death)
-            .trim()
-            .to_string();
+                .trim()
+                .to_string();
             let status = if disconnected {
                 "DC"
             } else if cause.eq_ignore_ascii_case("abandonment")
@@ -511,9 +511,7 @@ fn normalize_players(stats: &LcStats) -> Vec<NormalizedPlayer> {
 }
 
 fn missing_items_cell(stats: &LcStats) -> NoteCell {
-    let missing = stats
-        .active_missed_items()
-        .collect::<Vec<_>>();
+    let missing = stats.active_missed_items().collect::<Vec<_>>();
     if missing.is_empty() {
         return NoteCell {
             column: MISSING_COLUMN,
@@ -577,10 +575,7 @@ fn gifts_cells(stats: &LcStats) -> (NoteCell, NoteCell) {
         .iter()
         .map(|gift| gift.new_scrap_value - gift.gift_scrap_value)
         .sum::<i64>();
-    let gift_value = opened
-        .iter()
-        .map(|gift| gift.gift_scrap_value)
-        .sum::<i64>();
+    let gift_value = opened.iter().map(|gift| gift.gift_scrap_value).sum::<i64>();
     let note = gifts
         .iter()
         .enumerate()

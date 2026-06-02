@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use log::{Level, LevelFilter, Log, Metadata, Record};
 use log4rs::{
@@ -18,6 +18,10 @@ use tauri::{Emitter, Manager};
 
 type AnyError = Box<dyn std::error::Error>;
 
+const MAX_LOG_FILE_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_LOG_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
+const MAX_LOG_FILES: usize = 8;
+
 fn err(msg: impl Into<String>) -> AnyError {
     Box::new(std::io::Error::new(std::io::ErrorKind::Other, msg.into()))
 }
@@ -30,6 +34,58 @@ fn log_paths(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), AnyError> {
         .join("logs");
     let log_file = logs_dir.join("hq-launcher.log");
     Ok((logs_dir, log_file))
+}
+
+fn startup_housekeeping(logs_dir: &std::path::Path, log_file: &std::path::Path) {
+    if let Ok(metadata) = std::fs::metadata(log_file) {
+        if metadata.len() > MAX_LOG_FILE_BYTES {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or_default();
+            let rolled = logs_dir.join(format!("hq-launcher.startup-{timestamp}.log"));
+            let _ = std::fs::rename(log_file, rolled);
+        }
+    }
+
+    let now = SystemTime::now();
+    let Ok(entries) = std::fs::read_dir(logs_dir) else {
+        return;
+    };
+    let mut logs = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_string_lossy();
+            if !name.starts_with("hq-launcher") || !name.ends_with(".log") {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((path, modified))
+        })
+        .collect::<Vec<_>>();
+
+    for (path, modified) in &logs {
+        if path == log_file {
+            continue;
+        }
+        if now
+            .duration_since(*modified)
+            .map(|age| age > MAX_LOG_AGE)
+            .unwrap_or(false)
+        {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    logs.retain(|(path, _)| path.exists());
+    logs.sort_by_key(|(_, modified)| *modified);
+    let removable_count = logs.len().saturating_sub(MAX_LOG_FILES);
+    for (path, _) in logs.into_iter().take(removable_count) {
+        if path != log_file {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -99,6 +155,7 @@ pub fn init(app: &tauri::AppHandle) -> Result<(), AnyError> {
 
     let (logs_dir, log_file) = log_paths(app)?;
     std::fs::create_dir_all(&logs_dir).map_err(|e| err(e.to_string()))?;
+    startup_housekeeping(&logs_dir, &log_file);
 
     // 10MB per file, keep 5 rolled files.
     let roller = FixedWindowRoller::builder()
@@ -111,7 +168,7 @@ pub fn init(app: &tauri::AppHandle) -> Result<(), AnyError> {
         )
         .map_err(|e| err(e.to_string()))?;
     let policy = CompoundPolicy::new(
-        Box::new(SizeTrigger::new(10 * 1024 * 1024)),
+        Box::new(SizeTrigger::new(MAX_LOG_FILE_BYTES)),
         Box::new(roller),
     );
 
@@ -125,13 +182,12 @@ pub fn init(app: &tauri::AppHandle) -> Result<(), AnyError> {
     let error_events = ErrorEventAppender { app: app.clone() };
 
     let cfg_builder = {
-        let cfg_builder =
-            Config::builder()
-                .appender(Appender::builder().build("file", Box::new(file_appender)))
-                .appender(Appender::builder().build(
-                    "error_events",
-                    Box::new(error_events) as Box<dyn Append>,
-                ));
+        let cfg_builder = Config::builder()
+            .appender(Appender::builder().build("file", Box::new(file_appender)))
+            .appender(
+                Appender::builder()
+                    .build("error_events", Box::new(error_events) as Box<dyn Append>),
+            );
 
         // In dev builds, also log to console for convenience.
         #[cfg(debug_assertions)]

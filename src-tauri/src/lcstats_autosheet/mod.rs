@@ -34,7 +34,7 @@ pub fn start_for_launch(
             return;
         }
         Err(e) => {
-            log::warn!(
+            log::error!(
                 "LCStatsTracker AutoSheet listener skipped: failed to check Google login: {e}"
             );
             return;
@@ -53,7 +53,7 @@ pub fn start_for_launch(
     tauri::async_runtime::spawn(async move {
         let result = run_listener(app, state.clone(), generation).await;
         if let Err(e) = result {
-            log::warn!("LCStatsTracker AutoSheet listener stopped: {e}");
+            log::error!("LCStatsTracker AutoSheet listener stopped: {e}");
         }
         if state.generation.load(Ordering::Acquire) == generation {
             state.running.store(false, Ordering::Release);
@@ -129,7 +129,7 @@ async fn run_listener(
                 let stats: Value = match serde_json::from_str(&payload) {
                     Ok(stats) => stats,
                     Err(e) => {
-                        log::warn!(
+                        log::error!(
                             "LCStatsTracker AutoSheet payload ignored: failed to parse payload: {e}"
                         );
                         continue;
@@ -138,7 +138,7 @@ async fn run_listener(
                 let settings = match crate::google_oauth::get_settings(app.clone()) {
                     Ok(settings) => settings,
                     Err(e) => {
-                        log::warn!(
+                        log::error!(
                             "LCStatsTracker AutoSheet payload ignored: failed to read settings: {e}"
                         );
                         tokio::time::sleep(LCSTATS_RETRY_DELAY).await;
@@ -149,7 +149,7 @@ async fn run_listener(
                     || settings.active_sheet_name.trim().is_empty()
                     || !layouts::is_supported_layout(&settings.layout)
                 {
-                    log::warn!(
+                    log::error!(
                         "LCStatsTracker AutoSheet payload ignored: invalid settings for layout {}",
                         settings.layout
                     );
@@ -163,10 +163,10 @@ async fn run_listener(
                 {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => {
-                        log::warn!("Failed to write LCStatsTracker stats to Google Sheets: {e}");
+                        log::error!("Failed to write LCStatsTracker stats to Google Sheets: {e}");
                     }
                     Err(_) => {
-                        log::warn!("Timed out writing LCStatsTracker stats to Google Sheets");
+                        log::error!("Timed out writing LCStatsTracker stats to Google Sheets");
                     }
                 }
             }

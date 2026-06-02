@@ -305,11 +305,11 @@ fn normalize_players(lc_stats: &LcStats) -> HashMap<String, NormalizedPlayer> {
         .into_iter()
         .map(|player| {
             let cause_of_death = strip_apostrophe(&player.stats.cause_of_death)
-            .trim()
-            .to_string();
+                .trim()
+                .to_string();
             let time_of_death = strip_apostrophe(&player.stats.time_of_death)
-            .trim()
-            .to_string();
+                .trim()
+                .to_string();
             let has_death_details = !cause_of_death.is_empty() || !time_of_death.is_empty();
             let status = if player.stats.alive {
                 "A"
@@ -319,7 +319,9 @@ fn normalize_players(lc_stats: &LcStats) -> HashMap<String, NormalizedPlayer> {
                 || cause_of_death.eq_ignore_ascii_case("Abandonment")
             {
                 "M"
-            } else if has_death_details || died_before_ship_leave_cutoff(&player.stats, &takeoff_time) {
+            } else if has_death_details
+                || died_before_ship_leave_cutoff(&player.stats, &takeoff_time)
+            {
                 "X"
             } else {
                 "S"
@@ -448,12 +450,8 @@ fn player_death_note(player: &PlayerStats) -> Option<String> {
     if player.alive || player.disconnected {
         return None;
     }
-    let cause = strip_apostrophe(&player.cause_of_death)
-    .trim()
-    .to_string();
-    let death_time = strip_apostrophe(&player.time_of_death)
-    .trim()
-    .to_string();
+    let cause = strip_apostrophe(&player.cause_of_death).trim().to_string();
+    let death_time = strip_apostrophe(&player.time_of_death).trim().to_string();
     if cause.is_empty() && death_time.is_empty() {
         return None;
     }

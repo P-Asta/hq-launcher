@@ -838,10 +838,7 @@ mod tests {
 
         assert_eq!(lcstats(&new_stats).initial_available_value(), 300);
         assert_eq!(lcstats(&new_stats).total_available_value(), 400);
-        assert_eq!(
-            lcstats(&flat_new_stats).initial_available_value(),
-            200
-        );
+        assert_eq!(lcstats(&flat_new_stats).initial_available_value(), 200);
         assert_eq!(lcstats(&flat_new_stats).total_available_value(), 250);
         assert_eq!(lcstats(&old_stats).initial_available_value(), 30);
         assert_eq!(lcstats(&old_stats).total_available_value(), 40);
