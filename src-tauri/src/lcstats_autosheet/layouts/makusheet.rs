@@ -8,7 +8,8 @@ use crate::lcstats_autosheet::sheets::{
     first_empty_row_from, get_sheet_id, number_value, quote_sheet_name, read_number,
 };
 use crate::lcstats_autosheet::stats::{
-    lcstats, strip_apostrophe, strip_moon_number, LcStats, PlayerStats,
+    lcstats, parse_lcstats_time_to_minutes, strip_apostrophe, strip_moon_number, LcStats,
+    PlayerStats,
 };
 
 const CHECK_COLUMN: &str = "K";
@@ -377,26 +378,7 @@ fn death_status(player: &PlayerStats, takeoff_time: &str) -> String {
 }
 
 fn convert_time_to_number(time: &str) -> i64 {
-    let normalized = strip_apostrophe(time).to_ascii_uppercase();
-    let numbers = normalized
-        .split(|ch: char| !ch.is_ascii_digit())
-        .filter(|part| !part.is_empty())
-        .filter_map(|part| part.parse::<i64>().ok())
-        .collect::<Vec<_>>();
-    if numbers.len() < 2 {
-        return 0;
-    }
-    let day_mod = if normalized.contains("AM") {
-        Some("AM")
-    } else if normalized.contains("PM") {
-        Some("PM")
-    } else {
-        None
-    };
-    let Some(day_mod) = day_mod else {
-        return 0;
-    };
-    60 * (numbers[0] % 12) + numbers[1] + if day_mod == "AM" { 0 } else { 720 }
+    parse_lcstats_time_to_minutes(time).unwrap_or(0)
 }
 
 fn uppercase_text(value: &str) -> String {

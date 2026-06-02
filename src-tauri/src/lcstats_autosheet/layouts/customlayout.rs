@@ -7,8 +7,9 @@ use crate::lcstats_autosheet::sheets::{
     batch_update_spreadsheet, batch_write_cells_user_entered, first_empty_row_from, get_sheet_id,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, intish_value, is_gordion_moon_name, lcstats, players_at,
-    strip_apostrophe, strip_moon_number, value_at, value_at_any, LcStats,
+    array_at, array_at_any, intish_value, is_gordion_moon_name, lcstats,
+    parse_lcstats_time_to_minutes, players_at, strip_apostrophe, strip_moon_number, value_at,
+    value_at_any, LcStats,
 };
 
 pub async fn write(
@@ -76,6 +77,7 @@ struct ResolvedCustomLayout {
     start_row: usize,
     check_column: String,
     text_case: String,
+    time_format: String,
     quota_column: Option<String>,
     seed_column: Option<String>,
     moon_column: Option<String>,
@@ -160,6 +162,7 @@ impl ResolvedCustomLayout {
             start_row: settings.start_row.max(1),
             check_column,
             text_case: normalize_text_case(&settings.text_case),
+            time_format: normalize_time_format(&settings.time_format),
             quota_column,
             seed_column: normalize_optional_column(&settings.seed_column),
             moon_column,
@@ -419,7 +422,8 @@ impl NormalizedStats {
     fn from_stats(stats: &Value, payload: &LcStats, layout: &ResolvedCustomLayout) -> Self {
         let sid_type = non_false_text(payload.sid_type());
         let infestation_type = non_false_text(payload.infestation_type());
-        let meteor_time = non_false_text(payload.meteor_shower_time());
+        let meteor_time =
+            non_false_text(payload.meteor_shower_time()).map(|time| format_time(&time, layout));
         let interior = normalize_interior_name(&strip_apostrophe(&payload.dungeon_interior()));
         let apparatus_spawned = payload.app_spawned();
         Self {
@@ -471,7 +475,7 @@ impl NormalizedStats {
                 note: infestation_type,
             },
             lost_scrap: lost_scrap(stats),
-            takeoff_time: strip_apostrophe(payload.take_off_time()),
+            takeoff_time: format_time(payload.take_off_time(), layout),
             turret_count: payload.turret_count(),
             landmine_count: payload.landmine_count(),
             spiketrap_count: payload.spiketrap_count(),
@@ -648,7 +652,7 @@ fn build_value_updates(
         &mut updates,
         &layout.takeoff_time_column,
         row,
-        json!(apply_text_case(&stats.takeoff_time, &layout.text_case)),
+        json!(stats.takeoff_time),
     );
     push_value(
         &mut updates,
@@ -989,19 +993,23 @@ fn google_user_value(value: Value) -> Value {
     }
 }
 
-fn player_death_enemy_note(stats: &Value, death_time: &str) -> Option<String> {
+fn player_death_enemy_note(
+    stats: &Value,
+    death_time: &str,
+    layout: &ResolvedCustomLayout,
+) -> Option<String> {
     let sections = [
         (
             "Inside spawns before death:",
-            spawns_before_death(stats, &["IndoorSpawns"], death_time),
+            spawns_before_death(stats, &["IndoorSpawns"], death_time, layout),
         ),
         (
             "Day outside spawns before death:",
-            spawns_before_death(stats, &["DayTimeSpawns"], death_time),
+            spawns_before_death(stats, &["DayTimeSpawns"], death_time, layout),
         ),
         (
             "Night outside spawns before death:",
-            spawns_before_death(stats, &["NightTimeSpawns"], death_time),
+            spawns_before_death(stats, &["NightTimeSpawns"], death_time, layout),
         ),
     ];
     let lines = sections
@@ -1016,7 +1024,12 @@ fn player_death_enemy_note(stats: &Value, death_time: &str) -> Option<String> {
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
-fn spawns_before_death(stats: &Value, path: &[&str], death_time: &str) -> Vec<String> {
+fn spawns_before_death(
+    stats: &Value,
+    path: &[&str],
+    death_time: &str,
+    layout: &ResolvedCustomLayout,
+) -> Vec<String> {
     let Some(death_minutes) = parse_time_to_minutes(death_time) else {
         return vec![];
     };
@@ -1030,52 +1043,35 @@ fn spawns_before_death(stats: &Value, path: &[&str], death_time: &str) -> Vec<St
                 .map(|spawn_minutes| spawn_minutes <= death_minutes)
                 .unwrap_or(false)
         })
-        .map(format_spawn_note)
+        .map(|spawn| format_spawn_note(spawn, layout))
         .collect()
 }
 
-fn format_spawn_note(spawn: &Value) -> String {
+fn format_spawn_note(spawn: &Value, layout: &ResolvedCustomLayout) -> String {
     let enemy = spawn
         .get("Enemy")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let spawn_time = spawn
-        .get("SpawnTime")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let spawn_time = format_time(
+        spawn
+            .get("SpawnTime")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        layout,
+    );
     let mut note = format!("{enemy} - {spawn_time}");
     if let Some(death_time) = spawn
         .get("TimeOfDeath")
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
     {
-        note.push_str(&format!(" / died {death_time}"));
+        note.push_str(&format!(" / died {}", format_time(death_time, layout)));
     }
     note
 }
 
 fn parse_time_to_minutes(value: &str) -> Option<i64> {
-    let normalized = value.trim().to_ascii_uppercase();
-    let mut parts = normalized.split_whitespace();
-    let time = parts.next()?;
-    let period = parts.next()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    let mut time_parts = time.split(':');
-    let mut hour = time_parts.next()?.parse::<i64>().ok()?;
-    let minute = time_parts.next()?.parse::<i64>().ok()?;
-    if time_parts.next().is_some() || !(0..60).contains(&minute) {
-        return None;
-    }
-    if period == "PM" && hour != 12 {
-        hour += 12;
-    } else if period == "AM" && hour == 12 {
-        hour = 0;
-    } else if period != "AM" && period != "PM" {
-        return None;
-    }
-    Some(hour * 60 + minute)
+    parse_lcstats_time_to_minutes(value)
 }
 
 fn normalize_players(stats: &Value, layout: &ResolvedCustomLayout) -> Vec<NormalizedPlayer> {
@@ -1136,7 +1132,10 @@ fn normalize_players(stats: &Value, layout: &ResolvedCustomLayout) -> Vec<Normal
                 if layout.death_notes_enabled {
                     let mut parts = vec![];
                     if !death_time.is_empty() {
-                        parts.push(format!("Time of Death: {death_time}"));
+                        parts.push(format!(
+                            "Time of Death: {}",
+                            format_time(&death_time, layout)
+                        ));
                     }
                     if !cause.is_empty() {
                         parts.push(format!("Cause of Death: {cause}"));
@@ -1146,7 +1145,7 @@ fn normalize_players(stats: &Value, layout: &ResolvedCustomLayout) -> Vec<Normal
                     }
                 }
                 if layout.death_enemy_notes_enabled {
-                    if let Some(enemy_note) = player_death_enemy_note(stats, &death_time) {
+                    if let Some(enemy_note) = player_death_enemy_note(stats, &death_time, layout) {
                         sections.push(enemy_note);
                     }
                 }
@@ -1665,6 +1664,65 @@ fn normalize_text_case(value: &str) -> String {
     .to_string()
 }
 
+fn normalize_time_format(value: &str) -> String {
+    let value = value.trim();
+    let compact = value
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    match value {
+        "12-hour" | "12-hour compact" | "24-hour" => value.to_string(),
+        "7:40 AM" => "12-hour".to_string(),
+        "19:40" => "24-hour".to_string(),
+        _ if compact == "7:40am" => "12-hour compact".to_string(),
+        _ => "12-hour".to_string(),
+    }
+}
+
+fn format_time(value: &str, layout: &ResolvedCustomLayout) -> String {
+    format_time_value(value, &layout.time_format)
+}
+
+fn format_time_value(value: &str, time_format: &str) -> String {
+    let original = strip_apostrophe(value).trim().to_string();
+    match time_format {
+        "12-hour" => parse_lcstats_time_to_minutes(value)
+            .map(|minutes| format_minutes_12_hour(minutes, true))
+            .unwrap_or(original),
+        "12-hour compact" => parse_lcstats_time_to_minutes(value)
+            .map(|minutes| format_minutes_12_hour(minutes, false))
+            .unwrap_or(original),
+        "24-hour" => parse_lcstats_time_to_minutes(value)
+            .map(format_minutes_24_hour)
+            .unwrap_or(original),
+        _ => parse_lcstats_time_to_minutes(value)
+            .map(|minutes| format_minutes_12_hour(minutes, true))
+            .unwrap_or(original),
+    }
+}
+
+fn format_minutes_12_hour(minutes: i64, spaced: bool) -> String {
+    let minutes = minutes.rem_euclid(24 * 60);
+    let hour_24 = minutes / 60;
+    let minute = minutes % 60;
+    let period = if hour_24 < 12 { "AM" } else { "PM" };
+    let mut hour = hour_24 % 12;
+    if hour == 0 {
+        hour = 12;
+    }
+    if spaced {
+        format!("{hour}:{minute:02} {period}")
+    } else {
+        format!("{hour}:{minute:02}{period}")
+    }
+}
+
+fn format_minutes_24_hour(minutes: i64) -> String {
+    let minutes = minutes.rem_euclid(24 * 60);
+    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+}
+
 fn apply_text_case(value: &str, text_case: &str) -> String {
     match normalize_text_case(text_case).as_str() {
         "UPPERCASE" => value.to_uppercase(),
@@ -2112,6 +2170,48 @@ mod tests {
             "Night outside spawns before death:\nMaskedPlayerEnemy - 9:30 PM / died 9:45 PM"
         ));
         assert!(note.find("Cause of Death") < note.find("Inside spawns before death"));
+    }
+
+    #[test]
+    fn time_format_applies_to_custom_layout_time_values_and_notes() {
+        let stats = json!({
+            "EventInfo": {
+                "TakeOffTime": "11:57PM",
+                "MeteorShowerTime": "8:30PM"
+            },
+            "IndoorSpawns": [
+                { "Enemy": "Flowerman", "SpawnTime": "9:30PM", "TimeOfDeath": "9:45PM" }
+            ],
+            "Players": {
+                "1": {
+                    "Name": "'Aureo",
+                    "Alive": false,
+                    "Disconnected": false,
+                    "TimeOfDeath": "'10:00PM",
+                    "CauseOfDeath": "'Blunt force trauma"
+                }
+            }
+        });
+        let layout = ResolvedCustomLayout::from_settings(&CustomLcStatsLayoutSettings {
+            time_format: "19:40".to_string(),
+            takeoff_time_column: "AM".to_string(),
+            meteor_column: "AH".to_string(),
+            death_enemy_notes_enabled: true,
+            death_notes_enabled: true,
+            ..Default::default()
+        });
+        let normalized = normalized_stats(&stats, &layout);
+        let updates = build_value_updates(&normalized, &layout, 7);
+        let note = normalized
+            .players
+            .first()
+            .and_then(|player| player.note.as_deref())
+            .unwrap_or_default();
+
+        assert_eq!(cell_value(&updates, "AM"), Some(&json!("23:57")));
+        assert_eq!(normalized.meteor.note.as_deref(), Some("20:30"));
+        assert!(note.contains("Time of Death: 22:00"));
+        assert!(note.contains("Flowerman - 21:30 / died 21:45"));
     }
 
     #[test]

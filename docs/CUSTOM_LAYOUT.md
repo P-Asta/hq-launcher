@@ -73,7 +73,8 @@ If `SID note` is on, the `Y` cell can also have a note like `Cash register`.
 | --- | --- |
 | `Start row` | First row AutoSheet may write into. |
 | `Check column` | Used to find the first empty row. Pick a column that is usually filled on every run. |
-| `Text case` | Changes text case for moon, weather, interior layout, and takeoff time. |
+| `Text case` | Changes text case for moon, weather, and interior layout. |
+| `Time format` | Changes time display for takeoff time, meteor notes, death notes, and death enemy notes. |
 
 `Text case` options:
 
@@ -85,6 +86,14 @@ If `SID note` is on, the `Y` cell can also have a note like `Cash register`.
 | `Title Case` | `Mineshaft` |
 | `camelCase` | `mineshaft` |
 | `PascalCase` | `Mineshaft` |
+
+`Time format` options:
+
+| Option shown | Output |
+| --- | --- |
+| `7:40 AM` | `7:40 AM` |
+| `7:40AM` | `7:40AM` |
+| `19:40` | `19:40` |
 
 ## Run
 
@@ -307,6 +316,7 @@ Adjust the columns to match your sheet.
   "startRow": 3,
   "checkColumn": "F",
   "textCase": "Original",
+  "timeFormat": "12-hour",
   "quotaColumn": "B",
   "seedColumn": "",
   "moonColumn": "F",

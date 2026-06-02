@@ -5,8 +5,8 @@ mod stats;
 use futures_util::StreamExt;
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const LCSTATS_SSE_URL: &str = "http://localhost:2145/";
 const LCSTATS_RETRY_DELAY: Duration = Duration::from_secs(3);
@@ -17,6 +17,7 @@ const LCSTATS_WRITE_TIMEOUT: Duration = Duration::from_secs(45);
 pub struct LcStatsAutosheetState {
     running: Arc<AtomicBool>,
     generation: Arc<AtomicU64>,
+    pending_stats: Arc<Mutex<Vec<PendingStatsEntry>>>,
 }
 
 pub fn start_for_launch(
@@ -89,6 +90,14 @@ pub fn is_running(state: &tauri::State<'_, LcStatsAutosheetState>) -> bool {
     state.running.load(Ordering::Acquire)
 }
 
+#[derive(Debug, Clone)]
+struct PendingStatsEntry {
+    id: u64,
+    attempts: u32,
+    settings: crate::google_oauth::LcStatsSettings,
+    stats: Value,
+}
+
 async fn run_listener(
     app: tauri::AppHandle,
     state: LcStatsAutosheetState,
@@ -155,18 +164,28 @@ async fn run_listener(
                     );
                     continue;
                 }
-                match tokio::time::timeout(
-                    LCSTATS_WRITE_TIMEOUT,
-                    layouts::write_stats(app.clone(), &client, &settings, &stats),
-                )
-                .await
-                {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => {
-                        log::error!("Failed to write LCStatsTracker stats to Google Sheets: {e}");
-                    }
-                    Err(_) => {
-                        log::error!("Timed out writing LCStatsTracker stats to Google Sheets");
+
+                if let Err(e) = flush_pending_stats(app.clone(), &client, &state).await {
+                    log::debug!("Failed to flush pending LCStatsTracker AutoSheet writes: {e}");
+                }
+
+                match write_stats_with_timeout(app.clone(), &client, &settings, &stats).await {
+                    Ok(()) => {}
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to write LCStatsTracker stats to Google Sheets; queued for retry: {e}"
+                        );
+                        if let Err(queue_error) =
+                            enqueue_pending_stats(&state, settings, stats, e.clone())
+                        {
+                            log::error!(
+                                "Failed to keep LCStatsTracker stats in memory for later retry: {queue_error}"
+                            );
+                        } else {
+                            log::info!(
+                                "Kept LCStatsTracker stats in memory fallback queue for retry"
+                            );
+                        }
                     }
                 }
             }
@@ -182,6 +201,124 @@ async fn run_listener(
     }
 
     Ok(())
+}
+
+async fn write_stats_with_timeout(
+    app: tauri::AppHandle,
+    client: &reqwest::Client,
+    settings: &crate::google_oauth::LcStatsSettings,
+    stats: &Value,
+) -> Result<(), String> {
+    match tokio::time::timeout(
+        LCSTATS_WRITE_TIMEOUT,
+        layouts::write_stats(app, client, settings, stats),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err("Timed out writing LCStatsTracker stats to Google Sheets".to_string()),
+    }
+}
+
+async fn flush_pending_stats(
+    app: tauri::AppHandle,
+    client: &reqwest::Client,
+    state: &LcStatsAutosheetState,
+) -> Result<(), String> {
+    let mut entries = take_pending_stats(state)?;
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    let mut remaining = Vec::new();
+    let total = entries.len();
+    while !entries.is_empty() {
+        let mut entry = entries.remove(0);
+        entry.attempts = entry.attempts.saturating_add(1);
+        match write_stats_with_timeout(app.clone(), client, &entry.settings, &entry.stats).await {
+            Ok(()) => {
+                log::info!(
+                    "Retried pending LCStatsTracker AutoSheet write {} successfully",
+                    entry.id
+                );
+            }
+            Err(e) => {
+                if entry.attempts == 1 {
+                    log::error!(
+                        "Failed to write queued LCStatsTracker stats to Google Sheets after retry {}: {e}",
+                        entry.id
+                    );
+                } else {
+                    log::warn!(
+                        "Queued LCStatsTracker AutoSheet write {} still could not be retried: {e}",
+                        entry.id
+                    );
+                }
+                remaining.push(entry);
+                remaining.extend(entries);
+                restore_pending_stats(state, remaining)?;
+                return Err(e);
+            }
+        }
+    }
+
+    log::info!("Flushed {total} pending LCStatsTracker AutoSheet writes");
+    Ok(())
+}
+
+fn enqueue_pending_stats(
+    state: &LcStatsAutosheetState,
+    settings: crate::google_oauth::LcStatsSettings,
+    stats: Value,
+    error: String,
+) -> Result<(), String> {
+    let mut entries = state
+        .pending_stats
+        .lock()
+        .map_err(|e| format!("LCStatsTracker fallback queue lock failed: {e}"))?;
+    let queue_len = entries.len() as u64;
+    entries.push(PendingStatsEntry {
+        id: now_epoch_secs()
+            .saturating_mul(1000)
+            .saturating_add(queue_len),
+        attempts: 0,
+        settings,
+        stats,
+    });
+    log::debug!("Queued LCStatsTracker AutoSheet fallback write in memory: {error}");
+    Ok(())
+}
+
+fn take_pending_stats(state: &LcStatsAutosheetState) -> Result<Vec<PendingStatsEntry>, String> {
+    let mut entries = state
+        .pending_stats
+        .lock()
+        .map_err(|e| format!("LCStatsTracker fallback queue lock failed: {e}"))?;
+    Ok(std::mem::take(&mut *entries))
+}
+
+fn restore_pending_stats(
+    state: &LcStatsAutosheetState,
+    mut remaining: Vec<PendingStatsEntry>,
+) -> Result<(), String> {
+    let mut entries = state
+        .pending_stats
+        .lock()
+        .map_err(|e| format!("LCStatsTracker fallback queue lock failed: {e}"))?;
+    if entries.is_empty() {
+        *entries = remaining;
+    } else {
+        remaining.extend(std::mem::take(&mut *entries));
+        *entries = remaining;
+    }
+    Ok(())
+}
+
+fn now_epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 async fn receive_lcstats_payload(client: &reqwest::Client) -> Result<String, String> {

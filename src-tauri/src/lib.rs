@@ -5936,7 +5936,9 @@ fn get_app_version(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn get_release_channel(app: tauri::AppHandle) -> Result<release_channel::ReleaseChannelDto, String> {
+fn get_release_channel(
+    app: tauri::AppHandle,
+) -> Result<release_channel::ReleaseChannelDto, String> {
     let channel = release_channel::load(&app)?;
     Ok(channel.into_dto())
 }

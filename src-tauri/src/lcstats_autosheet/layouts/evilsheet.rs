@@ -8,7 +8,8 @@ use crate::lcstats_autosheet::sheets::{
     first_empty_row_from, get_sheet_id, number_value, quote_sheet_name, read_number, read_range,
 };
 use crate::lcstats_autosheet::stats::{
-    lcstats, strip_apostrophe, strip_moon_number, LcStats, PlayerStats,
+    lcstats, parse_lcstats_time_to_minutes, strip_apostrophe, strip_moon_number, LcStats,
+    PlayerStats,
 };
 
 const TARGET_SHEET_CELL: &str = "A1";
@@ -476,27 +477,7 @@ fn died_before_ship_leave_cutoff(player: &PlayerStats, takeoff_time: &str) -> bo
 }
 
 fn parse_time_to_minutes(value: &str) -> Option<i64> {
-    let normalized = value.trim().to_ascii_uppercase();
-    let mut parts = normalized.split_whitespace();
-    let time = parts.next()?;
-    let period = parts.next()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    let mut time_parts = time.split(':');
-    let mut hour = time_parts.next()?.parse::<i64>().ok()?;
-    let minute = time_parts.next()?.parse::<i64>().ok()?;
-    if time_parts.next().is_some() || !(0..60).contains(&minute) {
-        return None;
-    }
-    if period == "PM" && hour != 12 {
-        hour += 12;
-    } else if period == "AM" && hour == 12 {
-        hour = 0;
-    } else if period != "AM" && period != "PM" {
-        return None;
-    }
-    Some(hour * 60 + minute)
+    parse_lcstats_time_to_minutes(value)
 }
 
 fn run_block_start_row(current_row: usize) -> usize {

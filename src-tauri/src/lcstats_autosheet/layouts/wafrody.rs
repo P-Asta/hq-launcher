@@ -8,8 +8,8 @@ use crate::lcstats_autosheet::sheets::{
     first_empty_row_from, get_sheet_id, number_value, quote_sheet_name, read_number, read_range,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, lcstats, object_at, players_at, strip_apostrophe, strip_moon_number,
-    value_at, value_at_any, LcStats,
+    array_at, array_at_any, lcstats, object_at, parse_lcstats_time_to_minutes, players_at,
+    strip_apostrophe, strip_moon_number, value_at, value_at_any, LcStats,
 };
 
 const TARGET_SHEET_CELL: &str = "A1";
@@ -966,27 +966,7 @@ fn optional_i64_or_blank(value: Option<i64>) -> Value {
 }
 
 fn parse_time_to_minutes(value: &str) -> Option<i64> {
-    let normalized = value.trim().to_ascii_uppercase();
-    let mut parts = normalized.split_whitespace();
-    let time = parts.next()?;
-    let period = parts.next()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    let mut time_parts = time.split(':');
-    let mut hour = time_parts.next()?.parse::<i64>().ok()?;
-    let minute = time_parts.next()?.parse::<i64>().ok()?;
-    if time_parts.next().is_some() || !(0..60).contains(&minute) {
-        return None;
-    }
-    if period == "PM" && hour != 12 {
-        hour += 12;
-    } else if period == "AM" && hour == 12 {
-        hour = 0;
-    } else if period != "AM" && period != "PM" {
-        return None;
-    }
-    Some(hour * 60 + minute)
+    parse_lcstats_time_to_minutes(value)
 }
 
 fn died_before_ship_leave_cutoff(player: &Value, takeoff_time: &str) -> bool {

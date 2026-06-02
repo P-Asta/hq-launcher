@@ -59,6 +59,8 @@ pub struct CustomLcStatsLayoutSettings {
     pub check_column: String,
     #[serde(default = "default_custom_text_case")]
     pub text_case: String,
+    #[serde(default = "default_custom_time_format")]
+    pub time_format: String,
     #[serde(default = "default_custom_quota_column")]
     pub quota_column: String,
     #[serde(default = "default_custom_seed_column")]
@@ -237,6 +239,7 @@ impl Default for CustomLcStatsLayoutSettings {
             start_row: default_custom_start_row(),
             check_column: default_custom_check_column(),
             text_case: default_custom_text_case(),
+            time_format: default_custom_time_format(),
             quota_column: default_custom_quota_column(),
             seed_column: default_custom_seed_column(),
             moon_column: default_custom_moon_column(),
@@ -331,6 +334,9 @@ fn default_custom_check_column() -> String {
 }
 fn default_custom_text_case() -> String {
     "Original".to_string()
+}
+fn default_custom_time_format() -> String {
+    "12-hour".to_string()
 }
 fn default_custom_quota_column() -> String {
     "B".to_string()

@@ -241,6 +241,7 @@ const DEFAULT_CUSTOM_LCSTATS_LAYOUT = {
   startRow: 3,
   checkColumn: "O",
   textCase: "Original",
+  timeFormat: "12-hour",
   quotaColumn: "B",
   seedColumn: "",
   moonColumn: "F",
@@ -336,6 +337,12 @@ const DEFAULT_LCSTATS_SETTINGS = {
   googlePickerAppId: "",
   allowWithoutGoogle: false,
 };
+
+const CUSTOM_TIME_FORMAT_OPTIONS = [
+  { value: "12-hour", label: "7:40 AM" },
+  { value: "12-hour compact", label: "7:40AM" },
+  { value: "24-hour", label: "19:40" },
+];
 
 const GOOGLE_PICKER_SCRIPT_SRC = "https://apis.google.com/js/api.js";
 const GOOGLE_SPREADSHEET_MIME_TYPE = "application/vnd.google-apps.spreadsheet";
@@ -550,6 +557,18 @@ function normalizeSheetColumnList(value, fallback) {
   return text || fallback;
 }
 
+function normalizeCustomTimeFormat(value) {
+  const text = String(value ?? "").trim();
+  const normalized = text.toLowerCase().replace(/\s+/g, "");
+  if (text === "7:40 AM") return "12-hour";
+  if (normalized === "7:40am") return "12-hour compact";
+  if (text === "19:40") return "24-hour";
+  if (normalized === "keeporiginal" || normalized === "original") return "12-hour";
+  return CUSTOM_TIME_FORMAT_OPTIONS.some((option) => option.value === text)
+    ? text
+    : "12-hour";
+}
+
 function normalizeCustomLcstatsLayout(layout = {}) {
   const source = { ...DEFAULT_CUSTOM_LCSTATS_LAYOUT, ...(layout ?? {}) };
   const allowedTextCases = new Set([
@@ -563,11 +582,13 @@ function normalizeCustomLcstatsLayout(layout = {}) {
   const textCase = allowedTextCases.has(source.textCase)
     ? source.textCase
     : "Original";
+  const timeFormat = normalizeCustomTimeFormat(source.timeFormat);
   return {
     ...source,
     startRow: Math.max(1, Math.floor(Number(source.startRow) || 1)),
     checkColumn: normalizeSheetColumn(source.checkColumn, ""),
     textCase,
+    timeFormat,
     quotaColumn: normalizeSheetColumn(source.quotaColumn, ""),
     seedColumn: normalizeSheetColumn(source.seedColumn, ""),
     moonColumn: normalizeSheetColumn(source.moonColumn, ""),
@@ -3988,6 +4009,7 @@ export default function LauncherPage({
           ],
           [
             ["Text case", "textCase", "Original", "case"],
+            ["Time format", "timeFormat", "7:40 AM", "timeFormat"],
           ],
         ],
       },
@@ -4350,7 +4372,7 @@ export default function LauncherPage({
                                 {checkboxText ?? "Enabled"}
                               </span>
                             </label>
-                          ) : type === "case" ? (
+                          ) : type === "case" || type === "timeFormat" ? (
                             <Select
                               value={customLayout[key]}
                               onValueChange={(value) =>
@@ -4362,16 +4384,24 @@ export default function LauncherPage({
                                 <SelectValue placeholder={placeholder} />
                               </SelectTrigger>
                               <SelectContent>
-                                {[
-                                  "Original",
-                                  "UPPERCASE",
-                                  "lowercase",
-                                  "Title Case",
-                                  "camelCase",
-                                  "PascalCase",
-                                ].map((option) => (
-                                  <SelectItem key={option} value={option}>
-                                    {option}
+                                {(type === "case"
+                                  ? [
+                                      "Original",
+                                      "UPPERCASE",
+                                      "lowercase",
+                                      "Title Case",
+                                      "camelCase",
+                                      "PascalCase",
+                                    ]
+                                  : [
+                                      ...CUSTOM_TIME_FORMAT_OPTIONS,
+                                    ]
+                                ).map((option) => (
+                                  <SelectItem
+                                    key={typeof option === "string" ? option : option.value}
+                                    value={typeof option === "string" ? option : option.value}
+                                  >
+                                    {typeof option === "string" ? option : option.label}
                                   </SelectItem>
                                 ))}
                               </SelectContent>

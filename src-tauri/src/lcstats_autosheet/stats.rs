@@ -758,6 +758,42 @@ pub fn normalize_column(value: &str, fallback: &str) -> String {
     }
 }
 
+pub fn parse_lcstats_time_to_minutes(value: &str) -> Option<i64> {
+    let normalized = strip_apostrophe(value).trim().to_ascii_uppercase();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    let period = if normalized.ends_with("AM") {
+        Some("AM")
+    } else if normalized.ends_with("PM") {
+        Some("PM")
+    } else {
+        None
+    };
+    let time = period
+        .map(|period| normalized.trim_end_matches(period).trim())
+        .unwrap_or(normalized.as_str());
+
+    let mut time_parts = time.split(':');
+    let mut hour = time_parts.next()?.trim().parse::<i64>().ok()?;
+    let minute = time_parts.next()?.trim().parse::<i64>().ok()?;
+    if time_parts.next().is_some() || !(0..60).contains(&minute) {
+        return None;
+    }
+
+    match period {
+        Some("PM") if hour != 12 => hour += 12,
+        Some("AM") if hour == 12 => hour = 0,
+        Some("AM" | "PM") => {}
+        Some(_) => return None,
+        None if !(0..24).contains(&hour) => return None,
+        None => {}
+    }
+
+    Some(hour * 60 + minute)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -926,5 +962,13 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(names, vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn parses_lcstats_time_with_or_without_ampm_spacing() {
+        assert_eq!(parse_lcstats_time_to_minutes("7:40 AM"), Some(460));
+        assert_eq!(parse_lcstats_time_to_minutes("7:40AM"), Some(460));
+        assert_eq!(parse_lcstats_time_to_minutes("'11:57PM"), Some(1437));
+        assert_eq!(parse_lcstats_time_to_minutes("'23:00"), Some(1380));
     }
 }
