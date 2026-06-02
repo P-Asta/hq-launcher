@@ -18,7 +18,7 @@ export function DialogOverlay({ className, ...props }) {
   return (
     <DialogPrimitive.Overlay
       className={cn(
-        "fixed inset-x-0 bottom-0 top-10 z-[60] bg-black/60 backdrop-blur-sm",
+        "fixed inset-x-0 bottom-0 top-10 z-[60] bg-black/60",
         className
       )}
       {...props}

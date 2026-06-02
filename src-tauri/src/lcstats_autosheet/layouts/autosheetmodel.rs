@@ -6,11 +6,7 @@ use crate::lcstats_autosheet::sheets::{
     batch_write_cells_user_entered, first_empty_row, number_value, read_number, value_as_f64,
     write_cells,
 };
-use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, bool_at, enemy_count, initial_available_value, int_at, intish_value,
-    lcstats_payload, missed_item_count, normalize_column, string_at, strip_moon_number,
-    sum_array_any, total_available_value, value_at,
-};
+use crate::lcstats_autosheet::stats::{lcstats, normalize_column, strip_moon_number};
 
 pub async fn write(
     client: &reqwest::Client,
@@ -114,90 +110,45 @@ pub async fn write(
 }
 
 fn process_stats(stats: &Value) -> Vec<Value> {
-    let payload = lcstats_payload(stats);
-    let new_quota = payload.new_quota();
-    let value_sold = payload.value_sold();
+    let lc_stats = lcstats(stats);
+    let new_quota = lc_stats.new_quota();
+    let value_sold = lc_stats.value_sold();
     if new_quota != 0 {
         return vec![json!(new_quota), json!(value_sold)];
     }
-    if payload.is_sell_event_without_day_stats() {
+    if lc_stats.is_sell_event_without_day_stats() {
         return vec![json!(value_sold)];
     }
 
     vec![
-        json!(int_at(stats, &["Seed"])),
-        json!(strip_moon_number(&string_at(stats, &["MoonInfo", "Name"]))),
-        json!(string_at(stats, &["MoonInfo", "Weather"])),
-        json!(string_at(stats, &["DungeonInfo", "Interior"])),
-        json!(int_at(stats, &["DungeonInfo", "ItemCount"])),
-        json!(missed_item_count(stats)),
-        json!(bool_at(stats, &["AppSpawned"])),
-        json!(array_at_any(
-            stats,
-            &[&["BeeInfo", "Available"][..], &["BeeInfo", "Values"][..],],
-        )
-        .len()),
-        json!(sum_array_any(
-            stats,
-            &[&["BeeInfo", "Available"][..], &["BeeInfo", "Values"][..],],
-        )),
-        json!(sum_array_any(
-            stats,
-            &[
-                &["EggInfo", "Available"][..],
-                &["BirdInfo", "EggValues"][..],
-            ],
-        )),
-        json!(enemy_count(stats, "Nutcracker")),
-        json!(enemy_count(stats, "Butler")),
-        json!(collected_count_or_legacy_int(
-            stats,
-            &["ShotgunInfo", "Collected"],
-            &["ShotgunsCollected"],
-        )),
-        json!(collected_count_or_legacy_int(
-            stats,
-            &["KnifeInfo", "Collected"],
-            &["KnivesCollected"],
-        )),
-        json!(int_at(stats, &["CollectedNoExtra"])),
-        json!(initial_available_value(stats)),
-        json!(int_at(stats, &["CollectedTotal"])),
-        json!(total_available_value(stats)),
-        json!(string_at(stats, &["TakeOffTime"])),
-        json!(int_at(stats, &["HazardInfo", "TurretCount"])),
-        json!(int_at(stats, &["HazardInfo", "LandmineCount"])),
-        json!(int_at(stats, &["HazardInfo", "SpiketrapCount"])),
-        json!(bool_at(stats, &["IndoorFog"])),
-        json!(string_at(stats, &["SIDType"])),
-        json!(string_at(stats, &["InfestationType"])),
-        json!(string_at(stats, &["MeteorShowerTime"])),
-        json!(lost_scrap(stats)),
+        json!(lc_stats.seed()),
+        json!(strip_moon_number(&lc_stats.moon_name())),
+        json!(lc_stats.moon_weather()),
+        json!(lc_stats.dungeon_interior()),
+        json!(lc_stats.dungeon_item_count()),
+        json!(lc_stats.missed_item_count()),
+        json!(lc_stats.app_spawned()),
+        json!(lc_stats.bee_available_count()),
+        json!(lc_stats.bee_available_total()),
+        json!(lc_stats.egg_available_total()),
+        json!(lc_stats.indoor_enemy_count("Nutcracker")),
+        json!(lc_stats.indoor_enemy_count("Butler")),
+        json!(lc_stats.shotgun_collected_count()),
+        json!(lc_stats.knife_collected_count()),
+        json!(lc_stats.collected_no_extra()),
+        json!(lc_stats.initial_available_value()),
+        json!(lc_stats.collected_total()),
+        json!(lc_stats.total_available_value()),
+        json!(lc_stats.take_off_time()),
+        json!(lc_stats.turret_count()),
+        json!(lc_stats.landmine_count()),
+        json!(lc_stats.spiketrap_count()),
+        json!(lc_stats.indoor_fog()),
+        json!(lc_stats.sid_type()),
+        json!(lc_stats.infestation_type()),
+        json!(lc_stats.meteor_shower_time()),
+        json!(lc_stats.lost_scrap_value()),
     ]
-}
-
-fn collected_count_or_legacy_int(
-    stats: &Value,
-    collected_path: &[&str],
-    legacy_path: &[&str],
-) -> i64 {
-    if let Some(collected) = value_at(stats, collected_path).and_then(Value::as_array) {
-        collected.len() as i64
-    } else {
-        int_at(stats, legacy_path)
-    }
-}
-
-fn lost_scrap(stats: &Value) -> i64 {
-    array_at(stats, &["MissedItems"])
-        .iter()
-        .filter(|item| {
-            item.get("CollectedOnPreviousDay")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-        })
-        .map(|item| item.get("Value").map(intish_value).unwrap_or(0))
-        .sum()
 }
 
 #[cfg(test)]

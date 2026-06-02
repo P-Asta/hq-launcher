@@ -8,8 +8,7 @@ use crate::lcstats_autosheet::sheets::{
     first_empty_row_from, get_sheet_id, number_value, quote_sheet_name, read_number,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, intish_value, is_gordion_stats, lcstats_payload, object_at, players_at,
-    string_at, strip_apostrophe, strip_moon_number, total_available_value, value_at,
+    lcstats, strip_apostrophe, strip_moon_number, LcStats, PlayerStats,
 };
 
 const CHECK_COLUMN: &str = "K";
@@ -44,12 +43,12 @@ pub async fn write(
         return Err("spreadsheet or sheet is not set".to_string());
     }
 
-    let payload = lcstats_payload(stats);
-    if payload.is_quota_event() {
-        return handle_quota_event(client, token, spreadsheet_id, sheet_name, stats).await;
+    let lc_stats = lcstats(stats);
+    if lc_stats.is_quota_event() {
+        return handle_quota_event(client, token, spreadsheet_id, sheet_name, &lc_stats).await;
     }
-    if !payload.has_dungeon_info() {
-        return handle_sell_event(client, token, spreadsheet_id, sheet_name, stats).await;
+    if !lc_stats.has_dungeon_info() {
+        return handle_sell_event(client, token, spreadsheet_id, sheet_name, &lc_stats).await;
     }
 
     let row = first_empty_row_from(
@@ -61,19 +60,19 @@ pub async fn write(
         START_ROW,
     )
     .await?;
-    if is_gordion_stats(stats) {
-        return handle_sell_event(client, token, spreadsheet_id, sheet_name, stats).await;
+    if lc_stats.is_gordion_moon() {
+        return handle_sell_event(client, token, spreadsheet_id, sheet_name, &lc_stats).await;
     }
     let player_columns =
-        setup_or_match_player_columns(client, token, spreadsheet_id, sheet_name, stats).await?;
-    let values = build_values(stats, &player_columns, row);
+        setup_or_match_player_columns(client, token, spreadsheet_id, sheet_name, &lc_stats).await?;
+    let values = build_values(&lc_stats, &player_columns, row);
     batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, values).await?;
     write_death_notes(
         client,
         token,
         spreadsheet_id,
         sheet_name,
-        stats,
+        &lc_stats,
         &player_columns,
         row,
     )
@@ -85,7 +84,7 @@ async fn handle_quota_event(
     token: &str,
     spreadsheet_id: &str,
     sheet_name: &str,
-    stats: &Value,
+    payload: &LcStats,
 ) -> Result<(), String> {
     let current_quota_row = first_empty_row(
         client,
@@ -99,7 +98,7 @@ async fn handle_quota_event(
     let quota_row = current_quota_row + 2;
     let mut updates = vec![];
 
-    let value_sold = lcstats_payload(stats).value_sold();
+    let value_sold = payload.value_sold();
     if value_sold != 0 {
         let current_value = read_number(
             client,
@@ -116,7 +115,7 @@ async fn handle_quota_event(
         ));
     }
 
-    if let Some(quota_amount) = quota_amount_value(stats) {
+    if let Some(quota_amount) = quota_amount_value(payload) {
         updates.push((QUOTA_AMOUNT_COLUMN.to_string(), quota_row, quota_amount));
     }
 
@@ -128,9 +127,9 @@ async fn handle_sell_event(
     token: &str,
     spreadsheet_id: &str,
     sheet_name: &str,
-    stats: &Value,
+    payload: &LcStats,
 ) -> Result<(), String> {
-    let value_sold = lcstats_payload(stats).value_sold();
+    let value_sold = payload.value_sold();
     if value_sold == 0 {
         return Ok(());
     }
@@ -174,7 +173,7 @@ async fn setup_or_match_player_columns(
     token: &str,
     spreadsheet_id: &str,
     sheet_name: &str,
-    stats: &Value,
+    lc_stats: &LcStats,
 ) -> Result<HashMap<String, String>, String> {
     let id_range = format!(
         "{}!{}{}:{}{}",
@@ -222,32 +221,27 @@ async fn setup_or_match_player_columns(
         }
     }
 
-    let players = players_at(stats);
+    let players = lc_stats.players_sorted();
     let mut player_columns = HashMap::new();
     if existing_slots.is_empty() {
         let mut updates = vec![];
-        for (index, (steam_id, player)) in players.iter().take(PLAYER_COLUMNS.len()).enumerate() {
+        for (index, player) in players.iter().take(PLAYER_COLUMNS.len()).enumerate() {
             let column = PLAYER_COLUMNS[index];
             let column = column.to_string();
-            player_columns.insert(steam_id.clone(), column.clone());
-            updates.push((column.clone(), PLAYER_ID_ROW, json!(steam_id)));
+            player_columns.insert(player.steam_id.clone(), column.clone());
+            updates.push((column.clone(), PLAYER_ID_ROW, json!(player.steam_id)));
             updates.push((
                 column.clone(),
                 PLAYER_NAME_ROW,
-                json!(uppercase_text(
-                    player
-                        .get("Name")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                )),
+                json!(uppercase_text(&player.stats.name)),
             ));
         }
         batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, updates).await?;
     } else {
         let mut updates = vec![];
-        for (steam_id, player) in &players {
-            if let Some(column) = existing_slots.get(steam_id) {
-                player_columns.insert(steam_id.clone(), column.clone());
+        for player in &players {
+            if let Some(column) = existing_slots.get(&player.steam_id) {
+                player_columns.insert(player.steam_id.clone(), column.clone());
                 if let Some((index, _)) = PLAYER_COLUMNS
                     .iter()
                     .enumerate()
@@ -259,14 +253,10 @@ async fn setup_or_match_player_columns(
                         .unwrap_or_default()
                         .trim();
                     if current_name.is_empty() {
-                        let name = player
-                            .get("Name")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default();
                         updates.push((
                             column.clone(),
                             PLAYER_NAME_ROW,
-                            json!(uppercase_text(name)),
+                            json!(uppercase_text(&player.stats.name)),
                         ));
                     }
                 }
@@ -278,58 +268,61 @@ async fn setup_or_match_player_columns(
 }
 
 fn build_values(
-    stats: &Value,
+    lc_stats: &LcStats,
     player_columns: &HashMap<String, String>,
     row: usize,
 ) -> Vec<(String, usize, Value)> {
-    let collected = intish_at(stats, &["CollectedTotal"]);
-    let available = total_available_value(stats);
-    let lost_scrap = lost_scrap(stats);
+    let collected = lc_stats.collected_total();
+    let available = lc_stats.total_available_value();
+    let lost_scrap = lc_stats.lost_scrap_value();
     let mut values = vec![
-        (MOON_COLUMN.to_string(), row, json!(maku_moon_name(stats))),
-        (WEATHER_COLUMN.to_string(), row, json!(maku_weather(stats))),
+        (
+            MOON_COLUMN.to_string(),
+            row,
+            json!(maku_moon_name(lc_stats)),
+        ),
+        (
+            WEATHER_COLUMN.to_string(),
+            row,
+            json!(maku_weather(lc_stats)),
+        ),
         (
             LAYOUT_COLUMN.to_string(),
             row,
-            json!(uppercase_text(&strip_apostrophe(&string_at(
-                stats,
-                &["DungeonInfo", "Interior"]
-            )))),
+            json!(uppercase_text(&strip_apostrophe(
+                &lc_stats.dungeon_interior()
+            ))),
         ),
         (
             ITEM_COUNT_COLUMN.to_string(),
             row,
-            json!(intish_at(stats, &["DungeonInfo", "ItemCount"])),
+            json!(lc_stats.dungeon_item_count()),
         ),
         (
             HIVE_COUNT_COLUMN.to_string(),
             row,
-            json!(array_at_any(
-                stats,
-                &[&["BeeInfo", "Available"][..], &["BeeInfo", "Values"][..],],
-            )
-            .len()),
+            json!(lc_stats.bee_available_count()),
         ),
         (COLLECTED_COLUMN.to_string(), row, json!(collected)),
         (AVAILABLE_COLUMN.to_string(), row, json!(available)),
     ];
-    if let Some(quota_amount) = quota_amount_value(stats) {
+    if let Some(quota_amount) = quota_amount_value(lc_stats) {
         values.push((QUOTA_AMOUNT_COLUMN.to_string(), row, quota_amount));
     }
-    if let Some(average) = average_value(collected, available) {
+    if let Some(_average) = average_value(collected, available) {
         // values.push(("M".to_string(), row, average));
     }
     if lost_scrap != 0 {
         values.push((LOST_SCRAP_COLUMN.to_string(), row, json!(lost_scrap)));
     }
 
-    let takeoff_time = string_at(stats, &["TakeOffTime"]);
-    for (steam_id, player) in players_at(stats) {
-        if let Some(column) = player_columns.get(&steam_id) {
+    let takeoff_time = lc_stats.take_off_time().to_string();
+    for player in lc_stats.players_sorted() {
+        if let Some(column) = player_columns.get(&player.steam_id) {
             values.push((
                 column.clone(),
                 row,
-                json!(death_status(&player, &takeoff_time)),
+                json!(death_status(&player.stats, &takeoff_time)),
             ));
         }
     }
@@ -337,8 +330,8 @@ fn build_values(
     values
 }
 
-fn quota_amount_value(stats: &Value) -> Option<Value> {
-    let new_quota = lcstats_payload(stats).new_quota();
+fn quota_amount_value(payload: &LcStats) -> Option<Value> {
+    let new_quota = payload.new_quota();
     if new_quota == 0 {
         None
     } else {
@@ -354,15 +347,12 @@ fn average_value(numerator: i64, denominator: i64) -> Option<Value> {
     }
 }
 
-fn maku_moon_name(stats: &Value) -> String {
-    uppercase_text(&strip_moon_number(&strip_apostrophe(&string_at(
-        stats,
-        &["MoonInfo", "Name"],
-    ))))
+fn maku_moon_name(payload: &LcStats) -> String {
+    uppercase_text(&strip_moon_number(&strip_apostrophe(&payload.moon_name())))
 }
 
-fn maku_weather(stats: &Value) -> String {
-    let weather = strip_apostrophe(&string_at(stats, &["MoonInfo", "Weather"]));
+fn maku_weather(payload: &LcStats) -> String {
+    let weather = strip_apostrophe(&payload.moon_weather());
     if weather.eq_ignore_ascii_case("Mild") {
         "CLEAR".to_string()
     } else {
@@ -370,40 +360,19 @@ fn maku_weather(stats: &Value) -> String {
     }
 }
 
-fn lost_scrap(stats: &Value) -> i64 {
-    array_at(stats, &["MissedItems"])
-        .iter()
-        .filter(|item| {
-            item.get("CollectedOnPreviousDay")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-        })
-        .map(|item| item.get("Value").map(intish_value).unwrap_or(0))
-        .sum()
-}
-
-fn death_status(player: &Value, takeoff_time: &str) -> String {
-    if player.get("Alive").and_then(Value::as_bool) == Some(true) {
-        if player.get("Disconnected").and_then(Value::as_bool) == Some(true) {
+fn death_status(player: &PlayerStats, takeoff_time: &str) -> String {
+    if player.alive {
+        if player.disconnected {
             return "D".to_string();
         }
         return "A".to_string();
     }
-    if strip_apostrophe(
-        player
-            .get("CauseOfDeath")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-    )
+    if strip_apostrophe(&player.cause_of_death)
     .eq_ignore_ascii_case("Abandoned")
     {
         return "M".to_string();
     }
-    let time_of_death = player
-        .get("TimeOfDeath")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if convert_time_to_number(time_of_death) + 120 < convert_time_to_number(takeoff_time) {
+    if convert_time_to_number(&player.time_of_death) + 120 < convert_time_to_number(takeoff_time) {
         return "X".to_string();
     }
     "S".to_string()
@@ -432,10 +401,6 @@ fn convert_time_to_number(time: &str) -> i64 {
     60 * (numbers[0] % 12) + numbers[1] + if day_mod == "AM" { 0 } else { 720 }
 }
 
-fn intish_at(stats: &Value, path: &[&str]) -> i64 {
-    value_at(stats, path).map(intish_value).unwrap_or(0)
-}
-
 fn uppercase_text(value: &str) -> String {
     value.to_uppercase()
 }
@@ -445,17 +410,22 @@ async fn write_death_notes(
     token: &str,
     spreadsheet_id: &str,
     sheet_name: &str,
-    stats: &Value,
+    lc_stats: &LcStats,
     player_columns: &HashMap<String, String>,
     row: usize,
 ) -> Result<(), String> {
-    let death_cells = object_at(stats, &["Players"])
+    let takeoff_time = lc_stats.take_off_time().to_string();
+    let death_cells = lc_stats
+        .players_sorted()
         .into_iter()
-        .filter_map(|(steam_id, player)| {
-            if death_status(&player, &string_at(stats, &["TakeOffTime"])) != "X" {
+        .filter_map(|player| {
+            if death_status(&player.stats, &takeoff_time) != "X" {
                 return None;
             }
-            Some((player_columns.get(&steam_id)?.clone(), death_note(&player)))
+            Some((
+                player_columns.get(&player.steam_id)?.clone(),
+                death_note(&player.stats),
+            ))
         })
         .collect::<Vec<_>>();
     if death_cells.is_empty() {
@@ -470,17 +440,9 @@ async fn write_death_notes(
     batch_update_spreadsheet(client, token, spreadsheet_id, requests).await
 }
 
-fn death_note(player: &Value) -> String {
-    let time_of_death = player
-        .get("TimeOfDeath")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    let cause_of_death = player
-        .get("CauseOfDeath")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
+fn death_note(player: &PlayerStats) -> String {
+    let time_of_death = player.time_of_death.trim();
+    let cause_of_death = player.cause_of_death.trim();
 
     let mut parts = vec![];
     if !time_of_death.is_empty() {
@@ -558,7 +520,8 @@ mod tests {
             "TotalAvailableValue": 2133
         });
 
-        let values = build_values(&stats, &HashMap::new(), 7);
+        let lc_stats = lcstats(&stats);
+        let values = build_values(&lc_stats, &HashMap::new(), 7);
 
         assert_eq!(cell_value(&values, "J"), Some(&json!(3)));
     }
@@ -591,7 +554,8 @@ mod tests {
             ("4".to_string(), "Y".to_string()),
         ]);
 
-        let values = build_values(&stats, &player_columns, 7);
+        let lc_stats = lcstats(&stats);
+        let values = build_values(&lc_stats, &player_columns, 7);
 
         assert_eq!(cell_value(&values, "B"), Some(&json!(900)));
         assert_eq!(cell_value(&values, "F"), Some(&json!("ARTIFICE")));
@@ -619,7 +583,7 @@ mod tests {
             "TotalAvailableValue": 2133
         });
 
-        assert!(is_gordion_stats(&stats));
+        assert!(lcstats(&stats).is_gordion_moon());
     }
 
     #[test]
@@ -628,7 +592,7 @@ mod tests {
             "MoonInfo": { "Name": "'Galetry" }
         });
 
-        assert!(is_gordion_stats(&stats));
+        assert!(lcstats(&stats).is_gordion_moon());
     }
 
     #[test]
@@ -641,8 +605,12 @@ mod tests {
             "CauseOfDeath": "'Forest Giant"
         });
 
-        assert_eq!(death_status(&player, "11:00 PM"), "X");
-        assert_eq!(death_note(&player), "TIME: 8:00 PM\nCAUSE: FOREST GIANT");
+        let player_stats: PlayerStats = serde_json::from_value(player).unwrap();
+        assert_eq!(death_status(&player_stats, "11:00 PM"), "X");
+        assert_eq!(
+            death_note(&player_stats),
+            "TIME: 8:00 PM\nCAUSE: FOREST GIANT"
+        );
     }
 
     fn cell_value<'a>(values: &'a [(String, usize, Value)], column: &str) -> Option<&'a Value> {

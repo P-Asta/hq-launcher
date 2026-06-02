@@ -8,8 +8,8 @@ use crate::lcstats_autosheet::sheets::{
     first_empty_row_from, get_sheet_id, number_value, quote_sheet_name, read_number, read_range,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, bool_at, initial_available_value, is_gordion_stats, lcstats_payload,
-    object_at, players_at, string_at, strip_apostrophe, strip_moon_number, value_at, value_at_any,
+    array_at, array_at_any, lcstats, object_at, players_at, strip_apostrophe, strip_moon_number,
+    value_at, value_at_any, LcStats,
 };
 
 const TARGET_SHEET_CELL: &str = "A1";
@@ -76,7 +76,8 @@ pub async fn write(
     )
     .await?;
 
-    if is_gordion_stats(stats) {
+    let payload = lcstats(stats);
+    if payload.is_gordion_moon() {
         handle_gordion(
             client,
             token,
@@ -84,12 +85,13 @@ pub async fn write(
             &target_sheet.name,
             target_row,
             stats,
+            &payload,
         )
         .await?;
         return Ok(());
     }
 
-    let normalized = NormalizedStats::from_stats(stats);
+    let normalized = NormalizedStats::from_stats(stats, &payload);
     let player_columns =
         setup_or_match_player_columns(client, token, spreadsheet_id, &target_sheet.name, stats)
             .await?;
@@ -109,6 +111,7 @@ pub async fn write(
         target_sheet.id,
         target_row,
         stats,
+        &payload,
         &normalized,
         &player_columns,
     )
@@ -121,6 +124,7 @@ pub async fn write(
         &target_sheet.name,
         target_row,
         stats,
+        &payload,
     )
     .await?;
     add_old_giftbox_extra_to_previous_day(
@@ -298,8 +302,8 @@ struct NormalizedStats {
 }
 
 impl NormalizedStats {
-    fn from_stats(stats: &Value) -> Self {
-        let item_count = intish_at(stats, &["DungeonInfo", "ItemCount"]);
+    fn from_stats(stats: &Value, payload: &LcStats) -> Self {
+        let item_count = payload.dungeon_item_count();
         let beehives = beehive_price_summary(stats);
         let egg_values = intish_array_any(
             stats,
@@ -308,15 +312,15 @@ impl NormalizedStats {
                 &["BirdInfo", "EggValues"][..],
             ],
         );
-        let sid_type = non_false_text(&string_at(stats, &["SIDType"]));
-        let meteor_shower_time = non_false_text(&string_at(stats, &["MeteorShowerTime"]));
+        let sid_type = non_false_text(payload.sid_type());
+        let meteor_shower_time = non_false_text(payload.meteor_shower_time());
         let shotgun_available = intish_array_any(stats, &[&["ShotgunInfo", "Available"][..]]);
         let knife_available = intish_array_any(stats, &[&["KnifeInfo", "Available"][..]]);
-        let bottom_line = initial_available_value(stats) + shotgun_available.iter().sum::<i64>();
+        let bottom_line = payload.initial_available_value() + shotgun_available.iter().sum::<i64>();
         Self {
-            moon_name: strip_apostrophe(&string_at(stats, &["MoonInfo", "Name"])),
-            weather: wafrody_weather(&string_at(stats, &["MoonInfo", "Weather"])),
-            interior: strip_apostrophe(&string_at(stats, &["DungeonInfo", "Interior"])),
+            moon_name: strip_apostrophe(&payload.moon_name()),
+            weather: wafrody_weather(&payload.moon_weather()),
+            interior: strip_apostrophe(&payload.dungeon_interior()),
             item_count,
             beehive_value_count: beehives.count_by_value,
             cheap_beehive_value: beehives.cheap_value,
@@ -338,24 +342,24 @@ impl NormalizedStats {
                 &["KnivesCollected"],
             ),
             butler_count: indoor_enemy_count(stats, "Butler"),
-            collected_total: intish_at(stats, &["CollectedTotal"]),
+            collected_total: payload.collected_total(),
             bottom_line,
-            value_sold: lcstats_payload(stats).value_sold(),
+            value_sold: payload.value_sold(),
             gift_bonus: gift_bonus_total(stats),
-            new_quota: lcstats_payload(stats).new_quota(),
-            seed: strip_apostrophe(&string_at(stats, &["Seed"])),
+            new_quota: payload.new_quota(),
+            seed: strip_apostrophe(&payload.seed_text()),
             has_sid: sid_type.is_some(),
             sid_type,
-            apparatus_spawned: bool_at(stats, &["AppSpawned"]),
-            indoor_fog: bool_at(stats, &["IndoorFog"]),
-            infestation_type: strip_apostrophe(&string_at(stats, &["InfestationType"])),
-            players: normalize_players(stats),
+            apparatus_spawned: payload.app_spawned(),
+            indoor_fog: payload.indoor_fog(),
+            infestation_type: strip_apostrophe(payload.infestation_type()),
+            players: normalize_players(stats, payload),
         }
     }
 }
 
-fn normalize_players(stats: &Value) -> HashMap<String, NormalizedPlayer> {
-    let takeoff_time = string_at(stats, &["TakeOffTime"]);
+fn normalize_players(stats: &Value, payload: &LcStats) -> HashMap<String, NormalizedPlayer> {
+    let takeoff_time = payload.take_off_time().to_string();
     players_at(stats)
         .into_iter()
         .map(|(steam_id, player)| {
@@ -520,6 +524,7 @@ async fn write_rich_cells(
     sheet_id: Option<i64>,
     row: usize,
     raw_stats: &Value,
+    payload: &LcStats,
     stats: &NormalizedStats,
     player_columns: &HashMap<String, String>,
 ) -> Result<(), String> {
@@ -567,7 +572,7 @@ async fn write_rich_cells(
         ));
     }
 
-    if is_version_45_or_49(raw_stats) {
+    if is_version_45_or_49(payload) {
         if let Some(note) = collected_values_note(raw_stats, &["ShotgunInfo", "Collected"]) {
             requests.push(note_request(
                 sheet_id,
@@ -585,10 +590,10 @@ async fn write_rich_cells(
     if let Some(note) = enemy_spawn_times_note(raw_stats, "Butler") {
         requests.push(note_request(sheet_id, BUTLER_COUNT_COLUMN, row, &note));
     }
-    if let Some(note) = missed_items_note(raw_stats) {
+    if let Some(note) = missed_items_note(raw_stats, payload) {
         requests.push(note_request(sheet_id, MISSED_ITEMS_NOTE_COLUMN, row, &note));
     }
-    if let Some(note) = hazard_note(raw_stats) {
+    if let Some(note) = hazard_note(raw_stats, payload) {
         requests.push(note_request(sheet_id, INTERIOR_COLUMN, row, &note));
     }
     if let Some(note) = gift_bonus_note(raw_stats) {
@@ -608,8 +613,8 @@ async fn handle_gordion(
     sheet_name: &str,
     target_row: usize,
     stats: &Value,
+    payload: &LcStats,
 ) -> Result<(), String> {
-    let payload = lcstats_payload(stats);
     let value_sold = payload.value_sold();
     let new_quota = payload.new_quota();
     let gift_bonus = gift_bonus_total(stats);
@@ -700,6 +705,7 @@ async fn update_hazard_totals(
     sheet_name: &str,
     target_row: usize,
     stats: &Value,
+    payload: &LcStats,
 ) -> Result<(), String> {
     if target_row <= 6
         || value_at(stats, &["HazardInfo"])
@@ -709,9 +715,9 @@ async fn update_hazard_totals(
         return Ok(());
     }
 
-    let turret_count = intish_at(stats, &["HazardInfo", "TurretCount"]);
-    let landmine_count = intish_at(stats, &["HazardInfo", "LandmineCount"]);
-    let spiketrap_count = intish_at(stats, &["HazardInfo", "SpiketrapCount"]);
+    let turret_count = payload.turret_count();
+    let landmine_count = payload.landmine_count();
+    let spiketrap_count = payload.spiketrap_count();
 
     let current_turret_total = read_total_from_cell(
         client,
@@ -861,7 +867,7 @@ fn value_with_note_request(
 fn note_request(sheet_id: i64, column: &str, row: usize, note: &str) -> Value {
     let column_index = column_to_index(column);
     json!({
-        "updateCells": {
+        "repeatCell": {
             "range": {
                 "sheetId": sheet_id,
                 "startRowIndex": row.saturating_sub(1),
@@ -869,11 +875,9 @@ fn note_request(sheet_id: i64, column: &str, row: usize, note: &str) -> Value {
                 "startColumnIndex": column_index,
                 "endColumnIndex": column_index + 1
             },
-            "rows": [{
-                "values": [{
-                    "note": note
-                }]
-            }],
+            "cell": {
+                "note": note
+            },
             "fields": "note"
         }
     })
@@ -1090,12 +1094,12 @@ fn enemy_spawn_times_note(stats: &Value, enemy: &str) -> Option<String> {
     (!times.is_empty()).then(|| format!("Spawn times:\n{}", times.join("\n")))
 }
 
-fn is_version_45_or_49(stats: &Value) -> bool {
-    matches!(stats_version_number(stats), Some(45 | 49))
+fn is_version_45_or_49(payload: &LcStats) -> bool {
+    matches!(stats_version_number(payload), Some(45 | 49))
 }
 
-fn stats_version_number(stats: &Value) -> Option<i64> {
-    let version = string_at(stats, &["Version"]);
+fn stats_version_number(payload: &LcStats) -> Option<i64> {
+    let version = payload.version_text();
     let version = version
         .trim()
         .trim_start_matches('V')
@@ -1146,7 +1150,7 @@ fn nut_spawn_available_note(stats: &Value) -> Option<String> {
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
-fn missed_items_note(stats: &Value) -> Option<String> {
+fn missed_items_note(stats: &Value, payload: &LcStats) -> Option<String> {
     let mut inside_by_type: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut outside_by_type: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for item in array_at(stats, &["MissedItems"]) {
@@ -1182,7 +1186,7 @@ fn missed_items_note(stats: &Value) -> Option<String> {
         if item.get("CollectedOnPreviousDay").and_then(Value::as_bool) == Some(true) {
             value_text.push_str("(lost)");
         }
-        if missed_item_is_voided(stats, y_position) {
+        if missed_item_is_voided(payload, y_position) {
             value_text.push_str("(voided)");
         }
         let target = if y_position <= -100.0 {
@@ -1208,13 +1212,13 @@ fn missed_items_note(stats: &Value) -> Option<String> {
     Some(sections.join("\n\n"))
 }
 
-fn missed_item_is_voided(stats: &Value, y_position: f64) -> bool {
-    let interior = strip_apostrophe(&string_at(stats, &["DungeonInfo", "Interior"]))
+fn missed_item_is_voided(payload: &LcStats, y_position: f64) -> bool {
+    let interior = strip_apostrophe(&payload.dungeon_interior())
         .trim()
         .to_ascii_lowercase();
     match interior.as_str() {
         "facility" => y_position_matches(y_position, &[-241.7, -235.4]),
-        "mansion" if matches!(stats_version_number(stats), Some(40 | 45 | 49)) => {
+        "mansion" if matches!(stats_version_number(payload), Some(40 | 45 | 49)) => {
             y_position_matches(
                 y_position,
                 &[-239.1, -239.0, -238.9, -229.1, -229.0, -228.9],
@@ -1240,16 +1244,16 @@ fn missed_item_section(label: &str, items: BTreeMap<String, Vec<String>>) -> Str
     lines.join("\n")
 }
 
-fn hazard_note(stats: &Value) -> Option<String> {
+fn hazard_note(stats: &Value, payload: &LcStats) -> Option<String> {
     let hazard_info = value_at(stats, &["HazardInfo"])?;
     if hazard_info.is_null() {
         return None;
     }
     Some(format!(
         "Turrets: {}\nLandmines: {}\nSpiketraps: {}",
-        intish_at(stats, &["HazardInfo", "TurretCount"]),
-        intish_at(stats, &["HazardInfo", "LandmineCount"]),
-        intish_at(stats, &["HazardInfo", "SpiketrapCount"])
+        payload.turret_count(),
+        payload.landmine_count(),
+        payload.spiketrap_count()
     ))
 }
 
@@ -1467,7 +1471,7 @@ mod tests {
             "BeeInfo": { "Values": [64, 88, 64] }
         });
 
-        let normalized = NormalizedStats::from_stats(&stats);
+        let normalized = normalized_stats(&stats);
         let updates = build_value_updates(&normalized, &HashMap::new(), 7);
 
         assert_eq!(normalized.item_count, 12);
@@ -1482,7 +1486,7 @@ mod tests {
             "IndoorFog": true
         });
 
-        let normalized = NormalizedStats::from_stats(&stats);
+        let normalized = normalized_stats(&stats);
         let updates = build_value_updates(&normalized, &HashMap::new(), 7);
 
         assert_eq!(cell_value(&updates, SID_COLUMN), Some(&json!(true)));
@@ -1501,7 +1505,7 @@ mod tests {
             "IndoorFog": false
         });
 
-        let normalized = NormalizedStats::from_stats(&stats);
+        let normalized = normalized_stats(&stats);
         let updates = build_value_updates(&normalized, &HashMap::new(), 7);
 
         assert_eq!(cell_value(&updates, SID_COLUMN), Some(&json!(false)));
@@ -1552,7 +1556,7 @@ mod tests {
             "KnifeInfo": { "Available": [35, 35], "Collected": [35, 35] }
         });
 
-        let normalized = NormalizedStats::from_stats(&stats);
+        let normalized = normalized_stats(&stats);
         let summary = beehive_price_summary(&stats);
 
         assert_eq!(summary.count_by_value, "2|1");
@@ -1572,7 +1576,7 @@ mod tests {
             ]
         });
 
-        let normalized = NormalizedStats::from_stats(&stats);
+        let normalized = normalized_stats(&stats);
         let updates = build_value_updates(&normalized, &HashMap::new(), 7);
 
         assert_eq!(normalized.gift_bonus, 72);
@@ -1606,7 +1610,7 @@ mod tests {
             "ShotgunInfo": { "Available": [60, 70], "Collected": [] }
         });
 
-        let normalized = NormalizedStats::from_stats(&stats);
+        let normalized = normalized_stats(&stats);
         let updates = build_value_updates(&normalized, &HashMap::new(), 7);
 
         assert_eq!(cell_value(&updates, BOTTOM_LINE_COLUMN), Some(&json!(630)));
@@ -1625,7 +1629,8 @@ mod tests {
             ]
         });
 
-        let note = missed_items_note(&stats).unwrap();
+        let payload = lcstats(&stats);
+        let note = missed_items_note(&stats, &payload).unwrap();
 
         assert!(note.contains("Inside :\nCash register : 80"));
         assert!(note.contains("Outside :\nGift box : 20=>45(lost)"));
@@ -1641,7 +1646,8 @@ mod tests {
             ]
         });
 
-        let note = missed_items_note(&stats).unwrap();
+        let payload = lcstats(&stats);
+        let note = missed_items_note(&stats, &payload).unwrap();
 
         assert!(note.contains("Gold bar : 210(voided)"));
     }
@@ -1703,7 +1709,8 @@ mod tests {
             }
         });
 
-        let players = normalize_players(&stats);
+        let payload = lcstats(&stats);
+        let players = normalize_players(&stats, &payload);
 
         assert_eq!(
             players.get("765").map(|player| player.status.as_str()),
@@ -1725,7 +1732,7 @@ mod tests {
             "MoonInfo": { "Name": "'Galetry" }
         });
 
-        assert!(is_gordion_stats(&stats));
+        assert!(lcstats(&stats).is_gordion_moon());
     }
 
     fn cell_value<'a>(updates: &'a [(String, usize, Value)], column: &str) -> Option<&'a Value> {
@@ -1733,5 +1740,10 @@ mod tests {
             .iter()
             .find(|(update_column, _, _)| update_column == column)
             .map(|(_, _, value)| value)
+    }
+
+    fn normalized_stats(stats: &Value) -> NormalizedStats {
+        let payload = lcstats(stats);
+        NormalizedStats::from_stats(stats, &payload)
     }
 }

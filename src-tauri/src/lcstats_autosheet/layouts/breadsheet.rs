@@ -5,9 +5,7 @@ use crate::lcstats_autosheet::layouts::BREADSHEET_LAYOUT;
 use crate::lcstats_autosheet::sheets::{
     batch_write_cells_user_entered, first_empty_row_from, number_value, read_number,
 };
-use crate::lcstats_autosheet::stats::{
-    intish_value, lcstats_payload, string_at, strip_moon_number, value_at,
-};
+use crate::lcstats_autosheet::stats::{lcstats, strip_moon_number, LcStats};
 
 const QUOTA_COLUMN: &str = "B";
 const MOON_COLUMN: &str = "G";
@@ -41,14 +39,15 @@ pub async fn write(
     )
     .await?;
     let summary_row = summary_row_for_day(target_row);
-    let include_day = !is_economy_stats(stats);
-    let mut values = build_values(stats, target_row, summary_row, include_day);
+    let payload = lcstats(stats);
+    let include_day = !is_economy_stats(&payload);
+    let mut values = build_values(&payload, target_row, summary_row, include_day);
     add_sold_value(
         client,
         token,
         spreadsheet_id,
         sheet_name,
-        stats,
+        &payload,
         summary_row,
         &mut values,
     )
@@ -60,31 +59,28 @@ pub async fn write(
 }
 
 fn build_values(
-    stats: &Value,
+    payload: &LcStats,
     moon_row: usize,
     summary_row: usize,
     include_day: bool,
 ) -> Vec<(String, usize, Value)> {
     let mut values = vec![];
-    let moon = strip_moon_number(&string_at(stats, &["MoonInfo", "Name"]));
+    let moon = strip_moon_number(&payload.moon_name());
     if include_day && !moon.trim().is_empty() {
         values.push((MOON_COLUMN.to_string(), moon_row, json!(moon)));
         values.push((
             WEATHER_COLUMN.to_string(),
             moon_row,
-            json!(breadsheet_weather(&string_at(
-                stats,
-                &["MoonInfo", "Weather"]
-            ))),
+            json!(breadsheet_weather(&payload.moon_weather())),
         ));
         values.push((
             COLLECTED_COLUMN.to_string(),
             moon_row,
-            json!(intish_at(stats, &["CollectedTotal"])),
+            json!(payload.collected_total()),
         ));
     }
 
-    let new_quota = lcstats_payload(stats).new_quota();
+    let new_quota = payload.new_quota();
     if new_quota != 0 {
         values.push((QUOTA_COLUMN.to_string(), summary_row, json!(new_quota)));
     }
@@ -97,11 +93,11 @@ async fn add_sold_value(
     token: &str,
     spreadsheet_id: &str,
     sheet_name: &str,
-    stats: &Value,
+    payload: &LcStats,
     summary_row: usize,
     values: &mut Vec<(String, usize, Value)>,
 ) -> Result<(), String> {
-    let value_sold = lcstats_payload(stats).value_sold();
+    let value_sold = payload.value_sold();
     if value_sold == 0 {
         return Ok(());
     }
@@ -121,12 +117,7 @@ async fn add_sold_value(
     Ok(())
 }
 
-fn intish_at(stats: &Value, path: &[&str]) -> i64 {
-    value_at(stats, path).map(intish_value).unwrap_or(0)
-}
-
-fn is_economy_stats(stats: &Value) -> bool {
-    let payload = lcstats_payload(stats);
+fn is_economy_stats(payload: &LcStats) -> bool {
     payload.is_quota_event() || !payload.has_dungeon_info()
 }
 
@@ -159,7 +150,8 @@ mod tests {
             "CollectedTotal": 420
         });
 
-        let values = build_values(&stats, 7, 5, true);
+        let payload = lcstats(&stats);
+        let values = build_values(&payload, 7, 5, true);
 
         assert_eq!(cell_value(&values, QUOTA_COLUMN), Some(&json!(130)));
         assert_eq!(cell_value(&values, MOON_COLUMN), Some(&json!("March")));
@@ -185,7 +177,8 @@ mod tests {
             "CollectedTotal": "'420"
         });
 
-        let values = build_values(&stats, 7, 5, !is_economy_stats(&stats));
+        let payload = lcstats(&stats);
+        let values = build_values(&payload, 7, 5, !is_economy_stats(&payload));
 
         assert_eq!(cell_value(&values, QUOTA_COLUMN), Some(&json!(130)));
         assert_eq!(cell_value(&values, MOON_COLUMN), None);

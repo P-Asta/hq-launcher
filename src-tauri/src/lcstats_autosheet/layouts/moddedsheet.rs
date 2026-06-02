@@ -5,10 +5,7 @@ use crate::lcstats_autosheet::layouts::MODDEDSHEET_LAYOUT;
 use crate::lcstats_autosheet::sheets::{
     batch_write_cells_user_entered, first_empty_row_from, number_value, read_number,
 };
-use crate::lcstats_autosheet::stats::{
-    array_at, int_at, intish_value, lcstats_payload, string_at, strip_moon_number,
-    total_available_value,
-};
+use crate::lcstats_autosheet::stats::{lcstats, strip_moon_number, LcStats};
 
 const QUOTA_COLUMN: &str = "B";
 const MOON_COLUMN: &str = "H";
@@ -44,22 +41,23 @@ pub async fn write(
         START_ROW,
     )
     .await?;
-    if is_economy_stats(stats) {
-        return handle_economy(client, token, spreadsheet_id, sheet_name, row, stats).await;
+    let lc_stats = lcstats(stats);
+    if is_economy_stats(&lc_stats) {
+        return handle_economy(client, token, spreadsheet_id, sheet_name, row, &lc_stats).await;
     }
-    let stats_kind = stats_kind(stats);
+    let stats_kind = stats_kind(&lc_stats);
     if !stats_kind.has_day_stats() {
-        return handle_economy(client, token, spreadsheet_id, sheet_name, row, stats).await;
+        return handle_economy(client, token, spreadsheet_id, sheet_name, row, &lc_stats).await;
     }
     let day_row = row;
     let economy_row = economy_row_for_stats(row, stats_kind);
-    let mut values = build_values(stats, day_row, economy_row, stats_kind);
+    let mut values = build_values(&lc_stats, day_row, economy_row, stats_kind);
     add_sold_value(
         client,
         token,
         spreadsheet_id,
         sheet_name,
-        stats,
+        &lc_stats,
         economy_row,
         &mut values,
     )
@@ -73,16 +71,16 @@ async fn handle_economy(
     spreadsheet_id: &str,
     sheet_name: &str,
     target_row: usize,
-    stats: &Value,
+    lc_stats: &LcStats,
 ) -> Result<(), String> {
     let sell_row = target_row.saturating_sub(1).max(START_ROW);
-    let mut updates = build_economy_values(stats, target_row, sell_row);
+    let mut updates = build_economy_values(lc_stats, target_row, sell_row);
     add_sold_value(
         client,
         token,
         spreadsheet_id,
         sheet_name,
-        stats,
+        lc_stats,
         sell_row,
         &mut updates,
     )
@@ -91,17 +89,17 @@ async fn handle_economy(
 }
 
 fn build_economy_values(
-    stats: &Value,
+    lc_stats: &LcStats,
     quota_row: usize,
     sell_row: usize,
 ) -> Vec<(String, usize, Value)> {
-    let new_quota = lcstats_payload(stats).new_quota();
+    let new_quota = lc_stats.new_quota();
     let mut updates = vec![];
 
     if new_quota != 0 {
         updates.push((QUOTA_COLUMN.to_string(), quota_row, json!(new_quota)));
     }
-    let lost = lost_scrap(stats);
+    let lost = lc_stats.lost_scrap_value();
     if lost != 0 {
         updates.push((LOST_SOLD_COLUMN.to_string(), sell_row, json!(lost)));
     }
@@ -109,7 +107,7 @@ fn build_economy_values(
 }
 
 fn build_values(
-    stats: &Value,
+    lc_stats: &LcStats,
     day_row: usize,
     economy_row: usize,
     stats_kind: StatsKind,
@@ -121,43 +119,37 @@ fn build_values(
             (
                 MOON_COLUMN.to_string(),
                 day_row,
-                json!(strip_moon_number(&string_at(stats, &["MoonInfo", "Name"]))),
+                json!(strip_moon_number(&lc_stats.moon_name())),
             ),
             (
                 WEATHER_COLUMN.to_string(),
                 day_row,
-                json!(moddedsheet_weather(&string_at(
-                    stats,
-                    &["MoonInfo", "Weather"]
-                ))),
+                json!(moddedsheet_weather(&lc_stats.moon_weather())),
             ),
             (
                 INTERIOR_COLUMN.to_string(),
                 day_row,
-                json!(moddedsheet_interior(&string_at(
-                    stats,
-                    &["DungeonInfo", "Interior"]
-                ))),
+                json!(moddedsheet_interior(&lc_stats.dungeon_interior())),
             ),
             (
                 COLLECTED_COLUMN.to_string(),
                 day_row,
-                json!(int_at(stats, &["CollectedTotal"])),
+                json!(lc_stats.collected_total()),
             ),
             (
                 BOTTOMLINE_COLUMN.to_string(),
                 day_row,
-                json!(total_available_value(stats)),
+                json!(lc_stats.total_available_value()),
             ),
         ]);
     }
 
-    let new_quota = lcstats_payload(stats).new_quota();
+    let new_quota = lc_stats.new_quota();
     if new_quota != 0 {
         values.push((QUOTA_COLUMN.to_string(), day_row, json!(new_quota)));
     }
 
-    let lost = lost_scrap(stats);
+    let lost = lc_stats.lost_scrap_value();
     if lost != 0 {
         values.push((LOST_SOLD_COLUMN.to_string(), economy_row, json!(lost)));
     }
@@ -170,11 +162,10 @@ async fn add_sold_value(
     token: &str,
     spreadsheet_id: &str,
     sheet_name: &str,
-    stats: &Value,
+    payload: &LcStats,
     row: usize,
     values: &mut Vec<(String, usize, Value)>,
 ) -> Result<(), String> {
-    let payload = lcstats_payload(stats);
     let mut value_sold = payload.value_sold();
     if value_sold == 0 && payload.new_quota() != 0 {
         value_sold = read_number(
@@ -218,12 +209,12 @@ impl StatsKind {
     }
 }
 
-fn stats_kind(stats: &Value) -> StatsKind {
-    let moon = string_at(stats, &["MoonInfo", "Name"]);
-    let collected = int_at(stats, &["CollectedTotal"]);
-    let bottomline = total_available_value(stats);
-    let interior = string_at(stats, &["DungeonInfo", "Interior"]);
-    let weather = string_at(stats, &["MoonInfo", "Weather"]);
+fn stats_kind(payload: &LcStats) -> StatsKind {
+    let moon = payload.moon_name();
+    let collected = payload.collected_total();
+    let bottomline = payload.total_available_value();
+    let interior = payload.dungeon_interior();
+    let weather = payload.moon_weather();
     if !moon.trim().is_empty()
         || !interior.trim().is_empty()
         || !weather.trim().is_empty()
@@ -236,8 +227,7 @@ fn stats_kind(stats: &Value) -> StatsKind {
     }
 }
 
-fn is_economy_stats(stats: &Value) -> bool {
-    let payload = lcstats_payload(stats);
+fn is_economy_stats(payload: &LcStats) -> bool {
     payload.is_gordion_moon() || payload.is_sell_or_quota_event()
 }
 
@@ -247,18 +237,6 @@ fn economy_row_for_stats(first_empty_collected_row: usize, stats_kind: StatsKind
     } else {
         first_empty_collected_row.saturating_sub(1).max(START_ROW)
     }
-}
-
-fn lost_scrap(stats: &Value) -> i64 {
-    array_at(stats, &["MissedItems"])
-        .iter()
-        .filter(|item| {
-            item.get("CollectedOnPreviousDay")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-        })
-        .map(|item| item.get("Value").map(intish_value).unwrap_or(0))
-        .sum()
 }
 
 fn moddedsheet_weather(value: &str) -> String {
@@ -287,7 +265,7 @@ fn moddedsheet_interior(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lcstats_autosheet::stats::{is_gordion_stats, lcstats_payload};
+    use crate::lcstats_autosheet::stats::lcstats;
 
     #[test]
     fn maps_moddedsheet_columns_from_row_two() {
@@ -307,7 +285,8 @@ mod tests {
             ]
         });
 
-        let values = build_values(&stats, START_ROW, START_ROW, stats_kind(&stats));
+        let lc_stats = lcstats(&stats);
+        let values = build_values(&lc_stats, START_ROW, START_ROW, stats_kind(&lc_stats));
 
         assert_eq!(cell_value(&values, QUOTA_COLUMN), None);
         assert_eq!(cell_value(&values, MOON_COLUMN), Some(&json!("March")));
@@ -326,7 +305,7 @@ mod tests {
     fn reads_sold_value_from_string_numbers() {
         let stats = json!({ "ValueSold": "'55" });
 
-        assert_eq!(lcstats_payload(&stats).value_sold(), 55);
+        assert_eq!(lcstats(&stats).value_sold(), 55);
     }
 
     #[test]
@@ -342,7 +321,8 @@ mod tests {
     fn economy_events_do_not_write_blank_day_values() {
         let stats = json!({ "ValueSold": 55 });
 
-        let values = build_values(&stats, 7, 6, stats_kind(&stats));
+        let lc_stats = lcstats(&stats);
+        let values = build_values(&lc_stats, 7, 6, stats_kind(&lc_stats));
 
         assert_eq!(cell_value(&values, MOON_COLUMN), None);
         assert_eq!(cell_value(&values, COLLECTED_COLUMN), None);
@@ -364,9 +344,10 @@ mod tests {
             "TotalAvailableValue": 446
         });
 
-        let values = build_economy_values(&stats, 5, 4);
+        let lc_stats = lcstats(&stats);
+        let values = build_economy_values(&lc_stats, 5, 4);
 
-        assert!(is_economy_stats(&stats));
+        assert!(is_economy_stats(&lc_stats));
         assert_eq!(cell_value(&values, MOON_COLUMN), None);
         assert_eq!(cell_value(&values, COLLECTED_COLUMN), None);
         assert_eq!(cell_value(&values, QUOTA_COLUMN), Some(&json!(196)));
@@ -385,9 +366,10 @@ mod tests {
             "CollectedTotal": 120
         });
 
-        let values = build_economy_values(&stats, 8, 7);
+        let lc_stats = lcstats(&stats);
+        let values = build_economy_values(&lc_stats, 8, 7);
 
-        assert!(is_gordion_stats(&stats));
+        assert!(lcstats(&stats).is_gordion_moon());
         assert_eq!(cell_value(&values, MOON_COLUMN), None);
         assert_eq!(cell_value(&values, WEATHER_COLUMN), None);
         assert_eq!(cell_value(&values, COLLECTED_COLUMN), None);
@@ -405,8 +387,8 @@ mod tests {
             "CollectedTotal": 120
         });
 
-        assert!(is_gordion_stats(&stats));
-        assert!(is_economy_stats(&stats));
+        assert!(lcstats(&stats).is_gordion_moon());
+        assert!(is_economy_stats(&lcstats(&stats)));
     }
 
     #[test]
@@ -418,7 +400,8 @@ mod tests {
             ]
         });
 
-        let values = build_values(&stats, 8, 7, stats_kind(&stats));
+        let lc_stats = lcstats(&stats);
+        let values = build_values(&lc_stats, 8, 7, stats_kind(&lc_stats));
 
         assert_eq!(cell_value(&values, QUOTA_COLUMN), Some(&json!(900)));
         assert_eq!(cell_row(&values, QUOTA_COLUMN), Some(8));

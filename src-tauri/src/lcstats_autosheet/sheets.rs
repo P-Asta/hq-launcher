@@ -426,9 +426,8 @@ fn row_note_clear_request(
     start_column_index: usize,
     column_count: usize,
 ) -> Value {
-    let cell_values = (0..column_count).map(|_| json!({})).collect::<Vec<_>>();
     json!({
-        "updateCells": {
+        "repeatCell": {
             "range": {
                 "sheetId": sheet_id,
                 "startRowIndex": row.saturating_sub(1),
@@ -436,7 +435,7 @@ fn row_note_clear_request(
                 "startColumnIndex": start_column_index,
                 "endColumnIndex": start_column_index + column_count
             },
-            "rows": [{ "values": cell_values }],
+            "cell": {},
             "fields": "note"
         }
     })
@@ -505,14 +504,13 @@ mod tests {
     #[test]
     fn note_clear_requests_clear_notes_without_touching_values() {
         let request = row_note_clear_request(123, 7, 2, 2);
-        let update = &request["updateCells"];
+        let update = &request["repeatCell"];
 
         assert_eq!(update["fields"], json!("note"));
         assert_eq!(update["range"]["startRowIndex"], json!(6));
         assert_eq!(update["range"]["startColumnIndex"], json!(2));
         assert_eq!(update["range"]["endColumnIndex"], json!(4));
-        assert_eq!(update["rows"][0]["values"], json!([{}, {}]));
-        assert!(update["rows"][0]["values"][0].get("note").is_none());
+        assert_eq!(update["cell"], json!({}));
     }
 
     #[test]
@@ -526,11 +524,11 @@ mod tests {
 
         assert_eq!(requests.len(), 2);
         assert_eq!(
-            requests[0]["updateCells"]["range"]["endColumnIndex"],
+            requests[0]["repeatCell"]["range"]["endColumnIndex"],
             json!(3)
         );
         assert_eq!(
-            requests[1]["updateCells"]["range"]["startColumnIndex"],
+            requests[1]["repeatCell"]["range"]["startColumnIndex"],
             json!(4)
         );
     }

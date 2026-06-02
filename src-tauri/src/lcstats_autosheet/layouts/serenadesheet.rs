@@ -6,11 +6,7 @@ use crate::lcstats_autosheet::sheets::{
     batch_update_spreadsheet, batch_write_cells_user_entered, first_empty_row_from, get_sheet_id,
     number_value, read_number,
 };
-use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, bool_at, initial_available_value, intish_value, is_gordion_stats,
-    lcstats_payload, players_at, string_at, strip_apostrophe, strip_moon_number, value_at,
-    value_at_any,
-};
+use crate::lcstats_autosheet::stats::{lcstats, strip_apostrophe, strip_moon_number, LcStats};
 
 const START_ROW: usize = 4;
 const CHECK_COLUMN: &str = "AI";
@@ -70,10 +66,11 @@ pub async fn write(
         START_ROW,
     )
     .await?;
-    if is_gordion_stats(stats) {
-        return handle_gordion(client, token, spreadsheet_id, sheet_name, row, stats).await;
+    let lc_stats = lcstats(stats);
+    if lc_stats.is_gordion_moon() {
+        return handle_gordion(client, token, spreadsheet_id, sheet_name, row, &lc_stats).await;
     }
-    let normalized = NormalizedStats::from_stats(stats);
+    let normalized = NormalizedStats::from_stats(&lc_stats);
     batch_write_cells_user_entered(
         client,
         token,
@@ -91,11 +88,10 @@ async fn handle_gordion(
     spreadsheet_id: &str,
     sheet_name: &str,
     target_row: usize,
-    stats: &Value,
+    lc_stats: &LcStats,
 ) -> Result<(), String> {
-    let payload = lcstats_payload(stats);
-    let value_sold = payload.value_sold();
-    let new_quota = payload.new_quota();
+    let value_sold = lc_stats.value_sold();
+    let new_quota = lc_stats.new_quota();
     let sold_row = gordion_sold_row(target_row);
     let current_sold = if value_sold == 0 {
         0.0
@@ -191,42 +187,23 @@ struct NormalizedStats {
 }
 
 impl NormalizedStats {
-    fn from_stats(stats: &Value) -> Self {
-        let payload = lcstats_payload(stats);
-        let hive_collected = int_values_any(stats, &[&["BeeInfo", "Collected"][..]]);
-        let hive_spawned = int_values_any(
-            stats,
-            &[&["BeeInfo", "Available"][..], &["BeeInfo", "Values"][..]],
-        );
-        let egg_collected = int_values_any(
-            stats,
-            &[
-                &["EggInfo", "Collected"][..],
-                &["BirdInfo", "CollectedEggValues"][..],
-            ],
-        );
-        let egg_spawned = int_values_any(
-            stats,
-            &[
-                &["EggInfo", "Available"][..],
-                &["BirdInfo", "EggValues"][..],
-            ],
-        );
-        let shotgun_collected = int_values_any(stats, &[&["ShotgunInfo", "Collected"][..]]);
-        let shotgun_spawned = int_values_any(stats, &[&["ShotgunInfo", "Available"][..]]);
-        let gifts = gifts_cells(stats);
+    fn from_stats(payload: &LcStats) -> Self {
+        let hive_collected = payload.bee_collected_values();
+        let hive_spawned = payload.bee_available_values();
+        let egg_collected = payload.egg_collected_values();
+        let egg_spawned = payload.egg_available_values();
+        let shotgun_collected = payload.shotgun_collected_values();
+        let shotgun_spawned = payload.shotgun_available_values();
+        let gifts = gifts_cells(payload);
         Self {
             new_quota: payload.new_quota(),
-            moon_name: serenade_moon(&string_at(stats, &["MoonInfo", "Name"])),
-            weather: serenade_weather(&string_at(stats, &["MoonInfo", "Weather"])),
-            interior: normalize_interior_name(&strip_apostrophe(&string_at(
-                stats,
-                &["DungeonInfo", "Interior"],
-            ))),
-            item_count: intish_at(stats, &["DungeonInfo", "ItemCount"]),
-            apparatus: apparatus_state(stats),
-            missing: missing_items_cell(stats),
-            sid: sid_cell(stats),
+            moon_name: serenade_moon(&payload.moon_name()),
+            weather: serenade_weather(&payload.moon_weather()),
+            interior: normalize_interior_name(&strip_apostrophe(&payload.dungeon_interior())),
+            item_count: payload.dungeon_item_count(),
+            apparatus: apparatus_state(payload),
+            missing: missing_items_cell(payload),
+            sid: sid_cell(payload),
             hive_collected_count: hive_collected.len(),
             hive_spawned_count: hive_spawned.len(),
             hive_collected_value: hive_collected.iter().sum(),
@@ -236,21 +213,19 @@ impl NormalizedStats {
             egg_collected_value: egg_collected.iter().sum(),
             egg_spawned_value: egg_spawned.iter().sum(),
             shotgun_collected_count: shotgun_collected.len(),
-            shotgun_spawned_count: enemy_count(stats, "Nutcracker"),
-            shotgun_collected_value: legacy_shotgun_value_enabled(stats)
+            shotgun_spawned_count: payload.indoor_enemy_count("Nutcracker"),
+            shotgun_collected_value: legacy_shotgun_value_enabled(payload)
                 .then(|| shotgun_collected.iter().sum()),
-            shotgun_spawned_value: legacy_shotgun_value_enabled(stats)
+            shotgun_spawned_value: legacy_shotgun_value_enabled(payload)
                 .then(|| shotgun_spawned.iter().sum()),
-            knife_collected_value: int_values_any(stats, &[&["KnifeInfo", "Collected"][..]])
-                .iter()
-                .sum(),
-            butler_count: enemy_count(stats, "Butler"),
-            topline: intish_at(stats, &["CollectedTotal"]),
-            bottomline: initial_available_value(stats),
+            knife_collected_value: payload.knife_collected_values().iter().sum(),
+            butler_count: payload.indoor_enemy_count("Butler"),
+            topline: payload.collected_total(),
+            bottomline: payload.initial_available_value(),
             gift_net: gifts.0,
             gift_opened_value: gifts.1,
             value_sold: payload.value_sold(),
-            players: normalize_players(stats),
+            players: normalize_players(payload),
         }
     }
 }
@@ -491,38 +466,18 @@ fn google_user_value(value: Value) -> Value {
     }
 }
 
-fn normalize_players(stats: &Value) -> Vec<NormalizedPlayer> {
-    players_at(stats)
+fn normalize_players(stats: &LcStats) -> Vec<NormalizedPlayer> {
+    stats
+        .players_sorted()
         .into_iter()
-        .map(|(_, player)| {
-            let name = strip_apostrophe(
-                player
-                    .get("Name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
-            );
-            let alive = player
-                .get("Alive")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let disconnected = player
-                .get("Disconnected")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let cause = strip_apostrophe(
-                player
-                    .get("CauseOfDeath")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
-            )
+        .map(|player| {
+            let name = strip_apostrophe(&player.stats.name);
+            let alive = player.stats.alive;
+            let disconnected = player.stats.disconnected;
+            let cause = strip_apostrophe(&player.stats.cause_of_death)
             .trim()
             .to_string();
-            let death_time = strip_apostrophe(
-                player
-                    .get("TimeOfDeath")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
-            )
+            let death_time = strip_apostrophe(&player.stats.time_of_death)
             .trim()
             .to_string();
             let status = if disconnected {
@@ -555,15 +510,9 @@ fn normalize_players(stats: &Value) -> Vec<NormalizedPlayer> {
         .collect()
 }
 
-fn missing_items_cell(stats: &Value) -> NoteCell {
-    let missing = array_at(stats, &["MissedItems"])
-        .iter()
-        .filter(|item| {
-            !item
-                .get("CollectedOnPreviousDay")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-        })
+fn missing_items_cell(stats: &LcStats) -> NoteCell {
+    let missing = stats
+        .active_missed_items()
         .collect::<Vec<_>>();
     if missing.is_empty() {
         return NoteCell {
@@ -577,10 +526,12 @@ fn missing_items_cell(stats: &Value) -> NoteCell {
         .map(|item| {
             format!(
                 "{}: {}",
-                item.get("ItemType")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Unknown"),
-                item.get("Value").map(intish_value).unwrap_or(0)
+                if item.item_type.is_empty() {
+                    "Unknown"
+                } else {
+                    &item.item_type
+                },
+                item.value
             )
         })
         .collect::<Vec<_>>()
@@ -592,8 +543,8 @@ fn missing_items_cell(stats: &Value) -> NoteCell {
     }
 }
 
-fn sid_cell(stats: &Value) -> NoteCell {
-    let sid_type = non_false_text(&string_at(stats, &["SIDType"]));
+fn sid_cell(payload: &LcStats) -> NoteCell {
+    let sid_type = non_false_text(payload.sid_type());
     NoteCell {
         column: SID_COLUMN,
         value: json!(sid_type.clone().unwrap_or_else(|| "-".to_string())),
@@ -601,8 +552,8 @@ fn sid_cell(stats: &Value) -> NoteCell {
     }
 }
 
-fn gifts_cells(stats: &Value) -> (NoteCell, NoteCell) {
-    let gifts = array_at_any(stats, &[&["GiftBoxesOpened"][..], &["GiftBoxes"][..]]);
+fn gifts_cells(stats: &LcStats) -> (NoteCell, NoteCell) {
+    let gifts = stats.gift_boxes();
     if gifts.is_empty() {
         return (
             NoteCell {
@@ -620,19 +571,15 @@ fn gifts_cells(stats: &Value) -> (NoteCell, NoteCell) {
 
     let opened = gifts
         .iter()
-        .filter(|gift| {
-            gift.get("Collected")
-                .and_then(Value::as_bool)
-                .unwrap_or(true)
-        })
+        .filter(|gift| gift.collected)
         .collect::<Vec<_>>();
     let net = opened
         .iter()
-        .map(|gift| gift_new_scrap_value(gift) - gift_scrap_value(gift))
+        .map(|gift| gift.new_scrap_value - gift.gift_scrap_value)
         .sum::<i64>();
     let gift_value = opened
         .iter()
-        .map(|gift| gift_scrap_value(gift))
+        .map(|gift| gift.gift_scrap_value)
         .sum::<i64>();
     let note = gifts
         .iter()
@@ -641,11 +588,9 @@ fn gifts_cells(stats: &Value) -> (NoteCell, NoteCell) {
             format!(
                 "Box {}: NewScrapValue={}, GiftScrapValue={}, Collected={}",
                 index + 1,
-                gift_new_scrap_value(gift),
-                gift_scrap_value(gift),
-                gift.get("Collected")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(true)
+                gift.new_scrap_value,
+                gift.gift_scrap_value,
+                gift.collected
             )
         })
         .collect::<Vec<_>>()
@@ -665,32 +610,13 @@ fn gifts_cells(stats: &Value) -> (NoteCell, NoteCell) {
     )
 }
 
-fn gift_new_scrap_value(gift: &Value) -> i64 {
-    value_at_any(gift, &[&["NewScrapValue"][..], &["GiftValue"][..]])
-        .map(intish_value)
-        .unwrap_or(0)
-}
-
-fn gift_scrap_value(gift: &Value) -> i64 {
-    value_at_any(gift, &[&["GiftScrapValue"][..], &["ScrapValue"][..]])
-        .map(intish_value)
-        .unwrap_or(0)
-}
-
-fn apparatus_state(stats: &Value) -> String {
-    if !bool_at(stats, &["AppSpawned"]) {
+fn apparatus_state(payload: &LcStats) -> String {
+    if !payload.app_spawned() {
         return "-".to_string();
     }
-    let missed_apparatus = array_at(stats, &["MissedItems"]).iter().any(|item| {
-        item.get("ItemType")
-            .and_then(Value::as_str)
-            .map(|value| value.eq_ignore_ascii_case("Apparatus"))
-            .unwrap_or(false)
-            && !item
-                .get("CollectedOnPreviousDay")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-    });
+    let missed_apparatus = payload
+        .active_missed_items()
+        .any(|item| item.item_type.eq_ignore_ascii_case("Apparatus"));
     if missed_apparatus {
         "E".to_string()
     } else {
@@ -786,47 +712,13 @@ fn normalize_interior_name(value: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn legacy_shotgun_value_enabled(stats: &Value) -> bool {
-    let version = value_at_any(
-        stats,
-        &[
-            &["GameVersion"][..],
-            &["Version"][..],
-            &["GameInfo", "Version"][..],
-        ],
-    )
-    .map(|value| {
-        value
-            .as_str()
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| intish_value(value).to_string())
-    })
-    .unwrap_or_default();
+fn legacy_shotgun_value_enabled(stats: &LcStats) -> bool {
+    let version = stats.version_text();
     let digits = version
         .chars()
         .filter(|ch| ch.is_ascii_digit())
         .collect::<String>();
     digits == "45" || digits == "49"
-}
-
-fn int_values_any(stats: &Value, paths: &[&[&str]]) -> Vec<i64> {
-    array_at_any(stats, paths)
-        .iter()
-        .map(intish_value)
-        .collect()
-}
-
-fn enemy_count(stats: &Value, enemy: &str) -> usize {
-    array_at(stats, &["IndoorSpawns"])
-        .iter()
-        .filter(|spawn| {
-            spawn
-                .get("Enemy")
-                .and_then(Value::as_str)
-                .map(|value| value.eq_ignore_ascii_case(enemy))
-                .unwrap_or(false)
-        })
-        .count()
 }
 
 fn non_false_text(value: &str) -> Option<String> {
@@ -840,10 +732,6 @@ fn non_false_text(value: &str) -> Option<String> {
     } else {
         Some(value)
     }
-}
-
-fn intish_at(stats: &Value, path: &[&str]) -> i64 {
-    value_at(stats, path).map(intish_value).unwrap_or(0)
 }
 
 fn column_to_index(column: &str) -> usize {
@@ -871,7 +759,8 @@ mod tests {
             "DungeonInfo": { "Interior": "'MineshaftFlow", "ItemCount": 0 },
             "AppSpawned": false
         });
-        let normalized = NormalizedStats::from_stats(&stats);
+        let payload = lcstats(&stats);
+        let normalized = NormalizedStats::from_stats(&payload);
         let updates = build_value_updates(&normalized, 7);
 
         assert_eq!(cell_value(&updates, QUOTA_COLUMN), None);
@@ -888,7 +777,8 @@ mod tests {
                 "steam-a": { "Name": "A", "PlayerID": 0, "Alive": true }
             }
         });
-        let normalized = NormalizedStats::from_stats(&stats);
+        let payload = lcstats(&stats);
+        let normalized = NormalizedStats::from_stats(&payload);
         let updates = build_value_updates(&normalized, 7);
 
         assert_eq!(
@@ -912,15 +802,16 @@ mod tests {
         });
         let target_row = 8;
         let sold_row = gordion_sold_row(target_row);
+        let payload = lcstats(&stats);
         let updates = build_gordion_updates(
-            intish_at(&stats, &["ValueSold"]),
-            intish_at(&stats, &["NewQuota"]),
+            payload.value_sold(),
+            payload.new_quota(),
             target_row,
             sold_row,
             25.0,
         );
 
-        assert!(is_gordion_stats(&stats));
+        assert!(lcstats(&stats).is_gordion_moon());
         assert_eq!(sold_row, 7);
         assert_eq!(cell_value_at(&updates, SOLD_COLUMN, 7), Some(&json!(155)));
         assert_eq!(cell_value_at(&updates, QUOTA_COLUMN, 8), Some(&json!(900)));
@@ -934,7 +825,7 @@ mod tests {
             "MoonInfo": { "Name": "'Galetry" }
         });
 
-        assert!(is_gordion_stats(&stats));
+        assert!(lcstats(&stats).is_gordion_moon());
     }
 
     fn cell_value<'a>(values: &'a [(String, usize, Value)], column: &str) -> Option<&'a Value> {

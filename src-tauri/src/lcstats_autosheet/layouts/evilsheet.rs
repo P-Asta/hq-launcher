@@ -8,8 +8,7 @@ use crate::lcstats_autosheet::sheets::{
     first_empty_row_from, get_sheet_id, number_value, quote_sheet_name, read_number, read_range,
 };
 use crate::lcstats_autosheet::stats::{
-    array_at, array_at_any, initial_available_value, is_gordion_stats, lcstats_payload, object_at,
-    players_at, string_at, strip_apostrophe, strip_moon_number, value_at,
+    lcstats, strip_apostrophe, strip_moon_number, LcStats, PlayerStats,
 };
 
 const TARGET_SHEET_CELL: &str = "A1";
@@ -56,21 +55,22 @@ pub async fn write(
     )
     .await?;
 
-    if is_gordion_stats(stats) {
+    let lc_stats = lcstats(stats);
+    if lc_stats.is_gordion_moon() {
         return handle_gordion(
             client,
             token,
             spreadsheet_id,
             &target_sheet.name,
             row,
-            stats,
+            &lc_stats,
         )
         .await;
     }
 
-    let normalized = NormalizedStats::from_stats(stats);
+    let normalized = NormalizedStats::from_stats(&lc_stats);
     let player_columns =
-        setup_or_match_player_columns(client, token, spreadsheet_id, &target_sheet.name, stats)
+        setup_or_match_player_columns(client, token, spreadsheet_id, &target_sheet.name, &lc_stats)
             .await?;
     batch_write_cells_user_entered(
         client,
@@ -86,7 +86,7 @@ pub async fn write(
         spreadsheet_id,
         &target_sheet.name,
         target_sheet.id,
-        stats,
+        &lc_stats,
         &normalized,
         &player_columns,
         row,
@@ -156,7 +156,7 @@ async fn setup_or_match_player_columns(
     token: &str,
     spreadsheet_id: &str,
     sheet_name: &str,
-    stats: &Value,
+    lc_stats: &LcStats,
 ) -> Result<HashMap<String, String>, String> {
     let name_range = format!(
         "{}!{}{}:{}{}",
@@ -191,33 +191,27 @@ async fn setup_or_match_player_columns(
         }
     }
 
-    let players = players_at(stats);
+    let players = lc_stats.players_sorted();
     let mut player_columns = HashMap::new();
     if existing_slots.is_empty() {
         let mut updates = vec![];
-        for (index, (steam_id, player)) in
-            players.iter().take(PLAYER_STATE_COLUMNS.len()).enumerate()
-        {
-            let name = player
-                .get("Name")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            player_columns.insert(steam_id.clone(), PLAYER_STATE_COLUMNS[index].to_string());
+        for (index, player) in players.iter().take(PLAYER_STATE_COLUMNS.len()).enumerate() {
+            player_columns.insert(
+                player.steam_id.clone(),
+                PLAYER_STATE_COLUMNS[index].to_string(),
+            );
             updates.push((
                 PLAYER_NAME_COLUMNS[index].to_string(),
                 PLAYER_NAME_ROW,
-                json!(strip_apostrophe(name)),
+                json!(strip_apostrophe(&player.stats.name)),
             ));
         }
         batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, updates).await?;
     } else {
-        for (steam_id, player) in players {
-            let player_name = player
-                .get("Name")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if let Some(column) = existing_slots.get(&normalize_player_name_key(player_name)) {
-                player_columns.insert(steam_id, column.clone());
+        for player in players {
+            if let Some(column) = existing_slots.get(&normalize_player_name_key(&player.stats.name))
+            {
+                player_columns.insert(player.steam_id, column.clone());
             }
         }
     }
@@ -246,27 +240,19 @@ struct NormalizedStats {
 }
 
 impl NormalizedStats {
-    fn from_stats(stats: &Value) -> Self {
-        let payload = lcstats_payload(stats);
+    fn from_stats(lc_stats: &LcStats) -> Self {
         Self {
-            moon_name: strip_moon_number(&strip_apostrophe(&string_at(
-                stats,
-                &["MoonInfo", "Name"],
-            ))),
-            weather: evilsheet_weather(&string_at(stats, &["MoonInfo", "Weather"])),
-            interior: strip_apostrophe(&string_at(stats, &["DungeonInfo", "Interior"])),
-            item_count: intish_at(stats, &["DungeonInfo", "ItemCount"]),
-            bee_count: array_at_any(
-                stats,
-                &[&["BeeInfo", "Available"][..], &["BeeInfo", "Values"][..]],
-            )
-            .len(),
-            collected_total: intish_at(stats, &["CollectedTotal"]),
-            available_total: initial_available_value(stats),
-            value_sold: payload.value_sold(),
-            lost_scrap: lost_scrap(stats),
-            new_quota: payload.new_quota(),
-            players: normalize_players(stats),
+            moon_name: strip_moon_number(&strip_apostrophe(&lc_stats.moon_name())),
+            weather: evilsheet_weather(&lc_stats.moon_weather()),
+            interior: strip_apostrophe(&lc_stats.dungeon_interior()),
+            item_count: lc_stats.dungeon_item_count(),
+            bee_count: lc_stats.bee_available_count(),
+            collected_total: lc_stats.collected_total(),
+            available_total: lc_stats.initial_available_value(),
+            value_sold: lc_stats.value_sold(),
+            lost_scrap: lc_stats.lost_scrap_value(),
+            new_quota: lc_stats.new_quota(),
+            players: normalize_players(lc_stats),
         }
     }
 }
@@ -312,52 +298,35 @@ fn build_value_updates(
     values
 }
 
-fn normalize_players(stats: &Value) -> HashMap<String, NormalizedPlayer> {
-    let takeoff_time = string_at(stats, &["TakeOffTime"]);
-    players_at(stats)
+fn normalize_players(lc_stats: &LcStats) -> HashMap<String, NormalizedPlayer> {
+    let takeoff_time = lc_stats.take_off_time().to_string();
+    lc_stats
+        .players_sorted()
         .into_iter()
-        .map(|(steam_id, player)| {
-            let alive = player
-                .get("Alive")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let disconnected = player
-                .get("Disconnected")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let cause_of_death = strip_apostrophe(
-                player
-                    .get("CauseOfDeath")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
-            )
+        .map(|player| {
+            let cause_of_death = strip_apostrophe(&player.stats.cause_of_death)
             .trim()
             .to_string();
-            let time_of_death = strip_apostrophe(
-                player
-                    .get("TimeOfDeath")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
-            )
+            let time_of_death = strip_apostrophe(&player.stats.time_of_death)
             .trim()
             .to_string();
             let has_death_details = !cause_of_death.is_empty() || !time_of_death.is_empty();
-            let status = if alive {
+            let status = if player.stats.alive {
                 "A"
-            } else if disconnected {
+            } else if player.stats.disconnected {
                 "DC"
             } else if cause_of_death.eq_ignore_ascii_case("Abandoned")
                 || cause_of_death.eq_ignore_ascii_case("Abandonment")
             {
                 "M"
-            } else if has_death_details || died_before_ship_leave_cutoff(&player, &takeoff_time) {
+            } else if has_death_details || died_before_ship_leave_cutoff(&player.stats, &takeoff_time) {
                 "X"
             } else {
                 "S"
             }
             .to_string();
 
-            (steam_id, NormalizedPlayer { status })
+            (player.steam_id, NormalizedPlayer { status })
         })
         .collect()
 }
@@ -368,7 +337,7 @@ async fn write_death_notes(
     spreadsheet_id: &str,
     sheet_name: &str,
     sheet_id: Option<i64>,
-    raw_stats: &Value,
+    lc_stats: &LcStats,
     stats: &NormalizedStats,
     player_columns: &HashMap<String, String>,
     row: usize,
@@ -378,16 +347,16 @@ async fn write_death_notes(
         Some(sheet_id) => sheet_id,
         None => get_sheet_id(client, token, spreadsheet_id, sheet_name).await?,
     };
-    for (steam_id, player) in object_at(raw_stats, &["Players"]) {
-        let Some(column) = player_columns.get(&steam_id) else {
+    for player in lc_stats.players_sorted() {
+        let Some(column) = player_columns.get(&player.steam_id) else {
             continue;
         };
-        let Some(note) = player_death_note(&player) else {
+        let Some(note) = player_death_note(&player.stats) else {
             continue;
         };
         let status = stats
             .players
-            .get(&steam_id)
+            .get(&player.steam_id)
             .map(|player| player.status.as_str())
             .unwrap_or_default();
         requests.push(value_with_note_request(
@@ -408,9 +377,8 @@ async fn handle_gordion(
     spreadsheet_id: &str,
     sheet_name: &str,
     target_row: usize,
-    stats: &Value,
+    payload: &LcStats,
 ) -> Result<(), String> {
-    let payload = lcstats_payload(stats);
     let value_sold = payload.value_sold();
     let new_quota = payload.new_quota();
     let target_line = run_block_start_row(target_row);
@@ -476,40 +444,20 @@ fn google_user_value(value: Value) -> Value {
     }
 }
 
-fn player_death_note(player: &Value) -> Option<String> {
-    if player.get("Alive").and_then(Value::as_bool) == Some(true)
-        || player.get("Disconnected").and_then(Value::as_bool) == Some(true)
-    {
+fn player_death_note(player: &PlayerStats) -> Option<String> {
+    if player.alive || player.disconnected {
         return None;
     }
-    let cause = strip_apostrophe(
-        player
-            .get("CauseOfDeath")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-    )
+    let cause = strip_apostrophe(&player.cause_of_death)
     .trim()
     .to_string();
-    let death_time = strip_apostrophe(
-        player
-            .get("TimeOfDeath")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-    )
+    let death_time = strip_apostrophe(&player.time_of_death)
     .trim()
     .to_string();
     if cause.is_empty() && death_time.is_empty() {
         return None;
     }
     Some(format!("Cause: {cause}\nTime: {death_time}"))
-}
-
-fn lost_scrap(stats: &Value) -> i64 {
-    array_at(stats, &["MissedItems"])
-        .iter()
-        .filter(|item| item.get("CollectedOnPreviousDay").and_then(Value::as_bool) == Some(true))
-        .map(|item| item.get("Value").map(value_as_i64).unwrap_or(0))
-        .sum()
 }
 
 fn evilsheet_weather(value: &str) -> String {
@@ -521,11 +469,8 @@ fn evilsheet_weather(value: &str) -> String {
     }
 }
 
-fn died_before_ship_leave_cutoff(player: &Value, takeoff_time: &str) -> bool {
-    let death_minutes = player
-        .get("TimeOfDeath")
-        .and_then(Value::as_str)
-        .and_then(parse_time_to_minutes);
+fn died_before_ship_leave_cutoff(player: &PlayerStats, takeoff_time: &str) -> bool {
+    let death_minutes = parse_time_to_minutes(&player.time_of_death);
     let limit_minutes = parse_time_to_minutes(takeoff_time)
         .map(|minutes| minutes - 120)
         .or_else(|| parse_time_to_minutes("10:00 PM"));
@@ -562,21 +507,6 @@ fn run_block_start_row(current_row: usize) -> usize {
     (START_ROW as isize + offset).max(1) as usize
 }
 
-fn intish_at(stats: &Value, path: &[&str]) -> i64 {
-    value_at(stats, path).map(value_as_i64).unwrap_or(0)
-}
-
-fn value_as_i64(value: &Value) -> i64 {
-    value
-        .as_i64()
-        .or_else(|| {
-            value
-                .as_str()
-                .and_then(|text| strip_apostrophe(text).trim().parse::<i64>().ok())
-        })
-        .unwrap_or(0)
-}
-
 fn normalize_player_name_key(value: &str) -> String {
     strip_apostrophe(value).trim().to_ascii_lowercase()
 }
@@ -611,7 +541,8 @@ mod tests {
                 "2": { "Name": "Two", "Alive": false, "Disconnected": false, "CauseOfDeath": "'Forest Giant", "TimeOfDeath": "'8:00 PM" }
             }
         });
-        let normalized = NormalizedStats::from_stats(&stats);
+        let lc_stats = lcstats(&stats);
+        let normalized = NormalizedStats::from_stats(&lc_stats);
         let player_columns = HashMap::from([
             ("1".to_string(), "U".to_string()),
             ("2".to_string(), "V".to_string()),
@@ -650,7 +581,7 @@ mod tests {
             "MoonInfo": { "Name": "'Galetry" }
         });
 
-        assert!(is_gordion_stats(&stats));
+        assert!(lcstats(&stats).is_gordion_moon());
     }
 
     fn cell_value<'a>(values: &'a [(String, usize, Value)], column: &str) -> Option<&'a Value> {

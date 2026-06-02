@@ -1,11 +1,13 @@
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
-pub struct LcStatsPayload {
+pub struct LcStats {
+    #[serde(deserialize_with = "deserialize_intish")]
     pub seed: i64,
+    #[serde(deserialize_with = "deserialize_intish")]
     pub version: i64,
     pub moon_info: MoonInfo,
     pub dungeon_info: Option<DungeonInfo>,
@@ -21,6 +23,7 @@ pub struct LcStatsPayload {
     pub indoor_spawns: Vec<SpawnInfo>,
     pub day_time_spawns: Vec<SpawnInfo>,
     pub night_time_spawns: Vec<SpawnInfo>,
+    #[serde(deserialize_with = "deserialize_map_intish")]
     pub shop_sales: BTreeMap<String, i64>,
     pub furniture_info: BTreeMap<String, FurnitureInfo>,
     pub gift_boxes_opened: Vec<GiftBoxInfo>,
@@ -29,16 +32,69 @@ pub struct LcStatsPayload {
     fallback_source: Option<Value>,
 }
 
-impl LcStatsPayload {
+impl LcStats {
     pub fn from_value(stats: &Value) -> Self {
-        let mut payload: Self = serde_json::from_value(stats.clone()).unwrap_or_default();
-        payload.fallback_source = Some(stats.clone());
-        payload
+        let mut lc_stats: Self = serde_json::from_value(stats.clone()).unwrap_or_default();
+        lc_stats.fallback_source = Some(stats.clone());
+        lc_stats
     }
 
     pub fn moon_name(&self) -> String {
         self.fallback_string(&["MoonInfo", "Name"])
             .unwrap_or_else(|| self.moon_info.name.clone())
+    }
+
+    pub fn seed(&self) -> i64 {
+        self.fallback_int(&["Seed"]).unwrap_or(self.seed)
+    }
+
+    pub fn seed_text(&self) -> String {
+        self.fallback_string(&["Seed"])
+            .unwrap_or_else(|| self.seed.to_string())
+    }
+
+    pub fn version(&self) -> i64 {
+        self.fallback_int(&["Version"]).unwrap_or(self.version)
+    }
+
+    pub fn version_text(&self) -> String {
+        self.fallback_string(&["Version"])
+            .unwrap_or_else(|| self.version.to_string())
+    }
+
+    pub fn moon_weather(&self) -> String {
+        self.fallback_string(&["MoonInfo", "Weather"])
+            .unwrap_or_else(|| self.moon_info.weather.clone())
+    }
+
+    pub fn dungeon_interior(&self) -> String {
+        self.fallback_string(&["DungeonInfo", "Interior"])
+            .or_else(|| self.dungeon_info.as_ref().map(|info| info.interior.clone()))
+            .unwrap_or_default()
+    }
+
+    pub fn dungeon_item_count(&self) -> i64 {
+        self.fallback_int(&["DungeonInfo", "ItemCount"])
+            .or_else(|| self.dungeon_info.as_ref().map(|info| info.item_count))
+            .unwrap_or(0)
+    }
+
+    pub fn turret_count(&self) -> i64 {
+        self.fallback_int(&["HazardInfo", "TurretCount"])
+            .or_else(|| self.hazard_info.as_ref().map(|info| info.turret_count))
+            .unwrap_or(0)
+    }
+
+    pub fn landmine_count(&self) -> i64 {
+        self.fallback_int(&["HazardInfo", "LandmineCount"])
+            .or_else(|| self.hazard_info.as_ref().map(|info| info.landmine_count))
+            .unwrap_or(0)
+    }
+
+    pub fn spiketrap_count(&self) -> i64 {
+        self.fallback_int(&["HazardInfo", "SpiketrapCount"])
+            .or_else(|| self.hazard_info.as_ref().map(|info| info.spiketrap_count))
+            .unwrap_or(0)
     }
 
     pub fn new_quota(&self) -> i64 {
@@ -69,11 +125,6 @@ impl LcStatsPayload {
     pub fn total_available_value(&self) -> i64 {
         self.fallback_int(&["TotalAvailableValue"])
             .unwrap_or(self.performance_info.total_available_value)
-    }
-
-    pub fn extra_from_old_gift(&self) -> i64 {
-        self.fallback_int(&["ExtraFromOldGift"])
-            .unwrap_or(self.performance_info.extra_from_old_gift)
     }
 
     pub fn app_spawned(&self) -> bool {
@@ -130,6 +181,122 @@ impl LcStatsPayload {
         is_gordion_moon_name(&self.moon_name())
     }
 
+    pub fn bee_available_values(&self) -> Vec<i64> {
+        self.fallback_int_array_any(&[&["BeeInfo", "Available"][..], &["BeeInfo", "Values"][..]])
+            .unwrap_or_else(|| self.bee_info.available.clone())
+    }
+
+    pub fn bee_collected_values(&self) -> Vec<i64> {
+        self.fallback_int_array_any(&[&["BeeInfo", "Collected"][..]])
+            .unwrap_or_else(|| self.bee_info.collected.clone())
+    }
+
+    pub fn egg_available_values(&self) -> Vec<i64> {
+        self.fallback_int_array_any(&[
+            &["EggInfo", "Available"][..],
+            &["BirdInfo", "EggValues"][..],
+        ])
+        .unwrap_or_else(|| self.egg_info.available.clone())
+    }
+
+    pub fn egg_collected_values(&self) -> Vec<i64> {
+        self.fallback_int_array_any(&[
+            &["EggInfo", "Collected"][..],
+            &["BirdInfo", "CollectedEggValues"][..],
+        ])
+        .unwrap_or_else(|| self.egg_info.collected.clone())
+    }
+
+    pub fn knife_collected_values(&self) -> Vec<i64> {
+        self.fallback_int_array_any(&[&["KnifeInfo", "Collected"][..]])
+            .unwrap_or_else(|| self.knife_info.collected.clone())
+    }
+
+    pub fn shotgun_available_values(&self) -> Vec<i64> {
+        self.fallback_int_array_any(&[&["ShotgunInfo", "Available"][..]])
+            .unwrap_or_else(|| self.shotgun_info.available.clone())
+    }
+
+    pub fn shotgun_collected_values(&self) -> Vec<i64> {
+        self.fallback_int_array_any(&[&["ShotgunInfo", "Collected"][..]])
+            .unwrap_or_else(|| self.shotgun_info.collected.clone())
+    }
+
+    pub fn gift_boxes(&self) -> Vec<GiftBoxInfo> {
+        self.fallback_source
+            .as_ref()
+            .and_then(|stats| {
+                value_at_any(stats, &[&["GiftBoxesOpened"][..], &["GiftBoxes"][..]])
+                    .and_then(Value::as_array)
+                    .map(|gifts| gifts.iter().map(GiftBoxInfo::from_value).collect())
+            })
+            .unwrap_or_else(|| self.gift_boxes_opened.clone())
+    }
+
+    pub fn active_missed_items(&self) -> impl Iterator<Item = &MissingItemInfo> {
+        self.missed_items
+            .iter()
+            .filter(|item| !item.collected_on_previous_day)
+    }
+
+    pub fn lost_missed_items(&self) -> impl Iterator<Item = &MissingItemInfo> {
+        self.missed_items
+            .iter()
+            .filter(|item| item.collected_on_previous_day)
+    }
+
+    pub fn missed_item_count(&self) -> usize {
+        self.active_missed_items().count()
+    }
+
+    pub fn lost_scrap_value(&self) -> i64 {
+        self.lost_missed_items().map(|item| item.value).sum()
+    }
+
+    pub fn bee_available_count(&self) -> usize {
+        self.bee_available_values().len()
+    }
+
+    pub fn bee_available_total(&self) -> i64 {
+        self.bee_available_values().iter().sum()
+    }
+
+    pub fn egg_available_total(&self) -> i64 {
+        self.egg_available_values().iter().sum()
+    }
+
+    pub fn shotgun_collected_count(&self) -> i64 {
+        self.collected_count_or_legacy_int(&["ShotgunInfo", "Collected"], &["ShotgunsCollected"])
+    }
+
+    pub fn knife_collected_count(&self) -> i64 {
+        self.collected_count_or_legacy_int(&["KnifeInfo", "Collected"], &["KnivesCollected"])
+    }
+
+    pub fn indoor_enemy_count(&self, enemy: &str) -> usize {
+        self.indoor_spawns
+            .iter()
+            .filter(|spawn| spawn.enemy.eq_ignore_ascii_case(enemy))
+            .count()
+    }
+
+    pub fn players_sorted(&self) -> Vec<PlayerEntry> {
+        let mut players = self
+            .players
+            .iter()
+            .map(|(steam_id, player)| PlayerEntry {
+                steam_id: steam_id.clone(),
+                stats: player.clone(),
+            })
+            .collect::<Vec<_>>();
+        players.sort_by(|left, right| {
+            player_sort_key(&left.steam_id, &left.stats)
+                .cmp(&player_sort_key(&right.steam_id, &right.stats))
+                .then_with(|| left.steam_id.cmp(&right.steam_id))
+        });
+        players
+    }
+
     fn fallback_int(&self, path: &[&str]) -> Option<i64> {
         self.fallback_source
             .as_ref()
@@ -157,6 +324,28 @@ impl LcStatsPayload {
             .and_then(|stats| value_at(stats, path))
             .and_then(Value::as_str)
     }
+
+    fn fallback_int_array_any(&self, paths: &[&[&str]]) -> Option<Vec<i64>> {
+        self.fallback_source.as_ref().and_then(|stats| {
+            paths.iter().find_map(|path| {
+                value_at(stats, path).and_then(|value| {
+                    value
+                        .as_array()
+                        .map(|items| items.iter().map(intish_value).collect())
+                })
+            })
+        })
+    }
+
+    fn collected_count_or_legacy_int(&self, collected_path: &[&str], legacy_path: &[&str]) -> i64 {
+        self.fallback_source
+            .as_ref()
+            .and_then(|stats| value_at(stats, collected_path))
+            .and_then(Value::as_array)
+            .map(|items| items.len() as i64)
+            .or_else(|| self.fallback_int(legacy_path))
+            .unwrap_or(0)
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -169,6 +358,7 @@ pub struct MoonInfo {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct DungeonInfo {
+    #[serde(deserialize_with = "deserialize_intish")]
     pub item_count: i64,
     pub interior: String,
 }
@@ -176,32 +366,44 @@ pub struct DungeonInfo {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct HazardInfo {
+    #[serde(deserialize_with = "deserialize_intish")]
     pub turret_count: i64,
+    #[serde(deserialize_with = "deserialize_intish")]
     pub landmine_count: i64,
+    #[serde(deserialize_with = "deserialize_intish")]
     pub spiketrap_count: i64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct PerformanceInfo {
+    #[serde(deserialize_with = "deserialize_intish")]
     pub collected_no_extra: i64,
+    #[serde(deserialize_with = "deserialize_intish")]
     pub collected_total: i64,
+    #[serde(deserialize_with = "deserialize_intish")]
     pub initial_available_value: i64,
+    #[serde(deserialize_with = "deserialize_intish")]
     pub total_available_value: i64,
+    #[serde(deserialize_with = "deserialize_intish")]
     pub extra_from_old_gift: i64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct SpecialItemInfo {
+    #[serde(deserialize_with = "deserialize_vec_intish")]
     pub available: Vec<i64>,
+    #[serde(deserialize_with = "deserialize_vec_intish")]
     pub collected: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct QuotaInfo {
+    #[serde(deserialize_with = "deserialize_intish")]
     pub value_sold: i64,
+    #[serde(deserialize_with = "deserialize_intish")]
     pub new_quota: i64,
 }
 
@@ -219,11 +421,20 @@ pub struct EventInfo {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct PlayerStats {
+    #[serde(default, alias = "PlayerID", alias = "PlayerId", alias = "PlayerIndex")]
+    #[serde(deserialize_with = "deserialize_option_intish")]
+    pub player_id: Option<i64>,
     pub name: String,
     pub alive: bool,
     pub disconnected: bool,
     pub time_of_death: String,
     pub cause_of_death: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlayerEntry {
+    pub steam_id: String,
+    pub stats: PlayerStats,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -240,37 +451,59 @@ pub struct FurnitureInfo {
     pub in_stock: bool,
     pub owned: bool,
     pub stored: bool,
+    #[serde(deserialize_with = "deserialize_intish")]
     pub apparent_price: i64,
+    #[serde(deserialize_with = "deserialize_intish")]
     pub real_price: i64,
+    #[serde(deserialize_with = "deserialize_floatish")]
     pub luck: f64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct GiftBoxInfo {
+    #[serde(deserialize_with = "deserialize_intish")]
     pub new_scrap_value: i64,
+    #[serde(deserialize_with = "deserialize_intish")]
     pub gift_scrap_value: i64,
+    #[serde(deserialize_with = "deserialize_intish")]
     pub gift_box_age: i64,
     pub collected: bool,
+}
+
+impl GiftBoxInfo {
+    fn from_value(value: &Value) -> Self {
+        Self {
+            new_scrap_value: value_at_any(value, &[&["NewScrapValue"][..], &["GiftValue"][..]])
+                .map(intish_value)
+                .unwrap_or(0),
+            gift_scrap_value: value_at_any(value, &[&["GiftScrapValue"][..], &["ScrapValue"][..]])
+                .map(intish_value)
+                .unwrap_or_else(|| value.get("Value").map(intish_value).unwrap_or(0)),
+            gift_box_age: value.get("GiftBoxAge").map(intish_value).unwrap_or(0),
+            collected: value
+                .get("Collected")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct MissingItemInfo {
+    #[serde(deserialize_with = "deserialize_intish")]
     pub value: i64,
     pub item_type: String,
     pub spawn_position: Option<Vec<f64>>,
     pub despawn_position: Vec<f64>,
     pub collected_on_previous_day: bool,
+    #[serde(deserialize_with = "deserialize_intish")]
     pub scrap_inside_gift_value: i64,
 }
 
-pub fn lcstats_payload(stats: &Value) -> LcStatsPayload {
-    LcStatsPayload::from_value(stats)
-}
-
-pub fn is_gordion_stats(stats: &Value) -> bool {
-    lcstats_payload(stats).is_gordion_moon()
+pub fn lcstats(stats: &Value) -> LcStats {
+    LcStats::from_value(stats)
 }
 
 pub fn is_gordion_moon_name(value: &str) -> bool {
@@ -347,59 +580,6 @@ fn aliased_value_at<'a>(stats: &'a Value, key: &str) -> Option<&'a Value> {
     }
 }
 
-pub fn int_at(stats: &Value, path: &[&str]) -> i64 {
-    if path.len() == 1 {
-        let payload = lcstats_payload(stats);
-        match path[0] {
-            "CollectedNoExtra" => return payload.collected_no_extra(),
-            "CollectedTotal" => return payload.collected_total(),
-            "InitialAvailableValue" | "BottomLine" => return payload.initial_available_value(),
-            "TotalAvailableValue" | "BottomLineTrue" => return payload.total_available_value(),
-            "ExtraFromOldGift" | "ExtraFromOldGiftbox" => return payload.extra_from_old_gift(),
-            "ValueSold" => return payload.value_sold(),
-            "NewQuota" => return payload.new_quota(),
-            _ => {}
-        }
-    }
-    value_at(stats, path).map(intish_value).unwrap_or(0)
-}
-
-pub fn initial_available_value(stats: &Value) -> i64 {
-    lcstats_payload(stats).initial_available_value()
-}
-
-pub fn total_available_value(stats: &Value) -> i64 {
-    lcstats_payload(stats).total_available_value()
-}
-
-pub fn bool_at(stats: &Value, path: &[&str]) -> bool {
-    if path.len() == 1 {
-        let payload = lcstats_payload(stats);
-        match path[0] {
-            "AppSpawned" => return payload.app_spawned(),
-            "IndoorFog" => return payload.indoor_fog(),
-            _ => {}
-        }
-    }
-    value_at(stats, path)
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
-
-pub fn string_at(stats: &Value, path: &[&str]) -> String {
-    if path.len() == 1 {
-        let payload = lcstats_payload(stats);
-        match path[0] {
-            "TakeOffTime" => return payload.take_off_time().to_string(),
-            "SIDType" => return payload.sid_type().to_string(),
-            "InfestationType" => return payload.infestation_type().to_string(),
-            "MeteorShowerTime" => return payload.meteor_shower_time().to_string(),
-            _ => {}
-        }
-    }
-    value_at(stats, path).map(value_text).unwrap_or_default()
-}
-
 pub fn array_at<'a>(stats: &'a Value, path: &[&str]) -> &'a [Value] {
     value_at(stats, path)
         .and_then(Value::as_array)
@@ -418,6 +598,69 @@ pub fn array_at_any<'a>(stats: &'a Value, paths: &[&[&str]]) -> &'a [Value] {
 
 pub fn value_at_any<'a>(stats: &'a Value, paths: &[&[&str]]) -> Option<&'a Value> {
     paths.iter().find_map(|path| value_at(stats, path))
+}
+
+fn deserialize_intish<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(intish_value(&Value::deserialize(deserializer)?))
+}
+
+fn deserialize_option_intish<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    if value.is_null() {
+        Ok(None)
+    } else {
+        Ok(Some(intish_value(&value)))
+    }
+}
+
+fn deserialize_floatish<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(value
+        .as_f64()
+        .or_else(|| value.as_i64().map(|number| number as f64))
+        .or_else(|| value.as_u64().map(|number| number as f64))
+        .or_else(|| {
+            value
+                .as_str()
+                .and_then(|text| text.trim_start_matches('\'').trim().parse::<f64>().ok())
+        })
+        .unwrap_or(0.0))
+}
+
+fn deserialize_vec_intish<'de, D>(deserializer: D) -> Result<Vec<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(value
+        .as_array()
+        .map(|items| items.iter().map(intish_value).collect())
+        .unwrap_or_default())
+}
+
+fn deserialize_map_intish<'de, D>(deserializer: D) -> Result<BTreeMap<String, i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(value
+        .as_object()
+        .map(|object| {
+            object
+                .iter()
+                .map(|(key, value)| (key.clone(), intish_value(value)))
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 pub fn intish_value(value: &Value) -> i64 {
@@ -445,10 +688,6 @@ pub fn value_text(value: &Value) -> String {
     } else {
         String::new()
     }
-}
-
-pub fn sum_array_any(stats: &Value, paths: &[&[&str]]) -> i64 {
-    array_at_any(stats, paths).iter().map(intish_value).sum()
 }
 
 pub fn object_at(stats: &Value, path: &[&str]) -> std::collections::BTreeMap<String, Value> {
@@ -492,23 +731,12 @@ fn player_id_sort_key(key: &str, player: &Value) -> (bool, i64) {
         .unwrap_or((true, 0))
 }
 
-pub fn missed_item_count(stats: &Value) -> usize {
-    array_at(stats, &["MissedItems"])
-        .iter()
-        .filter(|item| {
-            !item
-                .get("CollectedOnPreviousDay")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-        })
-        .count()
-}
-
-pub fn enemy_count(stats: &Value, enemy: &str) -> usize {
-    array_at(stats, &["IndoorSpawns"])
-        .iter()
-        .filter(|spawn| spawn.get("Enemy").and_then(Value::as_str) == Some(enemy))
-        .count()
+fn player_sort_key(key: &str, player: &PlayerStats) -> (bool, i64) {
+    player
+        .player_id
+        .or_else(|| key.trim_start_matches('\'').trim().parse::<i64>().ok())
+        .map(|id| (false, id))
+        .unwrap_or((true, 0))
 }
 
 pub fn strip_moon_number(name: &str) -> String {
@@ -536,18 +764,53 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn strings_can_read_numeric_payload_values() {
+    fn lcstats_keeps_numeric_values_available_as_text() {
         let stats = json!({ "Seed": 30494987, "IndoorFog": false });
+        let lc_stats = lcstats(&stats);
 
-        assert_eq!(string_at(&stats, &["Seed"]), "30494987");
-        assert_eq!(string_at(&stats, &["IndoorFog"]), "false");
+        assert_eq!(lc_stats.seed_text(), "30494987");
+        assert!(!lc_stats.indoor_fog());
     }
 
     #[test]
-    fn ints_can_read_quoted_payload_values() {
+    fn lcstats_reads_quoted_numbers() {
         let stats = json!({ "CollectedTotal": "'225" });
 
-        assert_eq!(int_at(&stats, &["CollectedTotal"]), 225);
+        assert_eq!(lcstats(&stats).collected_total(), 225);
+    }
+
+    #[test]
+    fn lcstats_deserializes_quoted_numbers_without_defaulting_whole_stats() {
+        let stats = json!({
+            "Seed": "'123",
+            "Version": "'70",
+            "MoonInfo": { "Name": "'71 March", "Weather": "Mild" },
+            "DungeonInfo": { "Interior": "'Mineshaft", "ItemCount": "'34" },
+            "HazardInfo": {
+                "TurretCount": "'1",
+                "LandmineCount": "'2",
+                "SpiketrapCount": "'3"
+            },
+            "PerformanceInfo": {
+                "CollectedTotal": "'225",
+                "InitialAvailableValue": "'300",
+                "TotalAvailableValue": "'400"
+            }
+        });
+
+        let lc_stats = lcstats(&stats);
+
+        assert_eq!(lc_stats.seed(), 123);
+        assert_eq!(lc_stats.version(), 70);
+        assert_eq!(lc_stats.moon_name(), "'71 March");
+        assert_eq!(lc_stats.dungeon_interior(), "'Mineshaft");
+        assert_eq!(lc_stats.dungeon_item_count(), 34);
+        assert_eq!(lc_stats.turret_count(), 1);
+        assert_eq!(lc_stats.landmine_count(), 2);
+        assert_eq!(lc_stats.spiketrap_count(), 3);
+        assert_eq!(lc_stats.collected_total(), 225);
+        assert_eq!(lc_stats.initial_available_value(), 300);
+        assert_eq!(lc_stats.total_available_value(), 400);
     }
 
     #[test]
@@ -573,12 +836,15 @@ mod tests {
             "BottomLineTrue": "'40"
         });
 
-        assert_eq!(initial_available_value(&new_stats), 300);
-        assert_eq!(total_available_value(&new_stats), 400);
-        assert_eq!(initial_available_value(&flat_new_stats), 200);
-        assert_eq!(total_available_value(&flat_new_stats), 250);
-        assert_eq!(initial_available_value(&old_stats), 30);
-        assert_eq!(total_available_value(&old_stats), 40);
+        assert_eq!(lcstats(&new_stats).initial_available_value(), 300);
+        assert_eq!(lcstats(&new_stats).total_available_value(), 400);
+        assert_eq!(
+            lcstats(&flat_new_stats).initial_available_value(),
+            200
+        );
+        assert_eq!(lcstats(&flat_new_stats).total_available_value(), 250);
+        assert_eq!(lcstats(&old_stats).initial_available_value(), 30);
+        assert_eq!(lcstats(&old_stats).total_available_value(), 40);
     }
 
     #[test]
@@ -614,17 +880,17 @@ mod tests {
             "MeteorShowerTime": "'old"
         });
 
-        assert_eq!(int_at(&stats, &["CollectedTotal"]), 100);
-        assert_eq!(int_at(&stats, &["CollectedNoExtra"]), 80);
-        assert_eq!(int_at(&stats, &["ExtraFromOldGiftbox"]), 15);
-        assert_eq!(int_at(&stats, &["ValueSold"]), 200);
-        assert_eq!(int_at(&stats, &["NewQuota"]), 900);
-        assert!(bool_at(&stats, &["AppSpawned"]));
-        assert!(bool_at(&stats, &["IndoorFog"]));
-        assert_eq!(string_at(&stats, &["TakeOffTime"]), "'11:00 PM");
-        assert_eq!(string_at(&stats, &["SIDType"]), "'Mineshaft");
-        assert_eq!(string_at(&stats, &["InfestationType"]), "'Spiders");
-        assert_eq!(string_at(&stats, &["MeteorShowerTime"]), "'8:30 PM");
+        let lc_stats = lcstats(&stats);
+        assert_eq!(lc_stats.collected_total(), 100);
+        assert_eq!(lc_stats.collected_no_extra(), 80);
+        assert_eq!(lc_stats.value_sold(), 200);
+        assert_eq!(lc_stats.new_quota(), 900);
+        assert!(lc_stats.app_spawned());
+        assert!(lc_stats.indoor_fog());
+        assert_eq!(lc_stats.take_off_time(), "'11:00 PM");
+        assert_eq!(lc_stats.sid_type(), "'Mineshaft");
+        assert_eq!(lc_stats.infestation_type(), "'Spiders");
+        assert_eq!(lc_stats.meteor_shower_time(), "'8:30 PM");
     }
 
     #[test]
@@ -637,15 +903,10 @@ mod tests {
             }
         });
 
-        let names = players_at(&stats)
+        let names = lcstats(&stats)
+            .players_sorted()
             .into_iter()
-            .map(|(_, player)| {
-                player
-                    .get("Name")
-                    .and_then(Value::as_str)
-                    .unwrap()
-                    .to_string()
-            })
+            .map(|player| player.stats.name)
             .collect::<Vec<_>>();
 
         assert_eq!(names, vec!["A", "B", "C"]);
@@ -661,15 +922,10 @@ mod tests {
             }
         });
 
-        let names = players_at(&stats)
+        let names = lcstats(&stats)
+            .players_sorted()
             .into_iter()
-            .map(|(_, player)| {
-                player
-                    .get("Name")
-                    .and_then(Value::as_str)
-                    .unwrap()
-                    .to_string()
-            })
+            .map(|player| player.stats.name)
             .collect::<Vec<_>>();
 
         assert_eq!(names, vec!["A", "B", "C"]);

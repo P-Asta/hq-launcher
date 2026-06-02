@@ -1178,7 +1178,7 @@ function ScrollableDropdownContent({
   );
 }
 
-function ModCover({ src, initials }) {
+function ModCover({ src, initials, onMissing }) {
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
@@ -1193,7 +1193,13 @@ function ModCover({ src, initials }) {
           alt=""
           className="h-full w-full object-contain"
           loading="lazy"
-          onError={() => setFailed(true)}
+          onError={() => {
+            console.warn("Failed to load mod icon:", src);
+            if (typeof onMissing === "function") {
+              onMissing(src);
+            }
+            setFailed(true);
+          }}
         />
       </div>
     );
@@ -1824,6 +1830,23 @@ export default function LauncherPage({
     }
     return out;
   }, [installedModIcons]);
+
+  const forgetInstalledModIcon = useCallback(
+    (keyLower) => {
+      const version = Number(selectedVersion);
+      if (!Number.isFinite(version) || !keyLower) return;
+      setInstalledModIconsByVersion((prev) => {
+        const current = prev?.[version];
+        if (!current || typeof current !== "object" || !(keyLower in current)) {
+          return prev;
+        }
+        const nextForVersion = { ...current };
+        delete nextForVersion[keyLower];
+        return { ...prev, [version]: nextForVersion };
+      });
+    },
+    [selectedVersion]
+  );
 
   const installedModDescriptions = useMemo(() => {
     const v = Number(selectedVersion);
@@ -4730,6 +4753,7 @@ export default function LauncherPage({
     const toggledKeys = modsToToggle.map(
       (m) => `${String(m.dev).toLowerCase()}::${String(m.name).toLowerCase()}`
     );
+    for (const k of toggledKeys) forgetInstalledModIcon(k);
     for (const k of toggledKeys) markModBusy(k, true);
 
     const selectedKey =
@@ -6091,7 +6115,11 @@ export default function LauncherPage({
                         }
                       }}
                     >
-                      <ModCover src={coverSrc} initials={initials} />
+                      <ModCover
+                        src={coverSrc}
+                        initials={initials}
+                        onMissing={() => forgetInstalledModIcon(keyLower)}
+                      />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-baseline gap-2">
                           <div className="truncate text-base font-semibold">
@@ -6331,6 +6359,7 @@ export default function LauncherPage({
                                     initials={`${mod.dev?.[0] ?? "M"}${
                                       mod.name?.[0] ?? "M"
                                     }`.toUpperCase()}
+                                    onMissing={() => forgetInstalledModIcon(keyLower)}
                                   />
                                   <div className="min-w-0 flex-1">
                                     <div className="flex items-baseline gap-2">
