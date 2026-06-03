@@ -4,19 +4,18 @@ mod stats;
 
 use futures_util::StreamExt;
 use serde_json::Value;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const LCSTATS_SSE_URL: &str = "http://localhost:2145/";
 const LCSTATS_RETRY_DELAY: Duration = Duration::from_secs(3);
-const LCSTATS_PAYLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const LCSTATS_WRITE_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Clone, Default)]
 pub struct LcStatsAutosheetState {
     running: Arc<AtomicBool>,
-    generation: Arc<AtomicU64>,
+    listener_running: Arc<AtomicBool>,
     pending_stats: Arc<Mutex<Vec<PendingStatsEntry>>>,
 }
 
@@ -41,25 +40,26 @@ pub fn start_for_launch(
             return;
         }
     }
-    if state
-        .running
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
+    let settings = match crate::google_oauth::get_settings(app.clone()) {
+        Ok(settings) => settings,
+        Err(e) => {
+            log::error!("LCStatsTracker AutoSheet listener skipped: failed to read settings: {e}");
+            return;
+        }
+    };
+    if settings.spreadsheet_id.trim().is_empty() || settings.active_sheet_name.trim().is_empty() {
+        log::info!("LCStatsTracker AutoSheet listener skipped: spreadsheet or sheet is not set");
         return;
     }
-
-    let generation = state.generation.fetch_add(1, Ordering::AcqRel) + 1;
-    let state = state.inner().clone();
-    tauri::async_runtime::spawn(async move {
-        let result = run_listener(app, state.clone(), generation).await;
-        if let Err(e) = result {
-            log::error!("LCStatsTracker AutoSheet listener stopped: {e}");
-        }
-        if state.generation.load(Ordering::Acquire) == generation {
-            state.running.store(false, Ordering::Release);
-        }
-    });
+    if !layouts::is_supported_layout(&settings.layout) {
+        log::info!(
+            "LCStatsTracker AutoSheet listener skipped: layout {} has no writer yet",
+            settings.layout
+        );
+        return;
+    }
+    state.running.store(true, Ordering::Release);
+    ensure_listener(app, state);
 }
 
 pub fn start_manual(
@@ -82,7 +82,6 @@ pub fn start_manual(
 }
 
 pub fn stop(state: &tauri::State<'_, LcStatsAutosheetState>) {
-    state.generation.fetch_add(1, Ordering::AcqRel);
     state.running.store(false, Ordering::Release);
 }
 
@@ -98,109 +97,105 @@ struct PendingStatsEntry {
     stats: Value,
 }
 
-async fn run_listener(
-    app: tauri::AppHandle,
-    state: LcStatsAutosheetState,
-    generation: u64,
-) -> Result<(), String> {
-    if !crate::google_oauth::auth_status(app.clone())?.authenticated {
-        log::info!("LCStatsTracker AutoSheet listener skipped: Google login is not connected");
-        return Ok(());
-    }
-    let settings = crate::google_oauth::get_settings(app.clone())?;
-    if settings.spreadsheet_id.trim().is_empty() || settings.active_sheet_name.trim().is_empty() {
-        log::info!("LCStatsTracker AutoSheet listener skipped: spreadsheet or sheet is not set");
-        return Ok(());
-    }
-    if !layouts::is_supported_layout(&settings.layout) {
-        log::info!(
-            "LCStatsTracker AutoSheet listener skipped: layout {} has no writer yet",
-            settings.layout
-        );
-        return Ok(());
+fn ensure_listener(app: tauri::AppHandle, state: &tauri::State<'_, LcStatsAutosheetState>) {
+    if state
+        .listener_running
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
     }
 
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn(async move {
+        let result = run_listener(app, state.clone()).await;
+        if let Err(e) = result {
+            log::error!("LCStatsTracker AutoSheet listener stopped: {e}");
+        }
+        state.listener_running.store(false, Ordering::Release);
+    });
+}
+
+async fn run_listener(app: tauri::AppHandle, state: LcStatsAutosheetState) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(2))
         .build()
         .map_err(|e| e.to_string())?;
 
-    while state.running.load(Ordering::Acquire)
-        && state.generation.load(Ordering::Acquire) == generation
-    {
-        match tokio::time::timeout(LCSTATS_PAYLOAD_TIMEOUT, receive_lcstats_payload(&client)).await
-        {
-            Ok(Ok(payload)) => {
-                let payload = payload.trim().to_string();
-                if payload.is_empty() {
-                    continue;
-                }
-                let stats: Value = match serde_json::from_str(&payload) {
-                    Ok(stats) => stats,
-                    Err(e) => {
-                        log::error!(
-                            "LCStatsTracker AutoSheet payload ignored: failed to parse payload: {e}"
-                        );
-                        continue;
-                    }
-                };
-                let settings = match crate::google_oauth::get_settings(app.clone()) {
-                    Ok(settings) => settings,
-                    Err(e) => {
-                        log::error!(
-                            "LCStatsTracker AutoSheet payload ignored: failed to read settings: {e}"
-                        );
-                        tokio::time::sleep(LCSTATS_RETRY_DELAY).await;
-                        continue;
-                    }
-                };
-                if settings.spreadsheet_id.trim().is_empty()
-                    || settings.active_sheet_name.trim().is_empty()
-                    || !layouts::is_supported_layout(&settings.layout)
-                {
-                    log::error!(
-                        "LCStatsTracker AutoSheet payload ignored: invalid settings for layout {}",
-                        settings.layout
-                    );
-                    continue;
-                }
+    loop {
+        if !state.running.load(Ordering::Acquire) {
+            tokio::time::sleep(LCSTATS_RETRY_DELAY).await;
+            continue;
+        }
 
-                if let Err(e) = flush_pending_stats(app.clone(), &client, &state).await {
-                    log::debug!("Failed to flush pending LCStatsTracker AutoSheet writes: {e}");
-                }
-
-                match write_stats_with_timeout(app.clone(), &client, &settings, &stats).await {
-                    Ok(()) => {}
-                    Err(e) => {
-                        log::warn!(
-                            "Failed to write LCStatsTracker stats to Google Sheets; queued for retry: {e}"
-                        );
-                        if let Err(queue_error) =
-                            enqueue_pending_stats(&state, settings, stats, e.clone())
-                        {
-                            log::error!(
-                                "Failed to keep LCStatsTracker stats in memory for later retry: {queue_error}"
-                            );
-                        } else {
-                            log::info!(
-                                "Kept LCStatsTracker stats in memory fallback queue for retry"
-                            );
-                        }
-                    }
-                }
-            }
-            Ok(Err(e)) => {
+        let payload = match receive_lcstats_payload(&client).await {
+            Ok(payload) => payload.trim().to_string(),
+            Err(e) => {
                 log::debug!("LCStatsTracker SSE not ready: {e}");
                 tokio::time::sleep(LCSTATS_RETRY_DELAY).await;
+                continue;
             }
-            Err(_) => {
-                log::debug!("LCStatsTracker SSE timed out waiting for data; reconnecting");
+        };
+        if payload.is_empty() {
+            log::warn!("LCStatsTracker AutoSheet payload ignored: empty payload from local server");
+            continue;
+        }
+        if !state.running.load(Ordering::Acquire) {
+            log::debug!("LCStatsTracker AutoSheet payload ignored: tracking is stopped");
+            continue;
+        }
+
+        let stats: Value = match serde_json::from_str(&payload) {
+            Ok(stats) => stats,
+            Err(e) => {
+                log::error!(
+                    "LCStatsTracker AutoSheet payload ignored: failed to parse payload: {e}"
+                );
+                continue;
+            }
+        };
+        let settings = match crate::google_oauth::get_settings(app.clone()) {
+            Ok(settings) => settings,
+            Err(e) => {
+                log::error!(
+                    "LCStatsTracker AutoSheet payload ignored: failed to read settings: {e}"
+                );
                 tokio::time::sleep(LCSTATS_RETRY_DELAY).await;
+                continue;
+            }
+        };
+        if settings.spreadsheet_id.trim().is_empty()
+            || settings.active_sheet_name.trim().is_empty()
+            || !layouts::is_supported_layout(&settings.layout)
+        {
+            log::error!(
+                "LCStatsTracker AutoSheet payload ignored: invalid settings for layout {}",
+                settings.layout
+            );
+            continue;
+        }
+
+        if let Err(e) = flush_pending_stats(app.clone(), &client, &state).await {
+            log::debug!("Failed to flush pending LCStatsTracker AutoSheet writes: {e}");
+        }
+
+        match write_stats_with_timeout(app.clone(), &client, &settings, &stats).await {
+            Ok(()) => {}
+            Err(e) => {
+                log::warn!(
+                    "Failed to write LCStatsTracker stats to Google Sheets; queued for retry: {e}"
+                );
+                if let Err(queue_error) = enqueue_pending_stats(&state, settings, stats, e.clone())
+                {
+                    log::error!(
+                        "Failed to keep LCStatsTracker stats in memory for later retry: {queue_error}"
+                    );
+                } else {
+                    log::info!("Kept LCStatsTracker stats in memory fallback queue for retry");
+                }
             }
         }
     }
-
-    Ok(())
 }
 
 async fn write_stats_with_timeout(
