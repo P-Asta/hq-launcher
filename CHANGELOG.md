@@ -1,6 +1,16 @@
 # Version (YYYY-MM-DD)
 - Content
 
+
+# 1.11.5 (2026-06-06)
+- A button will appear to display the error message if an error occurs.
+- The autosheet code has been optimized.
+- The issue where data was not being entered into the sheet due to a disconnection in LCStatsTracker has been resolved.
+- The issue where the autosheet would malfunction after running the game multiple times has (probably) been resolved.
+- The issue where the mod list kept reloading has been resolved.
+- The issue where the launcher would occasionally freeze has been resolved.
+- An option to change the time format in the Custom Sheet has been added.
+
 # 1.11.4 (2026-06-01)
 - Added But/Nut note in **Custom Layout**
 - you can click hqlc logo in header :P
