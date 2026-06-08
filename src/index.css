@@ -8,6 +8,7 @@
 :root {
   --theme-hue: 160;
   --theme-brightness: 0;
+  --theme-mode: dark;
   --theme-accent: hsl(var(--theme-hue) 82% 62%);
   --theme-accent-strong: hsl(var(--theme-hue) 84% 56%);
   --theme-accent-muted: hsl(var(--theme-hue) 44% 18% / 0.38);
@@ -16,6 +17,7 @@
   --theme-panel: hsl(var(--theme-hue) 13% 8.5%);
   --theme-elevated: hsl(var(--theme-hue) 12% 10%);
   --theme-border: hsl(var(--theme-hue) 10% 17%);
+  --theme-overlay: var(--theme-surface);
   --color-panel-outline: var(--theme-border);
 }
 
@@ -29,6 +31,128 @@ body,
 body {
   margin: 0;
   background: var(--theme-bg);
+}
+
+.theme-light body {
+  color: rgb(15 23 42);
+}
+
+.theme-light [class~="text-white"] {
+  color: rgb(15 23 42);
+}
+
+.theme-light [class~="text-white/90"] {
+  color: rgb(15 23 42 / 0.9);
+}
+
+.theme-light [class~="text-white/85"] {
+  color: rgb(15 23 42 / 0.85);
+}
+
+.theme-light [class~="text-white/80"] {
+  color: rgb(15 23 42 / 0.8);
+}
+
+.theme-light [class~="text-white/75"] {
+  color: rgb(15 23 42 / 0.75);
+}
+
+.theme-light [class~="text-white/70"] {
+  color: rgb(15 23 42 / 0.7);
+}
+
+.theme-light [class~="text-white/65"] {
+  color: rgb(15 23 42 / 0.65);
+}
+
+.theme-light [class~="text-white/60"] {
+  color: rgb(15 23 42 / 0.6);
+}
+
+.theme-light [class~="text-white/55"] {
+  color: rgb(15 23 42 / 0.55);
+}
+
+.theme-light [class~="text-white/50"] {
+  color: rgb(15 23 42 / 0.5);
+}
+
+.theme-light [class~="text-white/45"] {
+  color: rgb(15 23 42 / 0.45);
+}
+
+.theme-light [class~="text-white/40"] {
+  color: rgb(15 23 42 / 0.4);
+}
+
+.theme-light [class~="text-white/38"] {
+  color: rgb(15 23 42 / 0.38);
+}
+
+.theme-light [class~="text-white/35"] {
+  color: rgb(15 23 42 / 0.35);
+}
+
+.theme-light [class~="text-white/30"] {
+  color: rgb(15 23 42 / 0.3);
+}
+
+.theme-light [class~="text-white/25"] {
+  color: rgb(15 23 42 / 0.25);
+}
+
+.theme-light [class~="bg-white/5"],
+.theme-light [class~="bg-white/[0.03]"],
+.theme-light [class~="bg-white/[0.04]"],
+.theme-light [class~="bg-white/[0.06]"],
+.theme-light [class~="bg-white/[0.08]"],
+.theme-light [class~="bg-white/10"] {
+  background-color: color-mix(in srgb, var(--theme-accent) 7%, transparent);
+}
+
+.theme-light [class~="bg-white/20"] {
+  background-color: color-mix(in srgb, var(--theme-accent) 10%, transparent);
+}
+
+.theme-light [class~="bg-white/35"] {
+  background-color: color-mix(in srgb, var(--theme-accent) 15%, transparent);
+}
+
+.theme-light [class~="bg-black/10"] {
+  background-color: color-mix(in srgb, var(--theme-accent) 5%, white 70%);
+}
+
+.theme-light [class~="bg-black/20"] {
+  background-color: color-mix(in srgb, var(--theme-accent) 7%, white 76%);
+}
+
+.theme-light [class~="hover:bg-white/5"]:hover,
+.theme-light [class~="hover:bg-white/10"]:hover,
+.theme-light [class~="hover:bg-white/[0.07]"]:hover {
+  background-color: color-mix(in srgb, var(--theme-accent) 11%, transparent);
+}
+
+.theme-light [class~="focus:bg-white/[0.07]"]:focus {
+  background-color: color-mix(in srgb, var(--theme-accent) 11%, transparent);
+}
+
+.theme-light [class~="data-[state=open]:bg-white/[0.08]"][data-state="open"] {
+  background-color: color-mix(in srgb, var(--theme-accent) 14%, transparent);
+}
+
+.theme-light [class~="border-white/10"],
+.theme-light [class~="border-white/15"] {
+  border-color: rgb(15 23 42 / 0.12);
+}
+
+.theme-light [class~="shadow-black/40"],
+.theme-light [class~="shadow-black/45"],
+.theme-light [class~="shadow-black/50"] {
+  --tw-shadow-color: rgb(15 23 42 / 0.16);
+}
+
+.theme-light [class~="data-[state=checked]:bg-black"][data-state="checked"] {
+  background-color: rgb(255 255 255);
 }
 
 ::-webkit-scrollbar {

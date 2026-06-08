@@ -536,11 +536,7 @@ fn write_manifest_state(app: &tauri::AppHandle, state: &ManifestState) -> Result
 fn latest_installed_version_dir(
     app: &tauri::AppHandle,
 ) -> Result<Option<(u32, std::path::PathBuf)>, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("versions");
+    let dir = crate::storage::versions_dir(app)?;
 
     let Ok(rd) = std::fs::read_dir(&dir) else {
         return Ok(None);
@@ -576,11 +572,7 @@ fn latest_installed_version_dir(
 fn installed_version_dirs(
     app: &tauri::AppHandle,
 ) -> Result<Vec<(u32, std::path::PathBuf)>, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("versions");
+    let dir = crate::storage::versions_dir(app)?;
 
     let Ok(rd) = std::fs::read_dir(&dir) else {
         return Ok(vec![]);
@@ -1269,12 +1261,7 @@ pub struct VersionConfigLinkState {
 }
 
 fn version_root_dir(app: &tauri::AppHandle, version: u32) -> Result<PathBuf, String> {
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("versions")
-        .join(format!("v{version}")))
+    Ok(crate::storage::versions_dir(app)?.join(format!("v{version}")))
 }
 
 pub fn get_config_link_state_for_version(
@@ -1766,12 +1753,7 @@ pub async fn check_manifest_update_for_version(
     app: &tauri::AppHandle,
     game_version: u32,
 ) -> Result<ManifestUpdateCheck, String> {
-    let game_root = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("versions")
-        .join(format!("v{game_version}"));
+    let game_root = crate::storage::versions_dir(app)?.join(format!("v{game_version}"));
 
     if !game_root.exists() {
         return Ok(ManifestUpdateCheck {
@@ -1821,11 +1803,7 @@ pub async fn download_and_setup(
     version: u32,
     cancel: Arc<AtomicBool>,
 ) -> Result<bool, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("versions");
+    let dir = crate::storage::versions_dir(&app)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let final_dir = dir.join(format!("v{version}"));
     let partial_dir = dir.join(format!(".v{version}.partial"));

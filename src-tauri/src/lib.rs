@@ -9,6 +9,7 @@ mod mod_config;
 mod mods;
 mod progress;
 mod release_channel;
+mod storage;
 mod thunderstore;
 mod variable;
 mod zip_utils;
@@ -20,7 +21,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 #[cfg(target_os = "windows")]
 use std::ffi::CString;
@@ -990,12 +991,7 @@ fn is_safe_rel_path(rel: &std::path::Path) -> bool {
 }
 
 fn version_dir(app: &tauri::AppHandle, version: u32) -> Result<std::path::PathBuf, String> {
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("versions")
-        .join(format!("v{version}")))
+    Ok(storage::versions_dir(app)?.join(format!("v{version}")))
 }
 
 fn version_config_dir(app: &tauri::AppHandle, version: u32) -> Result<std::path::PathBuf, String> {
@@ -2188,11 +2184,14 @@ fn mod_dir_for(plugins_dir: &std::path::Path, dev: &str, name: &str) -> Option<s
     None
 }
 
-fn find_mod_icon_path(mod_dir: &std::path::Path) -> Option<String> {
+fn find_mod_icon_src(mod_dir: &std::path::Path) -> Option<String> {
     for file_name in ["icon.png", "icon.png.old"] {
         let path = mod_dir.join(file_name);
         if path.is_file() {
-            return Some(path.to_string_lossy().to_string());
+            let bytes = std::fs::read(path).ok()?;
+            use base64::Engine as _;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+            return Some(format!("data:image/png;base64,{encoded}"));
         }
     }
     None
@@ -3155,12 +3154,7 @@ async fn sync_latest_install_from_manifest(
     version: Option<u32>,
 ) -> Result<bool, String> {
     if let Some(version) = version {
-        let game_root = app
-            .path()
-            .app_data_dir()
-            .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-            .join("versions")
-            .join(format!("v{version}"));
+        let game_root = version_dir(&app, version)?;
         installer::sync_install_from_manifest_for_version(&app, version, game_root).await?;
     } else {
         installer::sync_latest_install_from_manifest(app).await?;
@@ -3182,14 +3176,170 @@ async fn check_latest_install_manifest_update(
 
 #[tauri::command]
 async fn open_version_folder(app: tauri::AppHandle) -> Result<bool, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("versions");
+    let dir = storage::versions_dir(&app)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create versions dir: {e}"))?;
     open_folder_path(&dir)?;
     Ok(true)
+}
+
+#[tauri::command]
+fn get_game_storage_settings(
+    app: tauri::AppHandle,
+) -> Result<storage::GameStorageSettings, String> {
+    storage::game_storage_settings(&app)
+}
+
+fn same_storage_path(a: &std::path::Path, b: &std::path::Path) -> bool {
+    if let (Ok(a), Ok(b)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        return a == b;
+    }
+    a == b
+}
+
+fn ensure_storage_can_move(
+    app: &tauri::AppHandle,
+    game_state: &State<'_, GameState>,
+    download_state: &State<'_, DownloadState>,
+    prepare_state: &State<'_, PrepareState>,
+) -> Result<(), String> {
+    {
+        let mut guard = game_state
+            .active
+            .lock()
+            .map_err(|_| "game state lock poisoned".to_string())?;
+        for active in guard.iter_mut() {
+            if active
+                .child
+                .try_wait()
+                .map_err(|e| e.to_string())?
+                .is_none()
+                || linux_lingering_game_pid(app, active.version).is_some()
+            {
+                return Err("Cannot change game storage while the game is running.".to_string());
+            }
+        }
+        guard.clear();
+    }
+
+    {
+        let guard = download_state
+            .active
+            .lock()
+            .map_err(|_| "download state lock poisoned".to_string())?;
+        if guard
+            .as_ref()
+            .is_some_and(|active| !active.cancel.load(Ordering::Relaxed))
+        {
+            return Err("Cannot change game storage while a download is running.".to_string());
+        }
+    }
+
+    {
+        let guard = prepare_state
+            .active
+            .lock()
+            .map_err(|_| "prepare state lock poisoned".to_string())?;
+        if guard
+            .as_ref()
+            .is_some_and(|active| !active.cancel.load(Ordering::Relaxed))
+        {
+            return Err("Cannot change game storage while a preset is being prepared.".to_string());
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn pick_game_storage_dir(initial_path: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new();
+    if let Some(path) = initial_path
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        let candidate = std::path::PathBuf::from(&path);
+        if candidate.exists() {
+            dialog = dialog.set_directory(candidate);
+        }
+    }
+
+    Ok(dialog
+        .pick_folder()
+        .map(|path| path.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+fn set_game_storage_dir(
+    app: tauri::AppHandle,
+    custom_dir: Option<String>,
+    game_state: State<'_, GameState>,
+    download_state: State<'_, DownloadState>,
+    prepare_state: State<'_, PrepareState>,
+) -> Result<storage::GameStorageSettings, String> {
+    ensure_storage_can_move(&app, &game_state, &download_state, &prepare_state)?;
+
+    let normalized_custom = custom_dir
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from);
+    let linked_versions: Vec<u32> = list_installed_versions(app.clone())?
+        .into_iter()
+        .filter(|version| {
+            installer::get_config_link_state_for_version(&app, *version)
+                .map(|state| state.is_linked)
+                .unwrap_or(false)
+        })
+        .collect();
+    let old_versions_dir = storage::versions_dir(&app)?;
+    let new_versions_dir = storage::versions_dir_for_custom(&app, normalized_custom.clone())?;
+
+    if !same_storage_path(&old_versions_dir, &new_versions_dir) {
+        storage::move_versions_dir(&old_versions_dir, &new_versions_dir, |done, total, detail| {
+            let total = total.max(1);
+            let step_progress = (done as f64 / total as f64).clamp(0.0, 1.0);
+            progress::emit_progress(
+                &app,
+                TaskProgressPayload {
+                    version: 0,
+                    steps_total: 1,
+                    step: 1,
+                    step_name: "Move Storage".to_string(),
+                    step_progress,
+                    overall_percent: step_progress * 100.0,
+                    detail,
+                    downloaded_bytes: None,
+                    total_bytes: None,
+                    extracted_files: Some(done),
+                    total_files: Some(total),
+                },
+            );
+        })?;
+    } else {
+        std::fs::create_dir_all(&new_versions_dir).map_err(|e| e.to_string())?;
+        progress::emit_progress(
+            &app,
+            TaskProgressPayload {
+                version: 0,
+                steps_total: 1,
+                step: 1,
+                step_name: "Move Storage".to_string(),
+                step_progress: 1.0,
+                overall_percent: 100.0,
+                detail: Some("Storage folder is ready".to_string()),
+                downloaded_bytes: None,
+                total_bytes: None,
+                extracted_files: Some(1),
+                total_files: Some(1),
+            },
+        );
+    }
+
+    let settings = storage::set_game_storage_dir(&app, normalized_custom)?;
+    for version in linked_versions {
+        installer::link_config_for_version(&app, version)?;
+    }
+    let _ = app.emit("game-storage://changed", &settings);
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -3509,12 +3659,7 @@ async fn check_mod_updates(
     let client = reqwest::Client::new();
     let run_mode_name = run_mode.as_deref().unwrap_or("hq");
 
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("versions");
-    let extract_dir = dir.join(format!("v{version}"));
+    let extract_dir = version_dir(&app, version)?;
     let mods_cfg =
         effective_mods_config_for_run_mode(&client, version, run_mode_name, false, true).await?;
     let (preset, _practice) = preset_and_practice_for_run_mode(run_mode_name);
@@ -3598,12 +3743,7 @@ async fn apply_mod_updates(
     let res: Result<(), String> = async {
         let client = reqwest::Client::new();
 
-        let dir = app
-            .path()
-            .app_data_dir()
-            .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-            .join("versions");
-        let game_root = dir.join(format!("v{version}"));
+        let game_root = version_dir(&app, version)?;
         if !game_root.exists() {
             return Err(format!(
                 "version folder not found: {}",
@@ -5291,7 +5431,7 @@ async fn list_installed_mod_versions(
                     dev: dev.to_string(),
                     name: name.to_string(),
                     version: m.version_number,
-                    icon_path: find_mod_icon_path(&path),
+                    icon_path: find_mod_icon_src(&path),
                     description: if m.description.trim().is_empty() {
                         None
                     } else {
@@ -5335,11 +5475,7 @@ fn get_practice_mod_list() -> Vec<mod_config::ModEntry> {
 
 #[tauri::command]
 fn list_installed_versions(app: tauri::AppHandle) -> Result<Vec<u32>, String> {
-    let base = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
-        .join("versions");
+    let base = storage::versions_dir(&app)?;
 
     let mut out: Vec<u32> = vec![];
     let Ok(rd) = std::fs::read_dir(&base) else {
@@ -6092,6 +6228,9 @@ pub fn run() {
             get_app_version,
             get_release_channel,
             set_release_channel,
+            get_game_storage_settings,
+            pick_game_storage_dir,
+            set_game_storage_dir,
             installer::install_proton_ge,
             installer::get_current_proton_dir,
             delete_installed_version,

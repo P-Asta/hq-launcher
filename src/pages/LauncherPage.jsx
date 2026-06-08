@@ -1848,7 +1848,7 @@ export default function LauncherPage({
     const out = {};
     for (const [key, path] of Object.entries(installedModIcons)) {
       if (typeof path === "string" && path) {
-        out[key] = convertFileSrc(path);
+        out[key] = path.startsWith("data:") ? path : convertFileSrc(path);
       }
     }
     return out;
@@ -2286,7 +2286,7 @@ export default function LauncherPage({
         : task.status === "done"
         ? "Done"
         : "Working";
-    const v = task.version != null ? ` v${task.version}` : "";
+    const v = task.version != null && Number(task.version) > 0 ? ` v${task.version}` : "";
     const step =
       task.steps_total && task.step
         ? ` • Step ${task.step}/${task.steps_total}`
@@ -2646,6 +2646,7 @@ export default function LauncherPage({
     let unlistenProgress = null;
     let unlistenFinished = null;
     let unlistenError = null;
+    let unlistenStorageChanged = null;
 
     (async () => {
       unlistenProgress = await listen("download://progress", (event) => {
@@ -2658,6 +2659,7 @@ export default function LauncherPage({
         const isEnableModStep = stepName === "Enable Mod";
         const isModFilesStep = stepName === "Mod Files";
         const isDeleteStep = stepName === "Delete Version";
+        const isStorageMoveStep = stepName === "Move Storage";
         const isManifestSyncStep =
           stepName === "Sync Mods" || stepName === "Sync Game";
         const isSetupStep =
@@ -2665,7 +2667,8 @@ export default function LauncherPage({
           stepName === "Practice Mods" ||
           stepName === "Preset Mods" ||
           isModFilesStep ||
-          isDeleteStep;
+          isDeleteStep ||
+          isStorageMoveStep;
         const didFinish =
           (Number.isFinite(totalFiles) &&
             totalFiles > 0 &&
@@ -2753,6 +2756,15 @@ export default function LauncherPage({
             error: null,
           }));
         }
+        if (isStorageMoveStep) {
+          setUpdatePrompt({ open: true });
+          setTask((t) => ({
+            ...t,
+            status: didFinish ? "done" : "working",
+            ...p,
+            error: null,
+          }));
+        }
         // IMPORTANT: Keep preset/practice setup progress OUT of the download prompt state.
         // Otherwise the "Download version" modal can get stuck showing setup progress.
         if (!isSetupStep) {
@@ -2815,12 +2827,18 @@ export default function LauncherPage({
           error: event.payload?.message ?? "Unknown error",
         }));
       });
+      unlistenStorageChanged = await listen("game-storage://changed", () => {
+        invoke("list_installed_versions")
+          .then((v) => updateInstalledVersionsState(v))
+          .catch(() => {});
+      });
     })();
 
     return () => {
       if (typeof unlistenProgress === "function") unlistenProgress();
       if (typeof unlistenFinished === "function") unlistenFinished();
       if (typeof unlistenError === "function") unlistenError();
+      if (typeof unlistenStorageChanged === "function") unlistenStorageChanged();
     };
   }, []);
 
@@ -5132,6 +5150,7 @@ export default function LauncherPage({
   const updateIsWorking = updatePrompt.open && task.status === "working";
   const updateIsDone = updatePrompt.open && task.status === "done";
   const updateIsError = updatePrompt.open && task.status === "error";
+  const updateIsStorageMove = updatePrompt.open && task.step_name === "Move Storage";
 
   const RUN_OPTIONS = useMemo(
     () => [
@@ -6129,8 +6148,8 @@ export default function LauncherPage({
                       className={cn(
                         "group flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition",
                         selected
-                          ? "border-panel-outline bg-white/[0.08]"
-                          : "border-panel-outline bg-black/20 hover:bg-white/[0.07]",
+                          ? "border-[color-mix(in_srgb,var(--theme-accent)_42%,var(--theme-border))] bg-[color-mix(in_srgb,var(--theme-accent)_15%,var(--theme-elevated))]"
+                          : "border-panel-outline bg-[var(--theme-elevated)] hover:border-[color-mix(in_srgb,var(--theme-accent)_28%,var(--theme-border))] hover:bg-[color-mix(in_srgb,var(--theme-accent)_11%,var(--theme-elevated))]",
                         !presetSummary && !installedVer && "opacity-40"
                       )}
                       onClick={() => setSelectedMod(m)}
@@ -7346,7 +7365,13 @@ export default function LauncherPage({
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-lg font-semibold">
-                  {manifestUpdateInfo && !updateIsWorking && !updateIsDone && !updateIsError
+                  {updateIsStorageMove && updateIsDone
+                    ? "Game storage moved"
+                    : updateIsStorageMove && updateIsError
+                    ? "Move failed"
+                    : updateIsStorageMove
+                    ? "Moving game storage..."
+                    : manifestUpdateInfo && !updateIsWorking && !updateIsDone && !updateIsError
                     ? "Update available"
                     : updateIsDone
                     ? "Update complete"
@@ -7355,7 +7380,9 @@ export default function LauncherPage({
                     : "Updating..."}
                 </div>
                 <div className="mt-1 text-sm text-white/55">
-                  {manifestUpdateInfo && !updateIsWorking && !updateIsDone && !updateIsError
+                  {updateIsStorageMove
+                    ? "Installed game versions are being moved to the selected storage folder."
+                    : manifestUpdateInfo && !updateIsWorking && !updateIsDone && !updateIsError
                     ? `v${manifestUpdateInfo.version ?? selectedVersion} version's allowed manifest has changed.`
                     : "Based on the remote manifest, installed game and mod files are being synced to the desired state."}
                 </div>

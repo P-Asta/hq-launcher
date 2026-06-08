@@ -1,6 +1,6 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useEffect, useMemo, useState } from 'react';
-import { Beaker, Minus, Paintbrush, RotateCcw, Settings, Square, X } from 'lucide-react';
+import { Beaker, FolderOpen, HardDrive, Minus, Moon, Paintbrush, RotateCcw, Settings, Square, Sun, X } from 'lucide-react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { cn } from './lib/cn';
 import { invoke } from '@tauri-apps/api/core';
@@ -12,12 +12,16 @@ import { Switch } from './components/ui/switch';
 import {
     DEFAULT_THEME_HUE,
     DEFAULT_THEME_BRIGHTNESS,
+    DEFAULT_THEME_MODE,
     loadStoredThemeBrightness,
     loadStoredThemeHue,
+    loadStoredThemeMode,
     normalizeThemeBrightness,
     normalizeThemeHue,
+    normalizeThemeMode,
     persistAndBroadcastThemeBrightness,
     persistAndBroadcastThemeHue,
+    persistAndBroadcastThemeMode,
 } from './lib/theme';
 
 const SHOW_THEME_SETTINGS = true;
@@ -33,8 +37,12 @@ export default function Titlebar({ installedVersions, ...props }) {
     const [releaseChannel, setReleaseChannel] = useState(null);
     const [releaseChannelBusy, setReleaseChannelBusy] = useState(false);
     const [releaseChannelError, setReleaseChannelError] = useState("");
+    const [gameStorage, setGameStorage] = useState(null);
+    const [gameStorageBusy, setGameStorageBusy] = useState(false);
+    const [gameStorageError, setGameStorageError] = useState("");
     const [themeHue, setThemeHue] = useState(() => loadStoredThemeHue());
     const [themeBrightness, setThemeBrightness] = useState(() => loadStoredThemeBrightness());
+    const [themeMode, setThemeMode] = useState(() => loadStoredThemeMode());
     const [selectedVersion, setSelectedVersion] = useState(null);
     const normalizedThemeHue = useMemo(
         () => normalizeThemeHue(themeHue),
@@ -43,6 +51,10 @@ export default function Titlebar({ installedVersions, ...props }) {
     const normalizedThemeBrightness = useMemo(
         () => normalizeThemeBrightness(themeBrightness),
         [themeBrightness]
+    );
+    const normalizedThemeMode = useMemo(
+        () => normalizeThemeMode(themeMode),
+        [themeMode]
     );
     
     const appWindow = getCurrentWindow();
@@ -86,7 +98,19 @@ export default function Titlebar({ installedVersions, ...props }) {
 
     useEffect(() => {
         refreshReleaseChannel();
+        refreshGameStorage();
     }, []);
+
+    async function refreshGameStorage() {
+        try {
+            const settings = await invoke('get_game_storage_settings');
+            setGameStorage(settings ?? null);
+            setGameStorageError("");
+        } catch (e) {
+            console.warn('Failed to read game storage settings', e);
+            setGameStorageError(e?.message ?? String(e));
+        }
+    }
 
     async function setBetaEnabled(enabled) {
         setReleaseChannelBusy(true);
@@ -112,6 +136,49 @@ export default function Titlebar({ installedVersions, ...props }) {
     async function applyThemeBrightnessValue(nextBrightness) {
         const applied = await persistAndBroadcastThemeBrightness(nextBrightness);
         setThemeBrightness(applied);
+    }
+
+    async function changeGameStorageDir() {
+        if (gameStorageBusy) return;
+        setGameStorageBusy(true);
+        setGameStorageError("");
+        try {
+            const picked = await invoke('pick_game_storage_dir', {
+                initialPath: gameStorage?.custom_dir ?? gameStorage?.current_dir ?? null,
+            });
+            if (!picked) return;
+            setSettingsOpen(false);
+            const settings = await invoke('set_game_storage_dir', { customDir: picked });
+            setGameStorage(settings ?? null);
+        } catch (e) {
+            const message = e?.message ?? String(e);
+            setGameStorageError(message);
+            window.alert(message);
+        } finally {
+            setGameStorageBusy(false);
+        }
+    }
+
+    async function resetGameStorageDir() {
+        if (gameStorageBusy) return;
+        setGameStorageBusy(true);
+        setGameStorageError("");
+        try {
+            setSettingsOpen(false);
+            const settings = await invoke('set_game_storage_dir', { customDir: null });
+            setGameStorage(settings ?? null);
+        } catch (e) {
+            const message = e?.message ?? String(e);
+            setGameStorageError(message);
+            window.alert(message);
+        } finally {
+            setGameStorageBusy(false);
+        }
+    }
+
+    async function applyThemeModeValue(nextMode) {
+        const applied = await persistAndBroadcastThemeMode(nextMode);
+        setThemeMode(applied);
     }
 
     async function refreshConfigLinkState() {
@@ -372,6 +439,61 @@ export default function Titlebar({ installedVersions, ...props }) {
                                                 </div>
                                             )}
                                         </div>
+
+                                        <div className="rounded-lg border border-panel-outline p-4">
+                                            <div className="flex items-start justify-between gap-4">
+                                                <div className="flex min-w-0 gap-3">
+                                                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-white/10 bg-black/20 text-white/75">
+                                                        <HardDrive size={18} />
+                                                    </div>
+                                                    <div className="min-w-0">
+                                                        <div className="text-sm font-semibold text-white">Game storage</div>
+                                                        <div className="mt-1 text-sm leading-5 text-white/55">
+                                                            Installed game versions are stored here.
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                {gameStorage?.is_custom && (
+                                                    <Button
+                                                        variant="outline"
+                                                        className="h-9 shrink-0 px-3"
+                                                        disabled={gameStorageBusy}
+                                                        onClick={() => {
+                                                            void resetGameStorageDir();
+                                                        }}
+                                                    >
+                                                        <RotateCcw className="h-4 w-4" />
+                                                        Reset
+                                                    </Button>
+                                                )}
+                                            </div>
+
+                                            <div className="mt-4 flex items-center gap-2 rounded-md border border-panel-outline bg-black/20 px-3 py-2">
+                                                <div
+                                                    className="min-w-0 flex-1 truncate text-xs font-medium text-white/65"
+                                                    title={gameStorage?.current_dir ?? ""}
+                                                >
+                                                    {gameStorage?.current_dir ?? "Loading..."}
+                                                </div>
+                                                <Button
+                                                    variant="outline"
+                                                    className="h-8 shrink-0 px-3 text-xs"
+                                                    disabled={gameStorageBusy}
+                                                    onClick={() => {
+                                                        void changeGameStorageDir();
+                                                    }}
+                                                >
+                                                    <FolderOpen className="h-4 w-4" />
+                                                    Change
+                                                </Button>
+                                            </div>
+
+                                            {gameStorageError && (
+                                                <div className="mt-3 rounded-md border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+                                                    {gameStorageError}
+                                                </div>
+                                            )}
+                                        </div>
                                     </div>
                                 )}
 
@@ -390,6 +512,7 @@ export default function Titlebar({ installedVersions, ...props }) {
                                                 onClick={() => {
                                                     void applyThemeHueValue(DEFAULT_THEME_HUE);
                                                     void applyThemeBrightnessValue(DEFAULT_THEME_BRIGHTNESS);
+                                                    void applyThemeModeValue(DEFAULT_THEME_MODE);
                                                 }}
                                             >
                                                 <RotateCcw className="h-4 w-4" />
@@ -399,6 +522,39 @@ export default function Titlebar({ installedVersions, ...props }) {
 
                                         <div className="rounded-lg border border-panel-outline p-4">
                                             <div className="space-y-5">
+                                                <div className="space-y-3">
+                                                    <div className="text-sm font-semibold text-white">Mode</div>
+                                                    <div className="grid grid-cols-2 gap-2">
+                                                        {[
+                                                            { value: "dark", label: "Dark", icon: Moon },
+                                                            { value: "light", label: "Light", icon: Sun },
+                                                        ].map((option) => {
+                                                            const Icon = option.icon;
+                                                            const selected = normalizedThemeMode === option.value;
+                                                            return (
+                                                                <button
+                                                                    key={option.value}
+                                                                    type="button"
+                                                                    className={cn(
+                                                                        "flex h-11 items-center justify-center gap-2 rounded-lg border text-sm font-semibold transition-colors",
+                                                                        selected
+                                                                            ? "border-[color-mix(in_srgb,var(--theme-accent)_55%,transparent)] bg-[var(--theme-accent-muted)] text-[var(--theme-accent)]"
+                                                                            : "border-panel-outline bg-transparent text-white/65 hover:bg-white/[0.07] hover:text-white"
+                                                                    )}
+                                                                    onClick={() => {
+                                                                        setThemeMode(option.value);
+                                                                        void applyThemeModeValue(option.value);
+                                                                    }}
+                                                                    aria-pressed={selected}
+                                                                >
+                                                                    <Icon className="h-4 w-4" />
+                                                                    {option.label}
+                                                                </button>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+
                                                 <div className="flex items-center justify-between gap-3">
                                                     <div className="text-sm font-semibold text-white">Theme hue</div>
                                                     <input
@@ -461,7 +617,14 @@ export default function Titlebar({ installedVersions, ...props }) {
                                                     </div>
 
                                                     <div className="relative h-7 rounded-md border border-white/10 p-1">
-                                                        <div className="absolute inset-1 rounded bg-gradient-to-r from-black via-[#30343d] to-white" />
+                                                        <div
+                                                            className={cn(
+                                                                "absolute inset-1 rounded",
+                                                                normalizedThemeMode === "light"
+                                                                    ? "bg-gradient-to-r from-white via-[#d8dde3] to-[#7b8794]"
+                                                                    : "bg-gradient-to-r from-black via-[#30343d] to-white"
+                                                            )}
+                                                        />
                                                         <input
                                                             type="range"
                                                             min="0"
