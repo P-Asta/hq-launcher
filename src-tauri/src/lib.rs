@@ -3294,26 +3294,30 @@ fn set_game_storage_dir(
     let new_versions_dir = storage::versions_dir_for_custom(&app, normalized_custom.clone())?;
 
     if !same_storage_path(&old_versions_dir, &new_versions_dir) {
-        storage::move_versions_dir(&old_versions_dir, &new_versions_dir, |done, total, detail| {
-            let total = total.max(1);
-            let step_progress = (done as f64 / total as f64).clamp(0.0, 1.0);
-            progress::emit_progress(
-                &app,
-                TaskProgressPayload {
-                    version: 0,
-                    steps_total: 1,
-                    step: 1,
-                    step_name: "Move Storage".to_string(),
-                    step_progress,
-                    overall_percent: step_progress * 100.0,
-                    detail,
-                    downloaded_bytes: None,
-                    total_bytes: None,
-                    extracted_files: Some(done),
-                    total_files: Some(total),
-                },
-            );
-        })?;
+        storage::move_versions_dir(
+            &old_versions_dir,
+            &new_versions_dir,
+            |done, total, detail| {
+                let total = total.max(1);
+                let step_progress = (done as f64 / total as f64).clamp(0.0, 1.0);
+                progress::emit_progress(
+                    &app,
+                    TaskProgressPayload {
+                        version: 0,
+                        steps_total: 1,
+                        step: 1,
+                        step_name: "Move Storage".to_string(),
+                        step_progress,
+                        overall_percent: step_progress * 100.0,
+                        detail,
+                        downloaded_bytes: None,
+                        total_bytes: None,
+                        extracted_files: Some(done),
+                        total_files: Some(total),
+                    },
+                );
+            },
+        )?;
     } else {
         std::fs::create_dir_all(&new_versions_dir).map_err(|e| e.to_string())?;
         progress::emit_progress(

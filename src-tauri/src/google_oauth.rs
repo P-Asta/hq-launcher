@@ -987,8 +987,31 @@ fn html_escape(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-fn spreadsheet_list_page(files: &[GoogleSpreadsheetFile], state: &str) -> String {
+fn spreadsheet_id_from_input(value: &str) -> String {
+    let text = value.trim();
+    if let Some((_, tail)) = text.split_once("/spreadsheets/d/") {
+        return tail
+            .split(|ch| ch == '/' || ch == '?' || ch == '#')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+    }
+    text.to_string()
+}
+
+fn spreadsheet_list_page(
+    files: &[GoogleSpreadsheetFile],
+    state: &str,
+    current_spreadsheet_id: &str,
+    error: Option<&str>,
+) -> String {
     let state = html_escape(state);
+    let current_spreadsheet_id = html_escape(current_spreadsheet_id);
+    let error = error
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| format!(r#"<div class="error">{}</div>"#, html_escape(value)))
+        .unwrap_or_default();
     let items = if files.is_empty() {
         "<p>No editable Google Sheets files were found.</p>".to_string()
     } else {
@@ -1024,17 +1047,29 @@ fn spreadsheet_list_page(files: &[GoogleSpreadsheetFile], state: &str) -> String
     main {{ width: min(720px, 100%); }}
     h1 {{ margin: 0 0 8px; font-size: 24px; }}
     p {{ color: #cbd5e1; }}
+    .manual {{ display: grid; gap: 10px; margin-top: 16px; padding: 14px; border: 1px solid rgba(148,163,184,.28); border-radius: 10px; background: rgba(0,0,0,.18); }}
+    label {{ color: #e2e8f0; font-size: 13px; font-weight: 650; }}
+    input {{ width: 100%; border: 1px solid rgba(148,163,184,.35); border-radius: 8px; background: rgba(0,0,0,.28); color: inherit; padding: 11px 12px; font: inherit; outline: none; }}
+    input:focus {{ border-color: rgba(248,250,252,.7); }}
     .list {{ display: grid; gap: 10px; margin-top: 20px; }}
     button {{ width: 100%; border: 1px solid rgba(148,163,184,.35); border-radius: 8px; background: rgba(255,255,255,.06); color: inherit; padding: 12px 14px; text-align: left; font: inherit; cursor: pointer; }}
     button:hover, button:focus {{ border-color: rgba(248,250,252,.7); background: rgba(255,255,255,.1); outline: none; }}
     span {{ display: block; margin-top: 4px; color: #94a3b8; font-size: 12px; overflow-wrap: anywhere; }}
     a {{ display: inline-block; margin-top: 20px; color: #93c5fd; }}
+    .error {{ margin-top: 14px; border: 1px solid rgba(251,146,60,.35); border-radius: 10px; background: rgba(251,146,60,.12); color: #fed7aa; padding: 12px 14px; font-size: 13px; overflow-wrap: anywhere; }}
   </style>
 </head>
 <body>
   <main>
     <h1>Select one Google Sheets file</h1>
     <p>Only one spreadsheet can be selected for LCStatsTracker.</p>
+    {error}
+    <form class="manual" method="get" action="/picked">
+      <input type="hidden" name="state" value="{state}">
+      <label for="manual-spreadsheet-id">Google Sheets link or spreadsheet ID</label>
+      <input id="manual-spreadsheet-id" name="id" value="{current_spreadsheet_id}" autocomplete="off">
+      <button type="submit">Use this spreadsheet</button>
+    </form>
     <div class="list">
       {items}
     </div>
@@ -1053,6 +1088,8 @@ enum SpreadsheetPickerUi {
     },
     SpreadsheetList {
         files: Vec<GoogleSpreadsheetFile>,
+        current_spreadsheet_id: String,
+        error: Option<String>,
     },
 }
 
@@ -1098,9 +1135,16 @@ fn listen_for_picker_selection(
                         api_key,
                         app_id,
                     } => picker_page(access_token, api_key, app_id, &expected_state)?,
-                    SpreadsheetPickerUi::SpreadsheetList { files } => {
-                        spreadsheet_list_page(files, &expected_state)
-                    }
+                    SpreadsheetPickerUi::SpreadsheetList {
+                        files,
+                        current_spreadsheet_id,
+                        error,
+                    } => spreadsheet_list_page(
+                        files,
+                        &expected_state,
+                        current_spreadsheet_id,
+                        error.as_deref(),
+                    ),
                 };
                 let _ = stream.write_all(http_response("200 OK", "text/html", &body).as_bytes());
             }
@@ -1111,7 +1155,9 @@ fn listen_for_picker_selection(
                         .write_all(http_response("400 Bad Request", "text/plain", body).as_bytes());
                     return Err("Google Picker state mismatch".to_string());
                 }
-                let id = params.get("id").cloned().unwrap_or_default();
+                let id = spreadsheet_id_from_input(
+                    params.get("id").map(String::as_str).unwrap_or_default(),
+                );
                 let name = params.get("name").cloned().unwrap_or_default();
                 let body = "Google Sheets file selected. You can close this window.";
                 let _ = stream.write_all(http_response("200 OK", "text/plain", body).as_bytes());
@@ -1162,7 +1208,7 @@ async fn open_spreadsheet_picker_ui(
 
 pub async fn pick_spreadsheet(
     app: tauri::AppHandle,
-    _spreadsheet_id: String,
+    spreadsheet_id: String,
 ) -> Result<Option<GoogleSpreadsheetFile>, String> {
     let token = access_token(app.clone()).await?;
     let selected = match picker_config(app.clone()) {
@@ -1175,10 +1221,21 @@ pub async fn pick_spreadsheet(
             .await
         }
         Err(picker_error) => {
-            let files = list_spreadsheets(app).await.map_err(|list_error| {
-                format!("{picker_error} Spreadsheet list unavailable: {list_error}")
-            })?;
-            open_spreadsheet_picker_ui(SpreadsheetPickerUi::SpreadsheetList { files }).await
+            let (files, error) = match list_spreadsheets(app).await {
+                Ok(files) => (files, None),
+                Err(list_error) => (
+                    Vec::new(),
+                    Some(format!(
+                        "{picker_error} Spreadsheet list unavailable: {list_error}"
+                    )),
+                ),
+            };
+            open_spreadsheet_picker_ui(SpreadsheetPickerUi::SpreadsheetList {
+                files,
+                current_spreadsheet_id: spreadsheet_id_from_input(&spreadsheet_id),
+                error,
+            })
+            .await
         }
     }?;
 

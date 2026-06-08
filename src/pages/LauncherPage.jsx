@@ -3636,7 +3636,7 @@ export default function LauncherPage({
       }
 
       const selected = await invoke("google_lcstats_pick_spreadsheet", {
-        spreadsheetId: "",
+        spreadsheetId: extractSpreadsheetId(lcstatsSettings.spreadsheetId),
       });
       if (!selected?.id) return;
 
@@ -6148,8 +6148,8 @@ export default function LauncherPage({
                       className={cn(
                         "group flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition",
                         selected
-                          ? "border-[color-mix(in_srgb,var(--theme-accent)_42%,var(--theme-border))] bg-[color-mix(in_srgb,var(--theme-accent)_15%,var(--theme-elevated))]"
-                          : "border-panel-outline bg-[var(--theme-elevated)] hover:border-[color-mix(in_srgb,var(--theme-accent)_28%,var(--theme-border))] hover:bg-[color-mix(in_srgb,var(--theme-accent)_11%,var(--theme-elevated))]",
+                          ? "border-panel-outline bg-white/[0.08]"
+                          : "border-panel-outline bg-black/20 hover:bg-white/[0.07]",
                         !presetSummary && !installedVer && "opacity-40"
                       )}
                       onClick={() => setSelectedMod(m)}

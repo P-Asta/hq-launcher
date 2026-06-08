@@ -250,7 +250,11 @@ where
             let mut copied = 0u64;
             copy_dir_contents(old_dir, new_dir, &mut copied, total, &mut on_progress)
                 .map_err(|copy_err| format!("{rename_err}; {copy_err}"))?;
-            on_progress(total, total, Some("Removing old game storage...".to_string()));
+            on_progress(
+                total,
+                total,
+                Some("Removing old game storage...".to_string()),
+            );
             std::fs::remove_dir_all(old_dir).map_err(|e| e.to_string())?;
             Ok(true)
         }
