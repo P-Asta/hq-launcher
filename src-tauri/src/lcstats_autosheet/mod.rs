@@ -3,6 +3,7 @@ mod sheets;
 mod stats;
 
 use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -17,6 +18,15 @@ pub struct LcStatsAutosheetState {
     running: Arc<AtomicBool>,
     listener_running: Arc<AtomicBool>,
     pending_stats: Arc<Mutex<Vec<PendingStatsEntry>>>,
+    latest_payload: Arc<Mutex<Option<LatestLcStatsPayload>>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LatestLcStatsPayload {
+    pub received_at: u64,
+    pub raw: String,
+    pub stats: Value,
 }
 
 pub fn start_for_launch(
@@ -89,6 +99,16 @@ pub fn is_running(state: &tauri::State<'_, LcStatsAutosheetState>) -> bool {
     state.running.load(Ordering::Acquire)
 }
 
+pub fn latest_payload(
+    state: &tauri::State<'_, LcStatsAutosheetState>,
+) -> Result<Option<LatestLcStatsPayload>, String> {
+    state
+        .latest_payload
+        .lock()
+        .map(|payload| payload.clone())
+        .map_err(|e| format!("LCStatsTracker latest payload lock failed: {e}"))
+}
+
 #[derive(Debug, Clone)]
 struct PendingStatsEntry {
     id: u64,
@@ -154,6 +174,7 @@ async fn run_listener(app: tauri::AppHandle, state: LcStatsAutosheetState) -> Re
                 continue;
             }
         };
+        remember_latest_payload(&state, payload, stats.clone())?;
         let settings = match crate::google_oauth::get_settings(app.clone()) {
             Ok(settings) => settings,
             Err(e) => {
@@ -196,6 +217,23 @@ async fn run_listener(app: tauri::AppHandle, state: LcStatsAutosheetState) -> Re
             }
         }
     }
+}
+
+fn remember_latest_payload(
+    state: &LcStatsAutosheetState,
+    raw: String,
+    stats: Value,
+) -> Result<(), String> {
+    let mut latest = state
+        .latest_payload
+        .lock()
+        .map_err(|e| format!("LCStatsTracker latest payload lock failed: {e}"))?;
+    *latest = Some(LatestLcStatsPayload {
+        received_at: now_epoch_secs(),
+        raw,
+        stats,
+    });
+    Ok(())
 }
 
 async fn write_stats_with_timeout(

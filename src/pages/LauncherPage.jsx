@@ -4174,20 +4174,20 @@ export default function LauncherPage({
           ],
           [
             ["Jester (Jester)", "jesterColumn", ""],
-            ["Barber (ClaySurgeon)", "barberColumn", ""],
-            ["Bunker Spider (SandSpider)", "bunkerSpiderColumn", ""],
+            ["Barber (Clay Surgeon / ClaySurgeon)", "barberColumn", ""],
+            ["Bunker Spider (Bunker Spider / SandSpider)", "bunkerSpiderColumn", ""],
             ["Bracken (Flowerman)", "brackenColumn", ""],
           ],
           [
-            ["Cadaver (Cadaver Growth)", "cadaverColumn", ""],
+            ["Cadaver (Cadaver Growths)", "cadaverColumn", ""],
             ["Ghost Girl (Girl)", "ghostGirlColumn", ""],
-            ["Maneater (CaveDweller)", "maneaterColumn", ""],
+            ["Maneater (Maneater / CaveDweller)", "maneaterColumn", ""],
           ],
           [
             ["Backwater Gunkfish (Stingray)", "backwaterGunkfishColumn", ""],
             ["Coil Head (Spring)", "coilHeadColumn", ""],
-            ["Hoarding Bug (Hoarding Bug)", "hoardingBugColumn", ""],
-            ["Masked (MaskedPlayerEnemy)", "maskedColumn", ""],
+            ["Hoarding Bug (Hoarding bug)", "hoardingBugColumn", ""],
+            ["Masked (MaskedPlayerEnemy / Masked)", "maskedColumn", ""],
           ],
           [
             ["Snare Flea (Centipede)", "snareFleaColumn", ""],

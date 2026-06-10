@@ -5201,6 +5201,13 @@ fn get_lcstats_autosheet_tracking(
 }
 
 #[tauri::command]
+fn get_lcstats_latest_payload(
+    lcstats_state: State<'_, lcstats_autosheet::LcStatsAutosheetState>,
+) -> Result<Option<lcstats_autosheet::LatestLcStatsPayload>, String> {
+    lcstats_autosheet::latest_payload(&lcstats_state)
+}
+
+#[tauri::command]
 fn set_lcstats_autosheet_tracking(
     app: tauri::AppHandle,
     enabled: bool,
@@ -6189,6 +6196,7 @@ pub fn run() {
             google_lcstats_logout,
             get_lcstats_settings,
             get_lcstats_autosheet_tracking,
+            get_lcstats_latest_payload,
             set_lcstats_autosheet_tracking,
             set_lcstats_settings,
             list_lcstats_sheet_names,

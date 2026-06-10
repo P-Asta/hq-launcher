@@ -1,6 +1,6 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useEffect, useMemo, useState } from 'react';
-import { Beaker, FolderOpen, HardDrive, Minus, Moon, Paintbrush, RotateCcw, Settings, Square, Sun, X } from 'lucide-react';
+import { Beaker, Copy, FolderOpen, HardDrive, Minus, Moon, Paintbrush, RefreshCw, RotateCcw, Settings, Square, Sun, X } from 'lucide-react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { cn } from './lib/cn';
 import { invoke } from '@tauri-apps/api/core';
@@ -25,6 +25,7 @@ import {
 } from './lib/theme';
 
 const SHOW_THEME_SETTINGS = true;
+const SHOW_DEV_SETTINGS = import.meta.env.DEV;
 
 
 export default function Titlebar({ installedVersions, ...props }) {
@@ -43,6 +44,10 @@ export default function Titlebar({ installedVersions, ...props }) {
     const [themeHue, setThemeHue] = useState(() => loadStoredThemeHue());
     const [themeBrightness, setThemeBrightness] = useState(() => loadStoredThemeBrightness());
     const [themeMode, setThemeMode] = useState(() => loadStoredThemeMode());
+    const [latestLcstatsPayload, setLatestLcstatsPayload] = useState(null);
+    const [latestLcstatsBusy, setLatestLcstatsBusy] = useState(false);
+    const [latestLcstatsError, setLatestLcstatsError] = useState("");
+    const [latestLcstatsCopied, setLatestLcstatsCopied] = useState(false);
     const [selectedVersion, setSelectedVersion] = useState(null);
     const normalizedThemeHue = useMemo(
         () => normalizeThemeHue(themeHue),
@@ -176,6 +181,29 @@ export default function Titlebar({ installedVersions, ...props }) {
         }
     }
 
+    async function refreshLatestLcstatsPayload() {
+        if (!SHOW_DEV_SETTINGS) return;
+        setLatestLcstatsBusy(true);
+        setLatestLcstatsError("");
+        try {
+            const payload = await invoke('get_lcstats_latest_payload');
+            setLatestLcstatsPayload(payload ?? null);
+        } catch (e) {
+            console.warn('Failed to read latest LCStatsTracker payload', e);
+            setLatestLcstatsError(e?.message ?? String(e));
+        } finally {
+            setLatestLcstatsBusy(false);
+        }
+    }
+
+    async function copyLatestLcstatsPayload() {
+        if (!latestLcstatsPayload) return;
+        const text = JSON.stringify(latestLcstatsPayload.stats ?? latestLcstatsPayload.raw, null, 2);
+        await navigator.clipboard.writeText(text);
+        setLatestLcstatsCopied(true);
+        window.setTimeout(() => setLatestLcstatsCopied(false), 1400);
+    }
+
     async function applyThemeModeValue(nextMode) {
         const applied = await persistAndBroadcastThemeMode(nextMode);
         setThemeMode(applied);
@@ -218,6 +246,15 @@ export default function Titlebar({ installedVersions, ...props }) {
         if (!Number.isFinite(Number(selectedVersion))) return;
         refreshConfigLinkState();
     }, [selectedVersion]);
+
+    useEffect(() => {
+        if (!SHOW_DEV_SETTINGS || !settingsOpen || settingsTab !== "dev") return;
+        refreshLatestLcstatsPayload();
+        const interval = window.setInterval(() => {
+            refreshLatestLcstatsPayload();
+        }, 2000);
+        return () => window.clearInterval(interval);
+    }, [settingsOpen, settingsTab]);
 
     // Fix: after installing/downloading a version, the folder appears but `selectedVersion`
     // may not change, so refresh link state when that install finishes.
@@ -396,6 +433,25 @@ export default function Titlebar({ installedVersions, ...props }) {
                                                 <Paintbrush size={16} />
                                             </span>
                                             Theme
+                                        </button>
+                                    )}
+                                    {SHOW_DEV_SETTINGS && (
+                                        <button
+                                            className={cn(
+                                                "relative flex h-11 items-center gap-3 rounded-md px-3 text-left text-sm font-semibold shadow-none",
+                                                settingsTab === "dev"
+                                                    ? "border border-white/10 bg-white/[0.06] text-white"
+                                                    : "bg-transparent text-white/55 hover:bg-white/5 hover:text-white/80"
+                                            )}
+                                            onClick={() => setSettingsTab("dev")}
+                                        >
+                                            {settingsTab === "dev" && (
+                                                <span className="absolute left-0 top-2 h-7 w-0.5 rounded-r bg-[var(--theme-accent)]" />
+                                            )}
+                                            <span className="flex h-7 w-7 items-center justify-center rounded-md bg-white/5 text-white/55">
+                                                <Beaker size={16} />
+                                            </span>
+                                            Dev
                                         </button>
                                     )}
                                 </div>
@@ -642,6 +698,66 @@ export default function Titlebar({ installedVersions, ...props }) {
                                                     </div>
                                                 </div>
                                             </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {settingsTab === "dev" && SHOW_DEV_SETTINGS && (
+                                    <div className="space-y-4">
+                                        <div className="flex items-start justify-between gap-4">
+                                            <div>
+                                                <div className="text-base font-semibold text-white">Dev</div>
+                                                <div className="mt-1 text-sm text-white/50">
+                                                    Latest LCStatsTracker payload captured by AutoSheet.
+                                                </div>
+                                            </div>
+                                            <Button
+                                                variant="outline"
+                                                className="h-9 shrink-0"
+                                                disabled={latestLcstatsBusy}
+                                                onClick={() => {
+                                                    void refreshLatestLcstatsPayload();
+                                                }}
+                                            >
+                                                <RefreshCw className={cn("h-4 w-4", latestLcstatsBusy ? "animate-spin" : "")} />
+                                                Refresh
+                                            </Button>
+                                        </div>
+
+                                        <div className="rounded-lg border border-panel-outline p-4">
+                                            <div className="flex items-center justify-between gap-3">
+                                                <div className="min-w-0">
+                                                    <div className="text-sm font-semibold text-white">LCStatsTracker</div>
+                                                    <div className="mt-1 text-xs text-white/45">
+                                                        {latestLcstatsPayload?.receivedAt
+                                                            ? new Date(latestLcstatsPayload.receivedAt * 1000).toLocaleString()
+                                                            : "No payload captured yet"}
+                                                    </div>
+                                                </div>
+                                                <Button
+                                                    variant="outline"
+                                                    className="h-8 shrink-0 px-3 text-xs"
+                                                    disabled={!latestLcstatsPayload}
+                                                    onClick={() => {
+                                                        void copyLatestLcstatsPayload();
+                                                    }}
+                                                >
+                                                    <Copy className="h-4 w-4" />
+                                                    {latestLcstatsCopied ? "Copied" : "Copy"}
+                                                </Button>
+                                            </div>
+
+                                            <pre className="mt-4 max-h-72 overflow-auto rounded-md border border-panel-outline bg-black/30 p-3 text-xs leading-5 text-white/70">
+                                                {latestLcstatsPayload
+                                                    ? JSON.stringify(latestLcstatsPayload.stats ?? latestLcstatsPayload.raw, null, 2)
+                                                    : "Waiting for LCStatsTracker payload..."}
+                                            </pre>
+
+                                            {latestLcstatsError && (
+                                                <div className="mt-3 rounded-md border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+                                                    {latestLcstatsError}
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
                                 )}

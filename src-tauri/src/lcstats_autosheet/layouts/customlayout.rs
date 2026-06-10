@@ -254,69 +254,85 @@ enum EnemyColumnKind {
 
 #[derive(Debug, Clone)]
 struct EnemyColumnConfig {
-    code_name: &'static str,
+    names: &'static [&'static str],
     column: Option<String>,
     kind: EnemyColumnKind,
 }
 
 fn resolve_enemy_columns(settings: &CustomLcStatsLayoutSettings) -> Vec<EnemyColumnConfig> {
     vec![
-        enemy_column("Jester", &settings.jester_column, EnemyColumnKind::Bool),
+        enemy_column(&["Jester"], &settings.jester_column, EnemyColumnKind::Bool),
         enemy_column(
-            "ClaySurgeon",
+            &["Clay Surgeon", "ClaySurgeon"],
             &settings.barber_column,
             EnemyColumnKind::Bool,
         ),
         enemy_column(
-            "SandSpider",
+            &["Bunker Spider", "SandSpider"],
             &settings.bunker_spider_column,
             EnemyColumnKind::Bool,
         ),
-        enemy_column("Flowerman", &settings.bracken_column, EnemyColumnKind::Bool),
         enemy_column(
-            "Cadaver Growth",
+            &["Flowerman"],
+            &settings.bracken_column,
+            EnemyColumnKind::Bool,
+        ),
+        enemy_column(
+            &["Cadaver Growths", "Cadaver Growth"],
             &settings.cadaver_column,
             EnemyColumnKind::Bool,
         ),
-        enemy_column("Girl", &settings.ghost_girl_column, EnemyColumnKind::Bool),
+        enemy_column(&["Girl"], &settings.ghost_girl_column, EnemyColumnKind::Bool),
         enemy_column(
-            "CaveDweller",
+            &["Maneater", "CaveDweller"],
             &settings.maneater_column,
             EnemyColumnKind::Bool,
         ),
         enemy_column(
-            "Stingray",
+            &["Stingray"],
             &settings.backwater_gunkfish_column,
             EnemyColumnKind::Count,
         ),
-        enemy_column("Spring", &settings.coil_head_column, EnemyColumnKind::Count),
         enemy_column(
-            "Hoarding Bug",
+            &["Spring"],
+            &settings.coil_head_column,
+            EnemyColumnKind::Count,
+        ),
+        enemy_column(
+            &["Hoarding bug", "Hoarding Bug"],
             &settings.hoarding_bug_column,
             EnemyColumnKind::Count,
         ),
         enemy_column(
-            "MaskedPlayerEnemy",
+            &["MaskedPlayerEnemy", "Masked"],
             &settings.masked_column,
             EnemyColumnKind::Count,
         ),
         enemy_column(
-            "Centipede",
+            &["Centipede"],
             &settings.snare_flea_column,
             EnemyColumnKind::Count,
         ),
         enemy_column(
-            "Puffer",
+            &["Puffer"],
             &settings.spore_lizard_column,
             EnemyColumnKind::Count,
         ),
-        enemy_column("Crawler", &settings.thumper_column, EnemyColumnKind::Count),
+        enemy_column(
+            &["Crawler"],
+            &settings.thumper_column,
+            EnemyColumnKind::Count,
+        ),
     ]
 }
 
-fn enemy_column(code_name: &'static str, column: &str, kind: EnemyColumnKind) -> EnemyColumnConfig {
+fn enemy_column(
+    names: &'static [&'static str],
+    column: &str,
+    kind: EnemyColumnKind,
+) -> EnemyColumnConfig {
     EnemyColumnConfig {
-        code_name,
+        names,
         column: normalize_optional_column(column),
         kind,
     }
@@ -1604,7 +1620,7 @@ fn enemy_values(stats: &Value, layout: &ResolvedCustomLayout) -> Vec<NormalizedE
         .iter()
         .filter_map(|enemy| {
             let column = enemy.column.as_ref()?;
-            let count = all_spawn_count(stats, enemy.code_name);
+            let count = all_spawn_count(stats, enemy.names);
             let value = match enemy.kind {
                 EnemyColumnKind::Bool if count > 0 => Some(json!(true)),
                 EnemyColumnKind::Bool if layout.enemy_write_false => Some(json!(false)),
@@ -1621,7 +1637,7 @@ fn enemy_values(stats: &Value, layout: &ResolvedCustomLayout) -> Vec<NormalizedE
         .collect()
 }
 
-fn all_spawn_count(stats: &Value, enemy: &str) -> usize {
+fn all_spawn_count(stats: &Value, enemy_names: &[&str]) -> usize {
     ["IndoorSpawns", "DayTimeSpawns", "NightTimeSpawns"]
         .iter()
         .map(|path| {
@@ -1631,7 +1647,11 @@ fn all_spawn_count(stats: &Value, enemy: &str) -> usize {
                     spawn
                         .get("Enemy")
                         .and_then(Value::as_str)
-                        .map(|value| value.eq_ignore_ascii_case(enemy))
+                        .map(|value| {
+                            enemy_names
+                                .iter()
+                                .any(|enemy| value.eq_ignore_ascii_case(enemy))
+                        })
                         .unwrap_or(false)
                 })
                 .count()
@@ -2129,6 +2149,36 @@ mod tests {
 
         assert_eq!(cell_value(&updates, "BA"), Some(&json!(false)));
         assert_eq!(cell_value(&updates, "BF"), Some(&json!(0)));
+    }
+
+    #[test]
+    fn enemy_group_matches_lcstatstracker_spawn_names() {
+        let stats = json!({
+            "IndoorSpawns": [
+                { "Enemy": "Clay Surgeon", "SpawnTime": "9:00 PM" },
+                { "Enemy": "Bunker Spider", "SpawnTime": "9:05 PM" },
+                { "Enemy": "Cadaver Growths", "SpawnTime": "9:10 PM" },
+                { "Enemy": "Maneater", "SpawnTime": "9:15 PM" },
+                { "Enemy": "Hoarding bug", "SpawnTime": "9:20 PM" }
+            ]
+        });
+        let settings = CustomLcStatsLayoutSettings {
+            barber_column: "BA".to_string(),
+            bunker_spider_column: "BB".to_string(),
+            cadaver_column: "BC".to_string(),
+            maneater_column: "BD".to_string(),
+            hoarding_bug_column: "BE".to_string(),
+            ..Default::default()
+        };
+        let layout = ResolvedCustomLayout::from_settings(&settings);
+        let normalized = normalized_stats(&stats, &layout);
+        let updates = build_value_updates(&normalized, &layout, 7);
+
+        assert_eq!(cell_value(&updates, "BA"), Some(&json!(true)));
+        assert_eq!(cell_value(&updates, "BB"), Some(&json!(true)));
+        assert_eq!(cell_value(&updates, "BC"), Some(&json!(true)));
+        assert_eq!(cell_value(&updates, "BD"), Some(&json!(true)));
+        assert_eq!(cell_value(&updates, "BE"), Some(&json!(1)));
     }
 
     #[test]

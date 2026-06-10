@@ -50,6 +50,14 @@ struct TokenResponse {
     token_type: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct OAuthErrorResponse {
+    #[serde(default)]
+    error: String,
+    #[serde(default)]
+    error_description: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomLcStatsLayoutSettings {
@@ -693,6 +701,62 @@ fn token_body(params: &[(&str, &str)]) -> String {
 
 fn token_body_vec(params: Vec<(&str, &str)>) -> String {
     token_body(&params)
+}
+
+async fn token_response(
+    response: reqwest::Response,
+    action: &str,
+) -> Result<TokenResponse, String> {
+    let status = response.status();
+    let text = response.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format_google_oauth_error(status, &text, action));
+    }
+
+    serde_json::from_str::<TokenResponse>(&text).map_err(|e| e.to_string())
+}
+
+fn format_google_oauth_error(status: reqwest::StatusCode, body: &str, action: &str) -> String {
+    let parsed = serde_json::from_str::<OAuthErrorResponse>(body).ok();
+    let error = parsed
+        .as_ref()
+        .map(|value| value.error.trim())
+        .filter(|value| !value.is_empty());
+    let description = parsed
+        .as_ref()
+        .map(|value| value.error_description.trim())
+        .filter(|value| !value.is_empty());
+
+    let mut message = format!("Google OAuth failed while {action} ({status})");
+    if let Some(error) = error {
+        message.push_str(&format!(": {error}"));
+    }
+    if let Some(description) = description {
+        message.push_str(&format!(" - {description}"));
+    }
+
+    match error {
+        Some("invalid_grant") => {
+            message.push_str(". Please sign in to Google again.");
+        }
+        Some("invalid_client") | Some("unauthorized_client") => {
+            message.push_str(". Check the Google OAuth client ID and client secret settings.");
+        }
+        Some("redirect_uri_mismatch") => {
+            message.push_str(". Check the OAuth redirect URI configuration in Google Cloud.");
+        }
+        Some("invalid_scope") => {
+            message.push_str(
+                ". Check that the Google OAuth app allows the required Sheets or Drive scopes.",
+            );
+        }
+        _ if error.is_none() && !body.trim().is_empty() => {
+            message.push_str(&format!(": {}", body.trim()));
+        }
+        _ => {}
+    }
+
+    message
 }
 
 fn now_epoch_secs() -> u64 {
@@ -1351,12 +1415,8 @@ async fn refresh_access_token(
         .body(body)
         .send()
         .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .json::<TokenResponse>()
-        .await
         .map_err(|e| e.to_string())?;
+    let response = token_response(response, "refreshing the Google login").await?;
 
     let next = StoredToken {
         access_token: response.access_token,
@@ -1506,12 +1566,8 @@ pub async fn start_oauth(app: tauri::AppHandle) -> Result<GoogleLcStatsAuthState
         .body(token_body)
         .send()
         .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .json::<TokenResponse>()
-        .await
         .map_err(|e| e.to_string())?;
+    let response = token_response(response, "signing in to Google").await?;
 
     if !has_required_scope(response.scope.as_deref()) {
         return Err("Google Sheets file permission was not granted.".to_string());
