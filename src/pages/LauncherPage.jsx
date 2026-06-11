@@ -333,6 +333,7 @@ const DEFAULT_CUSTOM_LCSTATS_LAYOUT = {
 const DEFAULT_LCSTATS_SETTINGS = {
   spreadsheetId: "",
   activeSheetName: "",
+  activeSheetId: "",
   startColumn: "D",
   quotaColumn: "B",
   sellColumn: "AE",
@@ -422,6 +423,29 @@ function findSheetTitleByGid(sheetInfos, sheetGid) {
   const gid = String(sheetGid ?? "").trim();
   if (!gid) return "";
   return sheetInfos.find((sheet) => sheet.sheetId === gid)?.title ?? "";
+}
+
+function findSheetInfoByTitle(sheetInfos, title) {
+  const text = String(title ?? "");
+  if (!text) return null;
+  return sheetInfos.find((sheet) => sheet.title === text) ?? null;
+}
+
+function normalizeSheetMatchName(value) {
+  return String(value ?? "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+}
+
+function findSimilarSheetInfoByTitle(sheetInfos, title) {
+  const preferred = normalizeSheetMatchName(title);
+  if (!preferred) return null;
+  return (
+    sheetInfos.find((sheet) => normalizeSheetMatchName(sheet.title) === preferred) ??
+    sheetInfos.find((sheet) => {
+      const candidate = normalizeSheetMatchName(sheet.title);
+      return candidate.includes(preferred) || preferred.includes(candidate);
+    }) ??
+    null
+  );
 }
 
 function loadGooglePickerApi() {
@@ -3592,6 +3616,7 @@ export default function LauncherPage({
       ...DEFAULT_LCSTATS_SETTINGS,
       ...(settings ?? {}),
       spreadsheetId: extractSpreadsheetId(settings?.spreadsheetId ?? ""),
+      activeSheetId: String(settings?.activeSheetId ?? "").trim(),
       startColumn: lcstatsLayoutUsesColumnFields(layout)
         ? normalizeSheetColumn(settings?.startColumn, "D")
         : "",
@@ -3666,6 +3691,10 @@ export default function LauncherPage({
       setLcstatsSettings((prev) => ({
         ...prev,
         spreadsheetId: selected.id,
+        activeSheetId:
+          selected.id === extractSpreadsheetId(prev.spreadsheetId)
+            ? prev.activeSheetId
+            : "",
         activeSheetName:
           selected.id === extractSpreadsheetId(prev.spreadsheetId)
             ? prev.activeSheetName
@@ -3675,6 +3704,7 @@ export default function LauncherPage({
       const sheets = await loadLcstatsSheetNames(selected.id, {
         quiet: true,
         sheetGid: "",
+        persist: true,
       });
       if (sheets !== null) {
         setLcstatsSaved(
@@ -3721,16 +3751,37 @@ export default function LauncherPage({
       });
       const infos = normalizeSheetInfos(sheets);
       const list = infos.map((sheet) => sheet.title);
-      const linkedSheetName = findSheetTitleByGid(infos, sheetGid);
+      const linkedSheetInfo = sheetGid
+        ? infos.find((sheet) => sheet.sheetId === String(sheetGid))
+        : null;
+      const currentSheetInfo =
+        linkedSheetInfo ||
+        infos.find((sheet) => sheet.sheetId === lcstatsSettings.activeSheetId) ||
+        findSheetInfoByTitle(infos, lcstatsSettings.activeSheetName) ||
+        (sheetGid
+          ? findSimilarSheetInfoByTitle(infos, lcstatsSettings.activeSheetName)
+          : null);
+      const activeSheetName =
+        currentSheetInfo?.title ||
+        (list.includes(lcstatsSettings.activeSheetName)
+          ? lcstatsSettings.activeSheetName
+          : list[0] || "");
+      const activeSheetId =
+        currentSheetInfo?.sheetId ||
+        findSheetInfoByTitle(infos, activeSheetName)?.sheetId ||
+        "";
       setLcstatsSheetInfos(infos);
       setLcstatsSheets(list);
-      setLcstatsSettings((prev) => ({
-        ...prev,
+      const nextSettings = normalizeLcstatsSettings({
+        ...lcstatsSettings,
         spreadsheetId,
-        activeSheetName:
-          linkedSheetName ||
-          (list.includes(prev.activeSheetName) ? prev.activeSheetName : list[0] || ""),
-      }));
+        activeSheetName,
+        activeSheetId,
+      });
+      setLcstatsSettings(nextSettings);
+      if (opts.persist) {
+        await persistLcstatsSettings(nextSettings, { quiet: true });
+      }
       if (!opts.quiet) {
         setLcstatsSaved(list.length > 0 ? "Sheet list loaded." : "No sheets found.");
       }
@@ -3777,6 +3828,7 @@ export default function LauncherPage({
       : findSheetTitleByGid(lcstatsSheetInfos, parsedInput.sheetGid);
     const patch = {
       spreadsheetId: parsedInput.spreadsheetId,
+      activeSheetId: parsedInput.sheetGid || (spreadsheetChanged ? "" : lcstatsSettings.activeSheetId),
     };
     if (spreadsheetChanged || parsedInput.sheetGid) {
       patch.activeSheetName = linkedSheetName;
@@ -4617,9 +4669,13 @@ export default function LauncherPage({
                   {lcstatsSheets.length > 0 ? (
                     <Select
                       value={lcstatsSettings.activeSheetName}
-                      onValueChange={(value) =>
-                        updateLcstatsSettings({ activeSheetName: value })
-                      }
+                      onValueChange={(value) => {
+                        const sheet = findSheetInfoByTitle(lcstatsSheetInfos, value);
+                        updateLcstatsSettings({
+                          activeSheetName: value,
+                          activeSheetId: sheet?.sheetId ?? "",
+                        });
+                      }}
                       disabled={settingsDisabled}
                     >
                       <SelectTrigger>

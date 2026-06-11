@@ -11,6 +11,7 @@ pub mod wafrody;
 use serde_json::Value;
 
 use crate::google_oauth::LcStatsSettings;
+use crate::lcstats_autosheet::sheets::SheetInfo;
 
 pub const AUTOSHEETMODEL_LAYOUT: &str = "AutoSheetModel";
 pub const BREADSHEET_LAYOUT: &str = "BreadSheet";
@@ -46,27 +47,103 @@ pub async fn write_stats(
         settings.spreadsheet_id.trim(),
     )
     .await?;
-    let token = crate::google_oauth::access_token(app).await?;
+    let token = crate::google_oauth::access_token(app.clone()).await?;
+    let settings = resolve_active_sheet(app, client, &token, settings).await?;
     if settings.layout.eq_ignore_ascii_case(WAFRODY_LAYOUT) {
-        wafrody::write(client, &token, settings, stats).await
+        wafrody::write(client, &token, &settings, stats).await
     } else if settings
         .layout
         .eq_ignore_ascii_case(CHARLY_AUTOSHEET_LAYOUT)
     {
-        charlyautosheet::write(client, &token, settings, stats).await
+        charlyautosheet::write(client, &token, &settings, stats).await
     } else if settings.layout.eq_ignore_ascii_case(CUSTOM_LAYOUT) {
-        customlayout::write(client, &token, settings, stats).await
+        customlayout::write(client, &token, &settings, stats).await
     } else if settings.layout.eq_ignore_ascii_case(EVILSHEET_LAYOUT) {
-        evilsheet::write(client, &token, settings, stats).await
+        evilsheet::write(client, &token, &settings, stats).await
     } else if settings.layout.eq_ignore_ascii_case(MODDEDSHEET_LAYOUT) {
-        moddedsheet::write(client, &token, settings, stats).await
+        moddedsheet::write(client, &token, &settings, stats).await
     } else if settings.layout.eq_ignore_ascii_case(SERENADE_LAYOUT) {
-        serenadesheet::write(client, &token, settings, stats).await
+        serenadesheet::write(client, &token, &settings, stats).await
     } else if settings.layout.eq_ignore_ascii_case(MAKUSHEET_LAYOUT) {
-        makusheet::write(client, &token, settings, stats).await
+        makusheet::write(client, &token, &settings, stats).await
     } else if settings.layout.eq_ignore_ascii_case(BREADSHEET_LAYOUT) {
-        breadsheet::write(client, &token, settings, stats).await
+        breadsheet::write(client, &token, &settings, stats).await
     } else {
-        autosheetmodel::write(client, &token, settings, stats).await
+        autosheetmodel::write(client, &token, &settings, stats).await
     }
+}
+
+async fn resolve_active_sheet(
+    app: tauri::AppHandle,
+    client: &reqwest::Client,
+    token: &str,
+    settings: &LcStatsSettings,
+) -> Result<LcStatsSettings, String> {
+    let spreadsheet_id = settings.spreadsheet_id.trim();
+    if spreadsheet_id.is_empty() || settings.active_sheet_id.trim().is_empty() {
+        return Ok(settings.clone());
+    }
+
+    let sheet_id = settings.active_sheet_id.trim().parse::<i64>().ok();
+    let sheets =
+        crate::lcstats_autosheet::sheets::get_sheet_infos(client, token, spreadsheet_id).await?;
+    let Some(resolved) =
+        resolve_sheet_from_id_or_name(&sheets, sheet_id, &settings.active_sheet_name)
+    else {
+        return Ok(settings.clone());
+    };
+
+    let resolved_id = resolved.id.to_string();
+    if resolved.title == settings.active_sheet_name && resolved_id == settings.active_sheet_id {
+        return Ok(settings.clone());
+    }
+
+    let mut next = settings.clone();
+    next.active_sheet_name = resolved.title;
+    next.active_sheet_id = resolved_id;
+    log::info!(
+        "LCStatsTracker AutoSheet resolved active sheet to {} ({})",
+        next.active_sheet_name,
+        next.active_sheet_id
+    );
+    if let Err(e) = crate::google_oauth::set_settings(app, next.clone()) {
+        log::warn!("Failed to persist resolved LCStatsTracker sheet selection: {e}");
+    }
+    Ok(next)
+}
+
+fn resolve_sheet_from_id_or_name(
+    sheets: &[SheetInfo],
+    sheet_id: Option<i64>,
+    preferred_name: &str,
+) -> Option<SheetInfo> {
+    if let Some(sheet_id) = sheet_id {
+        if let Some(sheet) = sheets.iter().find(|sheet| sheet.id == sheet_id) {
+            return Some(sheet.clone());
+        }
+    }
+
+    let preferred = normalize_sheet_match_name(preferred_name);
+    if preferred.is_empty() {
+        return None;
+    }
+
+    sheets
+        .iter()
+        .find(|sheet| normalize_sheet_match_name(&sheet.title) == preferred)
+        .or_else(|| {
+            sheets.iter().find(|sheet| {
+                let title = normalize_sheet_match_name(&sheet.title);
+                title.contains(&preferred) || preferred.contains(&title)
+            })
+        })
+        .cloned()
+}
+
+fn normalize_sheet_match_name(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }

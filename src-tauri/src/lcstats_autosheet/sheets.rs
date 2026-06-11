@@ -1,6 +1,12 @@
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+#[derive(Debug, Clone)]
+pub struct SheetInfo {
+    pub id: i64,
+    pub title: String,
+}
+
 pub async fn first_empty_row(
     client: &reqwest::Client,
     token: &str,
@@ -215,6 +221,18 @@ pub async fn get_sheet_id(
     spreadsheet_id: &str,
     sheet_name: &str,
 ) -> Result<i64, String> {
+    let sheets = get_sheet_infos(client, token, spreadsheet_id).await?;
+    sheets
+        .iter()
+        .find_map(|sheet| (sheet.title == sheet_name).then_some(sheet.id))
+        .ok_or_else(|| format!("Sheet not found: {sheet_name}"))
+}
+
+pub async fn get_sheet_infos(
+    client: &reqwest::Client,
+    token: &str,
+    spreadsheet_id: &str,
+) -> Result<Vec<SheetInfo>, String> {
     let url = format!(
         "https://sheets.googleapis.com/v4/spreadsheets/{}?fields=sheets.properties(sheetId,title)",
         url_encode(spreadsheet_id)
@@ -226,20 +244,22 @@ pub async fn get_sheet_id(
         .await
         .map_err(|e| e.to_string())?;
     let data = parse_google_response(response, "read Google spreadsheet metadata").await?;
-    data.get("sheets")
+    Ok(data
+        .get("sheets")
         .and_then(Value::as_array)
-        .and_then(|sheets| {
-            sheets.iter().find_map(|sheet| {
-                let props = sheet.get("properties")?;
-                let title = props.get("title").and_then(Value::as_str)?;
-                if title == sheet_name {
-                    props.get("sheetId").and_then(Value::as_i64)
-                } else {
-                    None
-                }
-            })
+        .map(|sheets| {
+            sheets
+                .iter()
+                .filter_map(|sheet| {
+                    let props = sheet.get("properties")?;
+                    Some(SheetInfo {
+                        id: props.get("sheetId").and_then(Value::as_i64)?,
+                        title: props.get("title").and_then(Value::as_str)?.to_string(),
+                    })
+                })
+                .collect()
         })
-        .ok_or_else(|| format!("Sheet not found: {sheet_name}"))
+        .unwrap_or_default())
 }
 
 async fn parse_google_response(response: reqwest::Response, label: &str) -> Result<Value, String> {

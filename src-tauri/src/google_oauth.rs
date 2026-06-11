@@ -631,6 +631,8 @@ fn default_custom_gift_boxes_net_only() -> bool {
 pub struct LcStatsSettings {
     pub spreadsheet_id: String,
     pub active_sheet_name: String,
+    #[serde(default)]
+    pub active_sheet_id: String,
     pub start_column: String,
     pub quota_column: String,
     pub sell_column: String,
@@ -654,6 +656,7 @@ impl Default for LcStatsSettings {
         Self {
             spreadsheet_id: String::new(),
             active_sheet_name: String::new(),
+            active_sheet_id: String::new(),
             start_column: "D".to_string(),
             quota_column: "B".to_string(),
             sell_column: "AE".to_string(),

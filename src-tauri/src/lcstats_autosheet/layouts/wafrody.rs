@@ -12,7 +12,6 @@ use crate::lcstats_autosheet::stats::{
     strip_apostrophe, strip_moon_number, value_at, value_at_any, LcStats,
 };
 
-const TARGET_SHEET_CELL: &str = "A1";
 const CHECK_COLUMN: &str = "X";
 const START_ROW: usize = 4;
 const PLAYER_ID_ROW: usize = 199;
@@ -65,12 +64,14 @@ pub async fn write(
         return Err("spreadsheet or sheet is not set".to_string());
     }
 
-    let target_sheet = resolve_target_sheet(client, token, spreadsheet_id, source_sheet).await?;
+    let sheet_id = get_sheet_id(client, token, spreadsheet_id, source_sheet)
+        .await
+        .ok();
     let target_row = first_empty_row_from(
         client,
         token,
         spreadsheet_id,
-        &target_sheet.name,
+        source_sheet,
         CHECK_COLUMN,
         START_ROW,
     )
@@ -82,7 +83,7 @@ pub async fn write(
             client,
             token,
             spreadsheet_id,
-            &target_sheet.name,
+            source_sheet,
             target_row,
             stats,
             &payload,
@@ -93,13 +94,12 @@ pub async fn write(
 
     let normalized = NormalizedStats::from_stats(stats, &payload);
     let player_columns =
-        setup_or_match_player_columns(client, token, spreadsheet_id, &target_sheet.name, stats)
-            .await?;
+        setup_or_match_player_columns(client, token, spreadsheet_id, source_sheet, stats).await?;
     batch_write_cells_user_entered(
         client,
         token,
         spreadsheet_id,
-        &target_sheet.name,
+        source_sheet,
         build_value_updates(&normalized, &player_columns, target_row),
     )
     .await?;
@@ -107,8 +107,8 @@ pub async fn write(
         client,
         token,
         spreadsheet_id,
-        &target_sheet.name,
-        target_sheet.id,
+        source_sheet,
+        sheet_id,
         target_row,
         stats,
         &payload,
@@ -116,12 +116,12 @@ pub async fn write(
         &player_columns,
     )
     .await?;
-    add_lost_scraps_to_total(client, token, spreadsheet_id, &target_sheet.name, stats).await?;
+    add_lost_scraps_to_total(client, token, spreadsheet_id, source_sheet, stats).await?;
     update_hazard_totals(
         client,
         token,
         spreadsheet_id,
-        &target_sheet.name,
+        source_sheet,
         target_row,
         stats,
         &payload,
@@ -131,71 +131,11 @@ pub async fn write(
         client,
         token,
         spreadsheet_id,
-        &target_sheet.name,
+        source_sheet,
         target_row,
         stats,
     )
     .await
-}
-
-async fn read_target_sheet(
-    client: &reqwest::Client,
-    token: &str,
-    spreadsheet_id: &str,
-    source_sheet: &str,
-) -> Result<Option<String>, String> {
-    let range = format!(
-        "{}!{TARGET_SHEET_CELL}",
-        crate::lcstats_autosheet::sheets::quote_sheet_name(source_sheet)
-    );
-    let data = read_range(client, token, spreadsheet_id, &range).await?;
-    Ok(data
-        .get("values")
-        .and_then(Value::as_array)
-        .and_then(|rows| rows.first())
-        .and_then(Value::as_array)
-        .and_then(|cells| cells.first())
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .filter(|value| !value.eq_ignore_ascii_case("R"))
-        .map(ToOwned::to_owned))
-}
-
-#[derive(Debug, Clone)]
-struct TargetSheet {
-    name: String,
-    id: Option<i64>,
-}
-
-async fn resolve_target_sheet(
-    client: &reqwest::Client,
-    token: &str,
-    spreadsheet_id: &str,
-    source_sheet: &str,
-) -> Result<TargetSheet, String> {
-    let Some(candidate) = read_target_sheet(client, token, spreadsheet_id, source_sheet).await?
-    else {
-        return Ok(TargetSheet {
-            name: source_sheet.to_string(),
-            id: None,
-        });
-    };
-    match get_sheet_id(client, token, spreadsheet_id, &candidate).await {
-        Ok(sheet_id) => Ok(TargetSheet {
-            name: candidate,
-            id: Some(sheet_id),
-        }),
-        Err(e) => {
-            log::warn!(
-                "Wafrody target sheet cell {TARGET_SHEET_CELL} contained '{candidate}', but it is not a valid sheet name ({e}); using '{source_sheet}'"
-            );
-            Ok(TargetSheet {
-                name: source_sheet.to_string(),
-                id: None,
-            })
-        }
-    }
 }
 
 async fn setup_or_match_player_columns(
