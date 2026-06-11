@@ -252,11 +252,18 @@ enum EnemyColumnKind {
     Count,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum EnemyColumnSource {
+    AllSpawns,
+    NightTimeSpawns,
+}
+
 #[derive(Debug, Clone)]
 struct EnemyColumnConfig {
     names: &'static [&'static str],
     column: Option<String>,
     kind: EnemyColumnKind,
+    source: EnemyColumnSource,
 }
 
 fn resolve_enemy_columns(settings: &CustomLcStatsLayoutSettings) -> Vec<EnemyColumnConfig> {
@@ -282,7 +289,11 @@ fn resolve_enemy_columns(settings: &CustomLcStatsLayoutSettings) -> Vec<EnemyCol
             &settings.cadaver_column,
             EnemyColumnKind::Bool,
         ),
-        enemy_column(&["Girl"], &settings.ghost_girl_column, EnemyColumnKind::Bool),
+        enemy_column(
+            &["Girl"],
+            &settings.ghost_girl_column,
+            EnemyColumnKind::Bool,
+        ),
         enemy_column(
             &["Maneater", "CaveDweller"],
             &settings.maneater_column,
@@ -323,6 +334,41 @@ fn resolve_enemy_columns(settings: &CustomLcStatsLayoutSettings) -> Vec<EnemyCol
             &settings.thumper_column,
             EnemyColumnKind::Count,
         ),
+        night_enemy_column(
+            &["Earth Leviathan"],
+            &settings.earth_leviathan_column,
+            EnemyColumnKind::Count,
+        ),
+        night_enemy_column(
+            &["ForestGiant"],
+            &settings.forest_giant_column,
+            EnemyColumnKind::Count,
+        ),
+        night_enemy_column(
+            &["Baboon hawk"],
+            &settings.baboon_hawk_column,
+            EnemyColumnKind::Count,
+        ),
+        night_enemy_column(
+            &["RadMech", "Old Bird"],
+            &settings.old_bird_column,
+            EnemyColumnKind::Count,
+        ),
+        night_enemy_column(
+            &["Bush Wolf"],
+            &settings.bush_wolf_column,
+            EnemyColumnKind::Bool,
+        ),
+        night_enemy_column(
+            &["Feiopar"],
+            &settings.feiopar_column,
+            EnemyColumnKind::Count,
+        ),
+        night_enemy_column(
+            &["MouthDog", "Eyeless Dog"],
+            &settings.eyeless_dog_column,
+            EnemyColumnKind::Count,
+        ),
     ]
 }
 
@@ -331,10 +377,28 @@ fn enemy_column(
     column: &str,
     kind: EnemyColumnKind,
 ) -> EnemyColumnConfig {
+    enemy_column_with_source(names, column, kind, EnemyColumnSource::AllSpawns)
+}
+
+fn night_enemy_column(
+    names: &'static [&'static str],
+    column: &str,
+    kind: EnemyColumnKind,
+) -> EnemyColumnConfig {
+    enemy_column_with_source(names, column, kind, EnemyColumnSource::NightTimeSpawns)
+}
+
+fn enemy_column_with_source(
+    names: &'static [&'static str],
+    column: &str,
+    kind: EnemyColumnKind,
+    source: EnemyColumnSource,
+) -> EnemyColumnConfig {
     EnemyColumnConfig {
         names,
         column: normalize_optional_column(column),
         kind,
+        source,
     }
 }
 
@@ -1620,7 +1684,7 @@ fn enemy_values(stats: &Value, layout: &ResolvedCustomLayout) -> Vec<NormalizedE
         .iter()
         .filter_map(|enemy| {
             let column = enemy.column.as_ref()?;
-            let count = all_spawn_count(stats, enemy.names);
+            let count = enemy_spawn_count(stats, enemy.names, enemy.source);
             let value = match enemy.kind {
                 EnemyColumnKind::Bool if count > 0 => Some(json!(true)),
                 EnemyColumnKind::Bool if layout.enemy_write_false => Some(json!(false)),
@@ -1637,8 +1701,13 @@ fn enemy_values(stats: &Value, layout: &ResolvedCustomLayout) -> Vec<NormalizedE
         .collect()
 }
 
-fn all_spawn_count(stats: &Value, enemy_names: &[&str]) -> usize {
-    ["IndoorSpawns", "DayTimeSpawns", "NightTimeSpawns"]
+fn enemy_spawn_count(stats: &Value, enemy_names: &[&str], source: EnemyColumnSource) -> usize {
+    let groups: &[&str] = match source {
+        EnemyColumnSource::AllSpawns => &["IndoorSpawns", "DayTimeSpawns", "NightTimeSpawns"],
+        EnemyColumnSource::NightTimeSpawns => &["NightTimeSpawns"],
+    };
+
+    groups
         .iter()
         .map(|path| {
             array_at(stats, &[*path])
@@ -2179,6 +2248,51 @@ mod tests {
         assert_eq!(cell_value(&updates, "BC"), Some(&json!(true)));
         assert_eq!(cell_value(&updates, "BD"), Some(&json!(true)));
         assert_eq!(cell_value(&updates, "BE"), Some(&json!(1)));
+    }
+
+    #[test]
+    fn outside_enemy_columns_only_use_night_spawns() {
+        let stats = json!({
+            "IndoorSpawns": [
+                { "Enemy": "MouthDog", "SpawnTime": "9:00 PM" },
+                { "Enemy": "Bush Wolf", "SpawnTime": "9:05 PM" }
+            ],
+            "DayTimeSpawns": [
+                { "Enemy": "RadMech", "SpawnTime": "1:00 PM" }
+            ],
+            "NightTimeSpawns": [
+                { "Enemy": "Earth Leviathan", "SpawnTime": "7:39 AM" },
+                { "Enemy": "ForestGiant", "SpawnTime": "7:40 AM" },
+                { "Enemy": "Baboon hawk", "SpawnTime": "7:41 AM" },
+                { "Enemy": "RadMech", "SpawnTime": "7:42 AM" },
+                { "Enemy": "Old Bird", "SpawnTime": "7:43 AM" },
+                { "Enemy": "Bush Wolf", "SpawnTime": "7:44 AM" },
+                { "Enemy": "Feiopar", "SpawnTime": "7:45 AM" },
+                { "Enemy": "MouthDog", "SpawnTime": "7:46 AM" },
+                { "Enemy": "Eyeless Dog", "SpawnTime": "7:47 AM" }
+            ]
+        });
+        let settings = CustomLcStatsLayoutSettings {
+            earth_leviathan_column: "BA".to_string(),
+            forest_giant_column: "BB".to_string(),
+            baboon_hawk_column: "BC".to_string(),
+            old_bird_column: "BD".to_string(),
+            bush_wolf_column: "BE".to_string(),
+            feiopar_column: "BF".to_string(),
+            eyeless_dog_column: "BG".to_string(),
+            ..Default::default()
+        };
+        let layout = ResolvedCustomLayout::from_settings(&settings);
+        let normalized = normalized_stats(&stats, &layout);
+        let updates = build_value_updates(&normalized, &layout, 7);
+
+        assert_eq!(cell_value(&updates, "BA"), Some(&json!(1)));
+        assert_eq!(cell_value(&updates, "BB"), Some(&json!(1)));
+        assert_eq!(cell_value(&updates, "BC"), Some(&json!(1)));
+        assert_eq!(cell_value(&updates, "BD"), Some(&json!(2)));
+        assert_eq!(cell_value(&updates, "BE"), Some(&json!(true)));
+        assert_eq!(cell_value(&updates, "BF"), Some(&json!(1)));
+        assert_eq!(cell_value(&updates, "BG"), Some(&json!(2)));
     }
 
     #[test]

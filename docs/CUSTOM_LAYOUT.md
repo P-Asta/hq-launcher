@@ -197,6 +197,7 @@ The Enemy section has two kinds of enemy columns:
 Enemy checks use the code-side enemy name in parentheses. The display name is
 for humans; the code name is what LCStatsTracker receives from the game.
 Custom Layout checks `IndoorSpawns`, `DayTimeSpawns`, and `NightTimeSpawns`.
+The outside enemy fields check only `NightTimeSpawns`.
 
 | Setting | Code name | Type |
 | --- | --- | --- |
@@ -214,6 +215,13 @@ Custom Layout checks `IndoorSpawns`, `DayTimeSpawns`, and `NightTimeSpawns`.
 | `Snare Flea (Centipede)` | `Centipede` | count |
 | `Spore Lizard (Puffer)` | `Puffer` | count |
 | `Thumper (Crawler)` | `Crawler` | count |
+| `Earth Leviathan` | `Earth Leviathan` | count |
+| `Forest Giant (ForestGiant)` | `ForestGiant` | count |
+| `Baboon Hawk` | `Baboon hawk` | count |
+| `Old Bird (RadMech)` | `RadMech` | count |
+| `Bush Wolf` | `Bush Wolf` | true/false |
+| `Feiopar` | `Feiopar` | count |
+| `Eyeless Dog (MouthDog)` | `MouthDog` | count |
 
 Enemy example:
 

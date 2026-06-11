@@ -4083,6 +4083,18 @@ fn active_game_dto(order: usize, active: &ActiveGame) -> RunningGameDto {
 }
 
 #[cfg(target_os = "windows")]
+fn non_verbatim_windows_path(path: &std::path::Path) -> std::path::PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(stripped) = text.strip_prefix(r"\\?\UNC\") {
+        return std::path::PathBuf::from(format!(r"\\{stripped}"));
+    }
+    if let Some(stripped) = text.strip_prefix(r"\\?\") {
+        return std::path::PathBuf::from(stripped);
+    }
+    path.to_path_buf()
+}
+
+#[cfg(target_os = "windows")]
 fn inject_launch_dlls(
     pid: u32,
     version_dir: &std::path::Path,
@@ -4371,7 +4383,8 @@ fn spawn_game_process(
         use std::os::windows::process::CommandExt;
         use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
 
-        let default_program = exe_path.as_os_str().to_os_string();
+        let launch_exe_path = non_verbatim_windows_path(exe_path);
+        let default_program = launch_exe_path.as_os_str().to_os_string();
         let default_args = Vec::new();
         let (program, args) =
             build_wrapped_launch_command(launch_command_template, &default_program, &default_args)?;
@@ -4448,8 +4461,14 @@ fn spawn_game_process(
     put_command_in_new_process_group(&mut command);
 
     #[allow(unused_mut)]
+    #[cfg(target_os = "windows")]
+    let launch_current_dir = non_verbatim_windows_path(exe_dir);
+    #[cfg(not(target_os = "windows"))]
+    let launch_current_dir = exe_dir.to_path_buf();
+
+    #[allow(unused_mut)]
     let mut child = command
-        .current_dir(exe_dir)
+        .current_dir(&launch_current_dir)
         .spawn()
         .map_err(|e| format!("failed to launch: {e}"))?;
 

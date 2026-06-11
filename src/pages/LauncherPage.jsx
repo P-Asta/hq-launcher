@@ -315,6 +315,13 @@ const DEFAULT_CUSTOM_LCSTATS_LAYOUT = {
   snareFleaColumn: "",
   sporeLizardColumn: "",
   thumperColumn: "",
+  earthLeviathanColumn: "",
+  forestGiantColumn: "",
+  baboonHawkColumn: "",
+  oldBirdColumn: "",
+  bushWolfColumn: "",
+  feioparColumn: "",
+  eyelessDogColumn: "",
   fogColumn: "AG",
   fogWriteFalse: false,
   meteorColumn: "AH",
@@ -671,6 +678,13 @@ function normalizeCustomLcstatsLayout(layout = {}) {
     snareFleaColumn: normalizeSheetColumn(source.snareFleaColumn, ""),
     sporeLizardColumn: normalizeSheetColumn(source.sporeLizardColumn, ""),
     thumperColumn: normalizeSheetColumn(source.thumperColumn, ""),
+    earthLeviathanColumn: normalizeSheetColumn(source.earthLeviathanColumn, ""),
+    forestGiantColumn: normalizeSheetColumn(source.forestGiantColumn, ""),
+    baboonHawkColumn: normalizeSheetColumn(source.baboonHawkColumn, ""),
+    oldBirdColumn: normalizeSheetColumn(source.oldBirdColumn, ""),
+    bushWolfColumn: normalizeSheetColumn(source.bushWolfColumn, ""),
+    feioparColumn: normalizeSheetColumn(source.feioparColumn, ""),
+    eyelessDogColumn: normalizeSheetColumn(source.eyelessDogColumn, ""),
     fogColumn: normalizeSheetColumn(source.fogColumn, ""),
     fogWriteFalse: source.fogWriteFalse === true,
     meteorColumn: normalizeSheetColumn(source.meteorColumn, ""),
@@ -4194,6 +4208,19 @@ export default function LauncherPage({
             ["Spore Lizard (Puffer)", "sporeLizardColumn", ""],
             ["Thumper (Crawler)", "thumperColumn", ""],
           ],
+          [
+            ["Earth Leviathan", "earthLeviathanColumn", ""],
+            ["Forest Giant (ForestGiant)", "forestGiantColumn", ""],
+            ["Baboon Hawk", "baboonHawkColumn", ""],
+          ],
+          [
+            ["Old Bird (RadMech)", "oldBirdColumn", ""],
+            ["Bush Wolf", "bushWolfColumn", ""],
+            ["Feiopar", "feioparColumn", ""],
+          ],
+          [
+            ["Eyeless Dog (MouthDog)", "eyelessDogColumn", ""],
+          ],
         ],
       },
       {
@@ -5815,7 +5842,7 @@ export default function LauncherPage({
           {gameStatus.running ? (
             <Button
               variant="secondary"
-              className="h-11 px-5"
+              className="h-11 border-panel-outline bg-[var(--theme-surface)] px-5 text-white hover:bg-white/[0.07]"
               onClick={stopRun}
               onContextMenu={openLaunchContextMenu}
               title="Stop all"

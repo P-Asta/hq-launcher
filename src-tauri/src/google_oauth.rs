@@ -227,6 +227,20 @@ pub struct CustomLcStatsLayoutSettings {
     pub spore_lizard_column: String,
     #[serde(default = "default_custom_thumper_column")]
     pub thumper_column: String,
+    #[serde(default = "default_custom_earth_leviathan_column")]
+    pub earth_leviathan_column: String,
+    #[serde(default = "default_custom_forest_giant_column")]
+    pub forest_giant_column: String,
+    #[serde(default = "default_custom_baboon_hawk_column")]
+    pub baboon_hawk_column: String,
+    #[serde(default = "default_custom_old_bird_column")]
+    pub old_bird_column: String,
+    #[serde(default = "default_custom_bush_wolf_column")]
+    pub bush_wolf_column: String,
+    #[serde(default = "default_custom_feiopar_column")]
+    pub feiopar_column: String,
+    #[serde(default = "default_custom_eyeless_dog_column")]
+    pub eyeless_dog_column: String,
     #[serde(default = "default_custom_fog_column")]
     pub fog_column: String,
     #[serde(default = "default_custom_fog_write_false")]
@@ -324,6 +338,13 @@ impl Default for CustomLcStatsLayoutSettings {
             snare_flea_column: default_custom_snare_flea_column(),
             spore_lizard_column: default_custom_spore_lizard_column(),
             thumper_column: default_custom_thumper_column(),
+            earth_leviathan_column: default_custom_earth_leviathan_column(),
+            forest_giant_column: default_custom_forest_giant_column(),
+            baboon_hawk_column: default_custom_baboon_hawk_column(),
+            old_bird_column: default_custom_old_bird_column(),
+            bush_wolf_column: default_custom_bush_wolf_column(),
+            feiopar_column: default_custom_feiopar_column(),
+            eyeless_dog_column: default_custom_eyeless_dog_column(),
             fog_column: default_custom_fog_column(),
             fog_write_false: default_custom_fog_write_false(),
             meteor_column: default_custom_meteor_column(),
@@ -563,6 +584,27 @@ fn default_custom_spore_lizard_column() -> String {
     String::new()
 }
 fn default_custom_thumper_column() -> String {
+    String::new()
+}
+fn default_custom_earth_leviathan_column() -> String {
+    String::new()
+}
+fn default_custom_forest_giant_column() -> String {
+    String::new()
+}
+fn default_custom_baboon_hawk_column() -> String {
+    String::new()
+}
+fn default_custom_old_bird_column() -> String {
+    String::new()
+}
+fn default_custom_bush_wolf_column() -> String {
+    String::new()
+}
+fn default_custom_feiopar_column() -> String {
+    String::new()
+}
+fn default_custom_eyeless_dog_column() -> String {
     String::new()
 }
 fn default_custom_fog_column() -> String {
