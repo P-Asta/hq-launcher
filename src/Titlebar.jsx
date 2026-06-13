@@ -321,7 +321,9 @@ export default function Titlebar({ installedVersions, ...props }) {
 
     const fileMenuItems = useMemo(() => ([
         { label: "Open Version Folder", shortcut: "CommandOrControl+O", action: () => { invoke('open_version_folder'); } },
-        { label: "Open DepotDownloader Folder", shortcut: "", action: () => { invoke('open_downloader_folder'); } }
+        { label: "Open DepotDownloader Folder", shortcut: "", action: () => { invoke('open_downloader_folder'); } },
+        { label: "Toggle Overlay Only", shortcut: "", action: () => { invoke('toggle_game_overlay_only'); } },
+        { label: "Open Overlay Modules Folder", shortcut: "", action: () => { invoke('open_game_overlay_modules_folder'); } }
     ]), []);
 
     const editMenuItems = useMemo(() => ([

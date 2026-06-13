@@ -14,19 +14,23 @@ mod thunderstore;
 mod variable;
 mod zip_utils;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 #[cfg(target_os = "windows")]
 use std::ffi::CString;
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+use std::os::windows::ffi::OsStringExt;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HWND, LPARAM, RECT};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory;
 #[cfg(target_os = "windows")]
@@ -41,9 +45,16 @@ use windows_sys::Win32::System::Memory::{
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Threading::{
-    CreateRemoteThread, OpenProcess, OpenThread, ResumeThread, WaitForSingleObject, INFINITE,
-    PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_READ,
-    PROCESS_VM_WRITE, THREAD_SUSPEND_RESUME,
+    CreateRemoteThread, OpenProcess, OpenThread, QueryFullProcessImageNameW, ResumeThread,
+    WaitForSingleObject, INFINITE, PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE,
+    THREAD_SUSPEND_RESUME,
+};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetForegroundWindow, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, IsWindowVisible, SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
 };
 #[cfg(target_os = "windows")]
 use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY};
@@ -59,6 +70,7 @@ use crate::{
 
 const INSTALL_COMPLETE_MARKER: &str = ".hq_install_complete";
 const DISABLEMOD_FILE_VERSION: u32 = 5;
+const GAME_OVERLAY_WINDOW_LABEL: &str = "game-overlay";
 
 fn manifest_state_has_version(app: &tauri::AppHandle, version: u32) -> bool {
     let Ok(app_data) = app.path().app_data_dir() else {
@@ -2256,6 +2268,616 @@ impl SteamOverlayConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct GameOverlayConfig {
+    general: GameOverlayGeneralConfig,
+    crosshair: CrosshairConfig,
+    widgets: HashMap<String, OverlayWidgetPosition>,
+    module_settings: HashMap<String, serde_json::Value>,
+    end_summary: EndSummaryConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct GameOverlayGeneralConfig {
+    overlay_key: String,
+    end_summary_duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct CrosshairConfig {
+    enabled: bool,
+    style: String,
+    color: String,
+    size: f64,
+    thickness: f64,
+    gap: f64,
+    opacity: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct OverlayWidgetPosition {
+    x: f64,
+    y: f64,
+    snap: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct EndSummaryConfig {
+    position: String,
+    duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GameOverlayEndSummaryPayload {
+    title: String,
+    lines: Vec<String>,
+    duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GameOverlayModuleDto {
+    id: String,
+    file_name: String,
+    source: String,
+}
+
+const OVERLAY_MODULE_REFERENCE: &str =
+    "/// <reference path=\"./hq-overlay-module.d.ts\" />\n// @ts-check\n\n";
+
+const DEFAULT_OVERLAY_MODULES: &[(&str, &str)] = &[
+    (
+        "crosshair.js",
+        r##"/// <reference path="./hq-overlay-module.d.ts" />
+// @ts-check
+
+setName("Crosshair");
+setDescription("Locked center overlay. Size and color are controlled here, while layout dragging stays disabled.");
+setLocked(true);
+setDefaultPosition({ x: 50, y: 50 });
+setCss(`
+  .overlay-module-crosshair {
+    transform: translate(-50%, -50%);
+  }
+`);
+register("settings", [
+  Setting.toggle("enabled", "Enabled", false),
+  Setting.selectMenu("style", "Style", [
+    { label: "Plus", value: "plus" },
+    { label: "Dot", value: "dot" },
+    { label: "Circle", value: "circle" },
+    { label: "X", value: "x" },
+    { label: "Square", value: "square" }
+  ], "plus"),
+  Setting.color("color", "Color", "#ffffff"),
+  Setting.range("size", "Size", 4, 96, 1, 24),
+  Setting.range("thickness", "Thickness", 1, 12, 1, 2),
+  Setting.range("gap", "Gap", 0, 32, 1, 5),
+  Setting.range("opacity", "Opacity", 0.05, 1, 0.05, 0.9)
+]);
+register("visible", ({ settings }) => settings.enabled !== false);
+register("renderOverlay", ({ settings }) => {
+  const size = Number(settings.size ?? 24);
+  const thickness = Number(settings.thickness ?? 2);
+  const gap = Number(settings.gap ?? 5);
+  const arm = Math.max(1, (size - gap) / 2);
+  const color = settings.color ?? "#ffffff";
+  const opacity = Number(settings.opacity ?? 0.9);
+  const line = `position:absolute;background:${color};opacity:${opacity};box-shadow:0 0 8px rgba(0,0,0,.45);`;
+  const center = size / 2 - thickness / 2;
+  if (settings.style === "dot") {
+    return `<div style="width:${size}px;height:${size}px;position:relative"><div style="${line}left:${center}px;top:${center}px;width:${thickness}px;height:${thickness}px;border-radius:999px"></div></div>`;
+  }
+  if (settings.style === "circle") {
+    return `<div style="width:${size}px;height:${size}px;border:${thickness}px solid ${color};opacity:${opacity};border-radius:999px;box-shadow:0 0 8px rgba(0,0,0,.45)"></div>`;
+  }
+  if (settings.style === "x") {
+    const xLine = `position:absolute;left:${gap / 2}px;top:${center}px;width:${Math.max(1, size - gap)}px;height:${thickness}px;background:${color};opacity:${opacity};box-shadow:0 0 8px rgba(0,0,0,.45);transform-origin:center;`;
+    return `<div style="position:relative;width:${size}px;height:${size}px"><div style="${xLine}transform:rotate(45deg)"></div><div style="${xLine}transform:rotate(-45deg)"></div></div>`;
+  }
+  if (settings.style === "square") {
+    return `<div style="width:${size}px;height:${size}px;border:${thickness}px solid ${color};opacity:${opacity};box-shadow:0 0 8px rgba(0,0,0,.45)"></div>`;
+  }
+  return `<div style="position:relative;width:${size}px;height:${size}px">
+    <div style="${line}left:0;top:${size / 2 - thickness / 2}px;width:${arm}px;height:${thickness}px"></div>
+    <div style="${line}right:0;top:${size / 2 - thickness / 2}px;width:${arm}px;height:${thickness}px"></div>
+    <div style="${line}left:${size / 2 - thickness / 2}px;top:0;width:${thickness}px;height:${arm}px"></div>
+    <div style="${line}left:${size / 2 - thickness / 2}px;bottom:0;width:${thickness}px;height:${arm}px"></div>
+  </div>`;
+});
+"##,
+    ),
+    (
+        "game_timer.js",
+        r##"/// <reference path="./hq-overlay-module.d.ts" />
+// @ts-check
+
+setName("Game Timer");
+setDescription("A simple always-on module. The styling lives in this JS file through css.");
+setDefaultPosition({ x: 4, y: 6 });
+setCss(`
+  .overlay-module-game_timer .timer-box {
+    min-width: 118px;
+    padding: 20px;
+  }
+  .overlay-module-game_timer .timer-label {
+    color: rgba(255,255,255,.52);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .overlay-module-game_timer .timer-value {
+    color: white;
+    font-size: 24px;
+    font-weight: 760;
+    line-height: 1.05;
+    font-variant-numeric: tabular-nums;
+  }
+`);
+register("settings", [Setting.toggle("enabled", "Enabled", false)]);
+register("visible", ({ settings }) => settings.enabled !== false);
+register("renderOverlay", ({ context, api }) =>
+  `<div class="timer-box"><div class="timer-label">Game Timer</div><div class="timer-value">${api.formatSeconds(context.elapsedSeconds)}</div></div>`
+);
+"##,
+    ),
+    (
+        "real_bottom_line.js",
+        r##"/// <reference path="./hq-overlay-module.d.ts" />
+// @ts-check
+
+setName("Real Bottom Line");
+setDescription("Reads the full LCStatsTracker payload in JS and briefly shows the real bottom/top line after a run payload arrives.");
+setDefaultPosition({ x: 4, y: 34 });
+setCss(`
+    .overlay-module-real_bottom_line .rl-card {
+      min-width: 210px;
+      border: 1px solid rgba(255,255,255,.14);
+      border-radius: 6px;
+      background: rgba(12,14,18,.86);
+      box-shadow: 0 16px 42px rgba(0,0,0,.42);
+      padding: 11px 12px;
+      backdrop-filter: blur(10px);
+    }
+    .overlay-module-real_bottom_line .rl-head {
+      margin-bottom: 7px;
+      color: rgba(255,255,255,.58);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+    .overlay-module-real_bottom_line .rl-main {
+      color: #f5f7ff;
+      font-size: 22px;
+      font-weight: 750;
+      line-height: 1.05;
+    }
+    .overlay-module-real_bottom_line .rl-grid {
+      display: grid;
+      gap: 3px;
+      margin-top: 8px;
+      color: rgba(255,255,255,.72);
+      font-size: 12px;
+    }
+`);
+register("settings", [
+  Setting.toggle("enabled", "Enabled", false)
+]);
+register("derive", ({ context, api }) => {
+    const stats = context.lcstats;
+    if (!stats) return null;
+    const lostItems = Array.isArray(stats.MissedItems)
+      ? stats.MissedItems.filter((item) => item && item.CollectedOnPreviousDay)
+      : [];
+    const lostScrap = lostItems.reduce((total, item) => total + api.intish(item.Value), 0);
+    const real = api.intish(api.valueAtAny(stats, [
+      "PerformanceInfo.TotalAvailableValue",
+      "TotalAvailableValue",
+      "BottomLineTrue"
+    ]));
+    return {
+      moon: api.stripLcQuote(api.valueAt(stats, "MoonInfo.Name", "Unknown")),
+      collected: api.intish(api.valueAtAny(stats, [
+        "PerformanceInfo.CollectedTotal",
+        "CollectedTotal"
+      ])),
+      real,
+      topLine: real + lostScrap,
+      lostScrap
+    };
+});
+register("visible", ({ context, settings }) => {
+    if (settings.enabled === false) return false;
+    if (context.editMode) return true;
+    return context.lcstatsAgeMs != null && context.lcstatsAgeMs <= Number(context.displayTimeMs ?? 10000);
+});
+register("renderOverlay", ({ data, api }) => {
+    if (!data) {
+      return `<div class="rl-card"><div class="rl-head">Real Bottom Line</div><div class="rl-grid">Waiting for LCStatsTracker...</div></div>`;
+    }
+    return `<div class="rl-card">
+      <div class="rl-head">${api.html(data.moon)} - Real Bottom Line</div>
+      <div class="rl-main">${api.number(data.real)}</div>
+      <div class="rl-grid">
+        <div>Collected: ${api.number(data.collected)}</div>
+        <div>Top Line: ${api.number(data.topLine)}</div>
+        <div>Lost Scrap: ${api.number(data.lostScrap)}</div>
+      </div>
+    </div>`;
+});
+"##,
+    ),
+    (
+        "leaderboard.js",
+        r##"/// <reference path="./hq-overlay-module.d.ts" />
+// @ts-check
+
+setName("Leaderboard");
+setDescription("Shows your estimated HighQuotaHQ rank from the latest LCStatsTracker payload.");
+setDefaultPosition({ x: 4, y: 18 });
+setWrapperClass("rounded border border-white/15 bg-black/70 p-3 shadow-xl shadow-black/45");
+register("settings", [
+  Setting.toggle("enabled", "Enabled", false),
+  Setting.selectMenu("track", "Track", [
+    { label: "Vanilla", value: "vanilla" },
+    { label: "Modded", value: "modded" }
+  ], "vanilla"),
+  Setting.toggle("includeCurrentVersion", "Current Version Only", false),
+  Setting.selectMenu("displayMode", "Display Mode", [
+    { label: "Detailed", value: "detailed" },
+    { label: "Compact", value: "compact" }
+  ], "detailed")
+]);
+register("visible", ({ context, settings }) => {
+  if (settings.enabled === false) return false;
+  if (context.editMode) return true;
+  return context.lcstatsAgeMs != null && context.lcstatsAgeMs <= Number(context.displayTimeMs ?? 10000);
+});
+register("renderOverlay", ({ context, api }) => {
+  const leaderboard = context.leaderboard ?? { status: "idle" };
+  if (leaderboard.status === "idle") {
+    return `<div class="overlay-title">Leaderboard</div><div class="overlay-line">Waiting for LCStatsTracker...</div>`;
+  }
+  if (leaderboard.status === "loading") {
+    return `<div class="overlay-title">Leaderboard</div><div class="overlay-line">Loading HighQuotaHQ ${api.html(leaderboard.boardType?.toUpperCase() ?? "")}...</div>`;
+  }
+  if (leaderboard.status === "error") {
+    return `<div class="overlay-title">Leaderboard</div><div class="overlay-line">HighQuotaHQ lookup failed</div><div class="overlay-line">${api.html(leaderboard.error)}</div>`;
+  }
+  if (leaderboard.status === "waiting") {
+    return `<div class="overlay-title">Leaderboard</div><div class="overlay-line">${api.html(leaderboard.reason)}</div>`;
+  }
+  const scoreLabel = leaderboard.metricLabel ?? "Score";
+  const nextScore = leaderboard.nextScore != null ? api.number(leaderboard.nextScore) : "None";
+  const versionLine = leaderboard.includeCurrentVersion ? `<div class="overlay-line">Version: ${api.html(leaderboard.version)}</div>` : "";
+  if (settings.displayMode === "compact") {
+    return `<div class="overlay-title">${api.html(leaderboard.boardType.toUpperCase())} #${api.number(leaderboard.rank)}</div>
+      <div class="overlay-line">${api.html(scoreLabel)}: ${api.number(leaderboard.score)} / Top: ${leaderboard.top ? api.number(leaderboard.top.score) : "None"}</div>`;
+  }
+  return `<div class="overlay-title">Leaderboard - ${api.html(leaderboard.boardType.toUpperCase())}</div>
+    <div class="overlay-line">${api.html(scoreLabel)}: ${api.number(leaderboard.score)}</div>
+    <div class="overlay-line">Rank: #${api.number(leaderboard.rank)} / ${api.number(leaderboard.totalRecords + 1)}</div>
+    ${versionLine}
+    <div class="overlay-line">Top: ${leaderboard.top ? api.number(leaderboard.top.score) : "None"}</div>
+    <div class="overlay-line">Next Below: ${nextScore}</div>`;
+});
+"##,
+    ),
+    (
+        "end_summary.js",
+        r##"/// <reference path="./hq-overlay-module.d.ts" />
+// @ts-check
+
+setName("End Summary");
+setDescription("Shows a temporary end summary event or a preview while editing layout.");
+setDefaultPosition({ x: 72, y: 8 });
+setWrapperClass("rounded border border-white/15 bg-black/70 p-3 shadow-xl shadow-black/45");
+register("visible", ({ context }) => context.editMode || !!context.endSummary);
+register("renderOverlay", ({ context, api }) => {
+  const summary = context.endSummary ?? {
+    title: "Run Summary Preview",
+    lines: ["Top: #1 12,430", "You: #8 9,180", "Next: #9 8,940"]
+  };
+  return `<div class="overlay-title">${api.html(summary.title ?? "Run Summary")}</div>${
+    (summary.lines ?? []).map((line) => `<div class="overlay-line">${api.html(line)}</div>`).join("")
+  }`;
+});
+"##,
+    ),
+];
+
+const OVERLAY_MODULE_TYPES_FILE_NAME: &str = "hq-overlay-module.d.ts";
+const OVERLAY_MODULE_TYPES: &str = r##"type OverlaySettingSchema =
+  | { key: string; label: string; type: "boolean"; default?: boolean }
+  | { key: string; label: string; type: "color"; default?: string }
+  | { key: string; label: string; type: "number"; min?: number; max?: number; step?: number; default?: number }
+  | { key: string; label: string; type: "range"; min: number; max: number; step?: number; default?: number }
+  | { key: string; label: string; type: "text" | "textarea" | "key"; default?: string }
+  | { key: string; label: string; type: "select"; options: Array<{ label: string; value: string }>; default?: string };
+
+/** Shortcut strings captured by key buttons, for example "Insert", "Ctrl+Shift+K", or "Ctrl+Shift+*". */
+type OverlayShortcutString = string;
+
+type OverlayRegisterType = "metadata" | "settings" | "defaults" | "css" | "visible" | "derive" | "renderOverlay" | "tick" | "lcstats";
+
+type LeaderboardBoardType = "hq" | "sdc" | "smhq";
+type LeaderboardCollectionName =
+  | "leaderboards_hq" | "leaderboards_sdc" | "leaderboards_smhq"
+  | "modded_hq" | "modded_sdc" | "modded_smhq"
+  | "lc_modded_brutal_hq" | "lc_modded_brutal_sdc" | "lc_modded_brutal_smhq"
+  | "lc_modded_eclipsed_hq" | "lc_modded_eclipsed_smhq"
+  | "lc_modded_wesleysmoons_hq" | "lc_modded_wesleysmoons_sdc" | "lc_modded_wesleysmoons_smhq"
+  | "lc_modded_classicmoons_hq" | "lc_modded_classicmoons_sdc" | "lc_modded_classicmoons_smhq";
+
+type LeaderboardRun = {
+  id?: string;
+  collectionName?: LeaderboardCollectionName | string;
+  players?: string[];
+  version?: string;
+  verified?: boolean;
+  quotaAmount?: number;
+  quotaReached?: number;
+  totalScrap?: number;
+  moon?: string;
+  scrapType?: string;
+  videos?: any;
+  date?: any;
+  verifiedAt?: any;
+  verifier?: string;
+  [key: string]: any;
+};
+
+type LeaderboardState = {
+  status: "idle" | "waiting" | "loading" | "ready" | "error";
+  error?: string;
+  reason?: string;
+  track?: "vanilla" | "modded";
+  boardType?: LeaderboardBoardType;
+  collectionName?: LeaderboardCollectionName | string;
+  metricKey?: "quotaAmount" | "totalScrap" | string;
+  metricLabel?: string;
+  score?: number;
+  rank?: number;
+  totalRecords?: number;
+  top?: { rank: number; score: number; players: string[] } | null;
+  next?: LeaderboardRun | null;
+  nextScore?: number | null;
+  includeCurrentVersion?: boolean;
+  playerCount?: number;
+  version?: string;
+  moon?: string;
+  collections: {
+    vanilla: Record<LeaderboardBoardType, LeaderboardCollectionName>;
+    modded: Record<LeaderboardBoardType, LeaderboardCollectionName>;
+    legacyModded: Record<string, Partial<Record<LeaderboardBoardType, LeaderboardCollectionName>>>;
+  };
+  boardTypes: Record<LeaderboardBoardType, { id: LeaderboardBoardType; name: string; metricLabel: string; metricKey: "quotaAmount" | "totalScrap" }>;
+  runFields: string[];
+};
+
+type OverlayEndSummary = {
+  id?: number;
+  title?: string;
+  lines?: string[];
+  payload?: any;
+  expiresAt?: number;
+};
+
+type OverlayContext = {
+  editMode: boolean;
+  controlsOpen: boolean;
+  elapsedSeconds: number;
+  lcstats: any;
+  lcstatsRaw: string | null;
+  lcstatsPayload: { raw: string; stats: any } | null;
+  lcstatsAgeMs: number | null;
+  displayTimeMs: number;
+  leaderboard: LeaderboardState;
+  /** @deprecated Use context.leaderboard. */
+  recordChecker: LeaderboardState;
+  endSummary: OverlayEndSummary | null;
+  events: any[];
+  formatSeconds(totalSeconds: number): string;
+  escapeHtml(value: any): string;
+  html(value: any): string;
+  number(value: any): string;
+  stripLcQuote(value: any): any;
+  intish(value: any, fallback?: number): number;
+  valueAt(root: any, path: string | string[], fallback?: any): any;
+  valueAtAny(root: any, paths: Array<string | string[]>, fallback?: any): any;
+};
+
+type OverlayHandlerArgs<TData = any> = {
+  context: OverlayContext;
+  data: TData;
+  settings: Record<string, any>;
+  config: any;
+  api: OverlayModuleApi;
+};
+
+type OverlayModuleApi = {
+  id: string;
+  formatSeconds(totalSeconds: number): string;
+  escapeHtml(value: any): string;
+  html(value: any): string;
+  number(value: any): string;
+  stripLcQuote(value: any): any;
+  intish(value: any, fallback?: number): number;
+  valueAt(root: any, path: string | string[], fallback?: any): any;
+  valueAtAny(root: any, paths: Array<string | string[]>, fallback?: any): any;
+  className(name?: string): string;
+  now(): number;
+};
+
+declare const Setting: {
+  toggle(key: string, label: string, defaultValue?: boolean): OverlaySettingSchema;
+  color(key: string, label: string, defaultValue?: string): OverlaySettingSchema;
+  number(key: string, label: string, defaultValue?: number, min?: number, max?: number, step?: number): OverlaySettingSchema;
+  range(key: string, label: string, min: number, max: number, step?: number, defaultValue?: number): OverlaySettingSchema;
+  text(key: string, label: string, defaultValue?: string): OverlaySettingSchema;
+  textarea(key: string, label: string, defaultValue?: string): OverlaySettingSchema;
+  key(key: string, label: string, defaultValue?: OverlayShortcutString): OverlaySettingSchema;
+  hotkey(key: string, label: string, defaultValue?: OverlayShortcutString): OverlaySettingSchema;
+  select(key: string, label: string, options: Array<{ label: string; value: string }>, defaultValue?: string): OverlaySettingSchema;
+  selectMenu(key: string, label: string, options: Array<{ label: string; value: string }>, defaultValue?: string): OverlaySettingSchema;
+};
+
+declare function register(type: "settings", payload: OverlaySettingSchema[]): unknown;
+declare function register(type: "defaults" | "metadata", payload: Record<string, any>): unknown;
+declare function register(type: "css", payload: string): unknown;
+declare function register(type: "visible", payload: (args: OverlayHandlerArgs) => boolean | void): unknown;
+declare function register<TData = any>(type: "derive", payload: (args: OverlayHandlerArgs) => TData): unknown;
+declare function register<TData = any>(type: "renderOverlay", payload: (args: OverlayHandlerArgs<TData>) => string | number | null | undefined): unknown;
+declare function register<TData = any>(type: "tick" | "lcstats", payload: (args: OverlayHandlerArgs<TData>) => unknown): unknown;
+declare function register(type: OverlayRegisterType, payload: any): unknown;
+
+declare function setName(name: string): unknown;
+declare function setDescription(description: string): unknown;
+declare function setLocked(locked?: boolean): unknown;
+declare function setDefaultPosition(position: { x: number; y: number }): unknown;
+declare function setDefaultSettings(settings: Record<string, any>): unknown;
+declare function setWrapperClass(wrapperClass: string): unknown;
+declare function setCss(css: string): unknown;
+
+declare const api: OverlayModuleApi;
+declare const html: OverlayModuleApi["html"];
+declare const formatSeconds: OverlayModuleApi["formatSeconds"];
+declare const number: OverlayModuleApi["number"];
+declare const valueAt: OverlayModuleApi["valueAt"];
+declare const valueAtAny: OverlayModuleApi["valueAtAny"];
+declare const intish: OverlayModuleApi["intish"];
+"##;
+
+impl Default for CrosshairConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            style: "plus".to_string(),
+            color: "#ffffff".to_string(),
+            size: 24.0,
+            thickness: 2.0,
+            gap: 5.0,
+            opacity: 0.9,
+        }
+    }
+}
+
+impl Default for GameOverlayGeneralConfig {
+    fn default() -> Self {
+        Self {
+            overlay_key: "Insert".to_string(),
+            end_summary_duration_ms: 10_000,
+        }
+    }
+}
+
+impl Default for OverlayWidgetPosition {
+    fn default() -> Self {
+        Self {
+            x: 50.0,
+            y: 50.0,
+            snap: true,
+        }
+    }
+}
+
+impl Default for EndSummaryConfig {
+    fn default() -> Self {
+        Self {
+            position: "top-right".to_string(),
+            duration_ms: 10_000,
+        }
+    }
+}
+
+impl Default for GameOverlayConfig {
+    fn default() -> Self {
+        Self {
+            general: GameOverlayGeneralConfig::default(),
+            crosshair: CrosshairConfig::default(),
+            widgets: default_overlay_widget_positions(),
+            module_settings: HashMap::new(),
+            end_summary: EndSummaryConfig::default(),
+        }
+    }
+}
+
+fn default_overlay_widget_positions() -> HashMap<String, OverlayWidgetPosition> {
+    HashMap::from([
+        (
+            "crosshair".to_string(),
+            OverlayWidgetPosition {
+                x: 50.0,
+                y: 50.0,
+                snap: false,
+            },
+        ),
+        (
+            "game_timer".to_string(),
+            OverlayWidgetPosition {
+                x: 4.0,
+                y: 6.0,
+                snap: true,
+            },
+        ),
+        (
+            "leaderboard".to_string(),
+            OverlayWidgetPosition {
+                x: 4.0,
+                y: 18.0,
+                snap: true,
+            },
+        ),
+        (
+            "real_bottom_line".to_string(),
+            OverlayWidgetPosition {
+                x: 4.0,
+                y: 34.0,
+                snap: true,
+            },
+        ),
+        (
+            "end_summary".to_string(),
+            OverlayWidgetPosition {
+                x: 72.0,
+                y: 8.0,
+                snap: true,
+            },
+        ),
+    ])
+}
+
+#[derive(Default)]
+struct GameOverlayState {
+    controls_open: AtomicBool,
+    monitor_running: AtomicBool,
+    preview_mode: AtomicBool,
+    window_visible: AtomicBool,
+    last_foreground_pid: AtomicU32,
+    last_match: AtomicBool,
+    show_count: AtomicU64,
+    registered_overlay_shortcut: Mutex<Option<String>>,
+    last_message: Mutex<String>,
+    last_error: Mutex<Option<String>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GameOverlayDebugStatus {
+    controls_open: bool,
+    monitor_running: bool,
+    last_foreground_pid: u32,
+    last_match: bool,
+    show_count: u64,
+    last_message: String,
+    last_error: Option<String>,
+}
+
 fn disablemod_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(app
         .path()
@@ -2272,6 +2894,32 @@ fn steam_overlay_config_path(app: &tauri::AppHandle) -> Result<std::path::PathBu
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?
         .join("config")
         .join("steam_overlay.json"))
+}
+
+fn legacy_game_overlay_config_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
+        .join("config")
+        .join("game_overlay.json"))
+}
+
+fn game_overlay_config_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
+        .join("config")
+        .join("overlay"))
+}
+
+fn game_overlay_module_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
+        .join("overlayModule"))
 }
 
 pub(crate) fn thunderstore_cache_path(
@@ -2479,6 +3127,1148 @@ fn write_steam_overlay_config(
     }
     let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+fn read_json_file_or_default<T>(path: &Path) -> T
+where
+    T: DeserializeOwned + Default,
+{
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return T::default();
+    };
+    serde_json::from_str::<T>(&text).unwrap_or_else(|e| {
+        log::warn!("Failed to parse {}: {e}", path.display());
+        T::default()
+    })
+}
+
+fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+fn overlay_module_settings_file_name(module_id: &str) -> String {
+    let stem: String = module_id
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let stem = stem.trim_matches('_');
+    if stem.is_empty() {
+        "module".to_string()
+    } else {
+        stem.to_string()
+    }
+}
+
+fn read_game_overlay_config(app: &tauri::AppHandle) -> Result<GameOverlayConfig, String> {
+    let dir = game_overlay_config_dir(app)?;
+    if !dir.exists() {
+        let legacy_path = legacy_game_overlay_config_path(app)?;
+        if legacy_path.exists() {
+            let text = std::fs::read_to_string(&legacy_path).map_err(|e| e.to_string())?;
+            match serde_json::from_str::<GameOverlayConfig>(&text) {
+                Ok(cfg) => {
+                    let cfg = sanitize_game_overlay_config(cfg);
+                    let _ = write_game_overlay_config(app, &cfg);
+                    return Ok(cfg);
+                }
+                Err(e) => {
+                    log::warn!("Failed to parse legacy game_overlay.json, resetting: {e}");
+                }
+            }
+        }
+
+        let cfg = GameOverlayConfig::default();
+        let _ = write_game_overlay_config(app, &cfg);
+        return Ok(cfg);
+    }
+
+    let mut cfg = GameOverlayConfig {
+        general: read_json_file_or_default(&dir.join("general.json")),
+        crosshair: read_json_file_or_default(&dir.join("crosshair.json")),
+        widgets: read_json_file_or_default(&dir.join("widgets.json")),
+        module_settings: HashMap::new(),
+        end_summary: read_json_file_or_default(&dir.join("end_summary.json")),
+    };
+
+    let modules_dir = dir.join("modules");
+    if modules_dir.exists() {
+        for entry in std::fs::read_dir(&modules_dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(module_id) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            let value: serde_json::Value = read_json_file_or_default(&path);
+            if !value.is_null() {
+                cfg.module_settings.insert(module_id.to_string(), value);
+            }
+        }
+    }
+
+    Ok(sanitize_game_overlay_config(cfg))
+}
+
+fn write_game_overlay_config(
+    app: &tauri::AppHandle,
+    cfg: &GameOverlayConfig,
+) -> Result<(), String> {
+    let dir = game_overlay_config_dir(app)?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    write_json_file(&dir.join("general.json"), &cfg.general)?;
+    write_json_file(&dir.join("crosshair.json"), &cfg.crosshair)?;
+    write_json_file(&dir.join("widgets.json"), &cfg.widgets)?;
+    write_json_file(&dir.join("end_summary.json"), &cfg.end_summary)?;
+
+    let modules_dir = dir.join("modules");
+    std::fs::create_dir_all(&modules_dir).map_err(|e| e.to_string())?;
+    for (module_id, settings) in &cfg.module_settings {
+        let file_name = format!("{}.json", overlay_module_settings_file_name(module_id));
+        write_json_file(&modules_dir.join(file_name), settings)?;
+    }
+    Ok(())
+}
+
+fn ensure_default_game_overlay_modules(app: &tauri::AppHandle) -> Result<(), String> {
+    let dir = game_overlay_module_dir(app)?;
+    if dir.exists() {
+        let types_path = dir.join(OVERLAY_MODULE_TYPES_FILE_NAME);
+        std::fs::write(&types_path, OVERLAY_MODULE_TYPES).map_err(|e| e.to_string())?;
+        let legacy_example_path = dir.join("00_chattriggers_api_example.js");
+        if legacy_example_path.exists() {
+            std::fs::remove_file(&legacy_example_path).map_err(|e| e.to_string())?;
+        }
+        for (file_name, source) in DEFAULT_OVERLAY_MODULES {
+            let path = dir.join(file_name);
+            if !path.exists() {
+                std::fs::write(&path, source).map_err(|e| e.to_string())?;
+                continue;
+            }
+            let current = std::fs::read_to_string(&path).unwrap_or_default();
+            if !current
+                .trim_start()
+                .starts_with("/// <reference path=\"./hq-overlay-module.d.ts\" />")
+            {
+                std::fs::write(&path, format!("{OVERLAY_MODULE_REFERENCE}{current}"))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        for file_name in [
+            "crosshair.js",
+            "game_timer.js",
+            "leaderboard.js",
+            "real_bottom_line.js",
+            "end_summary.js",
+        ] {
+            let path = dir.join(file_name);
+            if !path.exists() {
+                continue;
+            }
+            let current = std::fs::read_to_string(&path).unwrap_or_default();
+            let should_refresh = match file_name {
+                "crosshair.js" => {
+                    current.contains("setName(\"Crosshair\")")
+                        && !current.contains("Setting.selectMenu(\"style\"")
+                }
+                "game_timer.js" => {
+                    current.contains("setName(\"Game Timer\")")
+                        && current.contains("backdrop-filter")
+                }
+                "real_bottom_line.js" => {
+                    current.contains("setName(\"Real Bottom Line\")")
+                        && current.contains("durationSeconds")
+                }
+                "leaderboard.js" => {
+                    current.contains("setName(\"Leaderboard\")")
+                        && !current.contains("context.leaderboard")
+                }
+                "end_summary.js" => {
+                    current.contains("setName(\"End Summary\")")
+                        && current.contains("durationSeconds")
+                }
+                _ => false,
+            };
+            if should_refresh {
+                if let Some((_, source)) = DEFAULT_OVERLAY_MODULES
+                    .iter()
+                    .find(|(default_file_name, _)| *default_file_name == file_name)
+                {
+                    std::fs::write(&path, source).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        let record_checker_path = dir.join("record_checker.js");
+        if record_checker_path.exists() {
+            let current = std::fs::read_to_string(&record_checker_path).unwrap_or_default();
+            if current.contains("Preview placeholder for SDC/HQ rank checks")
+                || current.contains("setName(\"Record Checker\")")
+            {
+                std::fs::remove_file(&record_checker_path).map_err(|e| e.to_string())?;
+            }
+        }
+        return Ok(());
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(
+        dir.join(OVERLAY_MODULE_TYPES_FILE_NAME),
+        OVERLAY_MODULE_TYPES,
+    )
+    .map_err(|e| e.to_string())?;
+    for (file_name, source) in DEFAULT_OVERLAY_MODULES {
+        let path = dir.join(file_name);
+        std::fs::write(&path, source).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn read_game_overlay_modules(app: &tauri::AppHandle) -> Result<Vec<GameOverlayModuleDto>, String> {
+    ensure_default_game_overlay_modules(app)?;
+    let dir = game_overlay_module_dir(app)?;
+    let mut modules = Vec::new();
+    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("js") {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let source = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let id = file_name
+            .strip_suffix(".js")
+            .unwrap_or(&file_name)
+            .trim()
+            .to_string();
+        if id.is_empty() {
+            continue;
+        }
+        modules.push(GameOverlayModuleDto {
+            id,
+            file_name,
+            source,
+        });
+    }
+    modules.sort_by(|left, right| left.file_name.cmp(&right.file_name));
+    Ok(modules)
+}
+
+fn sanitize_game_overlay_config(mut cfg: GameOverlayConfig) -> GameOverlayConfig {
+    let fallback = GameOverlayConfig::default();
+    cfg.general.overlay_key = sanitize_overlay_key(&cfg.general.overlay_key);
+    cfg.general.end_summary_duration_ms = cfg.general.end_summary_duration_ms.clamp(2_000, 30_000);
+    let style = cfg.crosshair.style.trim().to_lowercase();
+    cfg.crosshair.style = match style.as_str() {
+        "plus" | "dot" | "circle" | "x" | "square" => style,
+        _ => fallback.crosshair.style,
+    };
+
+    let color = cfg.crosshair.color.trim();
+    cfg.crosshair.color = if color.len() == 7
+        && color.starts_with('#')
+        && color.chars().skip(1).all(|ch| ch.is_ascii_hexdigit())
+    {
+        color.to_string()
+    } else {
+        fallback.crosshair.color
+    };
+
+    cfg.crosshair.size = cfg.crosshair.size.clamp(4.0, 96.0);
+    cfg.crosshair.thickness = cfg.crosshair.thickness.clamp(1.0, 12.0);
+    cfg.crosshair.gap = cfg.crosshair.gap.clamp(0.0, 32.0);
+    cfg.crosshair.opacity = cfg.crosshair.opacity.clamp(0.05, 1.0);
+    for (id, default_position) in default_overlay_widget_positions() {
+        cfg.widgets.entry(id).or_insert(default_position);
+    }
+    for position in cfg.widgets.values_mut() {
+        sanitize_widget_position(position);
+    }
+    cfg.end_summary.position = sanitize_overlay_position(&cfg.end_summary.position);
+    cfg.end_summary.duration_ms = cfg.end_summary.duration_ms.clamp(2_000, 30_000);
+    cfg
+}
+
+fn sanitize_widget_position(position: &mut OverlayWidgetPosition) {
+    position.x = position.x.clamp(0.0, 100.0);
+    position.y = position.y.clamp(0.0, 100.0);
+}
+
+fn sanitize_overlay_key(key: &str) -> String {
+    let trimmed = key.trim();
+    if trimmed.is_empty() || trimmed.len() > 64 || trimmed.chars().any(|ch| ch.is_control()) {
+        "Insert".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn overlay_shortcut_keys() -> &'static [(&'static str, Code)] {
+    &[
+        ("A", Code::KeyA),
+        ("B", Code::KeyB),
+        ("C", Code::KeyC),
+        ("D", Code::KeyD),
+        ("E", Code::KeyE),
+        ("F", Code::KeyF),
+        ("G", Code::KeyG),
+        ("H", Code::KeyH),
+        ("I", Code::KeyI),
+        ("J", Code::KeyJ),
+        ("K", Code::KeyK),
+        ("L", Code::KeyL),
+        ("M", Code::KeyM),
+        ("N", Code::KeyN),
+        ("O", Code::KeyO),
+        ("P", Code::KeyP),
+        ("Q", Code::KeyQ),
+        ("R", Code::KeyR),
+        ("S", Code::KeyS),
+        ("T", Code::KeyT),
+        ("U", Code::KeyU),
+        ("V", Code::KeyV),
+        ("W", Code::KeyW),
+        ("X", Code::KeyX),
+        ("Y", Code::KeyY),
+        ("Z", Code::KeyZ),
+        ("0", Code::Digit0),
+        ("1", Code::Digit1),
+        ("2", Code::Digit2),
+        ("3", Code::Digit3),
+        ("4", Code::Digit4),
+        ("5", Code::Digit5),
+        ("6", Code::Digit6),
+        ("7", Code::Digit7),
+        ("8", Code::Digit8),
+        ("9", Code::Digit9),
+        (")", Code::Digit0),
+        ("!", Code::Digit1),
+        ("@", Code::Digit2),
+        ("#", Code::Digit3),
+        ("$", Code::Digit4),
+        ("%", Code::Digit5),
+        ("^", Code::Digit6),
+        ("&", Code::Digit7),
+        ("*", Code::Digit8),
+        ("(", Code::Digit9),
+        ("F1", Code::F1),
+        ("F2", Code::F2),
+        ("F3", Code::F3),
+        ("F4", Code::F4),
+        ("F5", Code::F5),
+        ("F6", Code::F6),
+        ("F7", Code::F7),
+        ("F8", Code::F8),
+        ("F9", Code::F9),
+        ("F10", Code::F10),
+        ("F11", Code::F11),
+        ("F12", Code::F12),
+        ("F13", Code::F13),
+        ("F14", Code::F14),
+        ("F15", Code::F15),
+        ("F16", Code::F16),
+        ("F17", Code::F17),
+        ("F18", Code::F18),
+        ("F19", Code::F19),
+        ("F20", Code::F20),
+        ("F21", Code::F21),
+        ("F22", Code::F22),
+        ("F23", Code::F23),
+        ("F24", Code::F24),
+        ("Insert", Code::Insert),
+        ("Delete", Code::Delete),
+        ("Home", Code::Home),
+        ("End", Code::End),
+        ("PageUp", Code::PageUp),
+        ("PageDown", Code::PageDown),
+        ("ArrowUp", Code::ArrowUp),
+        ("ArrowDown", Code::ArrowDown),
+        ("ArrowLeft", Code::ArrowLeft),
+        ("ArrowRight", Code::ArrowRight),
+        ("Escape", Code::Escape),
+        ("Tab", Code::Tab),
+        ("Enter", Code::Enter),
+        ("Space", Code::Space),
+        ("Backspace", Code::Backspace),
+        ("`", Code::Backquote),
+        ("-", Code::Minus),
+        ("=", Code::Equal),
+        ("[", Code::BracketLeft),
+        ("]", Code::BracketRight),
+        ("\\", Code::Backslash),
+        (";", Code::Semicolon),
+        ("'", Code::Quote),
+        (",", Code::Comma),
+        (".", Code::Period),
+        ("/", Code::Slash),
+        ("~", Code::Backquote),
+        ("_", Code::Minus),
+        ("+", Code::Equal),
+        ("{", Code::BracketLeft),
+        ("}", Code::BracketRight),
+        ("|", Code::Backslash),
+        (":", Code::Semicolon),
+        ("\"", Code::Quote),
+        ("<", Code::Comma),
+        (">", Code::Period),
+        ("?", Code::Slash),
+        ("Numpad0", Code::Numpad0),
+        ("Numpad1", Code::Numpad1),
+        ("Numpad2", Code::Numpad2),
+        ("Numpad3", Code::Numpad3),
+        ("Numpad4", Code::Numpad4),
+        ("Numpad5", Code::Numpad5),
+        ("Numpad6", Code::Numpad6),
+        ("Numpad7", Code::Numpad7),
+        ("Numpad8", Code::Numpad8),
+        ("Numpad9", Code::Numpad9),
+        ("NumpadAdd", Code::NumpadAdd),
+        ("+", Code::NumpadAdd),
+        ("NumpadMultiply", Code::NumpadMultiply),
+        ("*", Code::NumpadMultiply),
+        ("NumpadSubtract", Code::NumpadSubtract),
+        ("NumpadDecimal", Code::NumpadDecimal),
+        ("NumpadDivide", Code::NumpadDivide),
+        ("NumpadEnter", Code::NumpadEnter),
+    ]
+}
+
+fn parse_overlay_shortcut_modifiers(prefix: &str) -> Option<Option<Modifiers>> {
+    let prefix = prefix.trim();
+    if prefix.is_empty() {
+        return Some(None);
+    }
+
+    let mut modifiers = Modifiers::empty();
+    for part in prefix.split('+') {
+        match part.trim().to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => modifiers |= Modifiers::CONTROL,
+            "shift" => modifiers |= Modifiers::SHIFT,
+            "alt" => modifiers |= Modifiers::ALT,
+            "meta" | "super" | "cmd" | "win" | "windows" => modifiers |= Modifiers::SUPER,
+            _ => return None,
+        }
+    }
+    Some(Some(modifiers))
+}
+
+fn overlay_shortcuts_for_key(key: &str) -> Vec<Shortcut> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let mut shortcuts = Vec::new();
+
+    for &(shortcut_key, shortcut_code) in overlay_shortcut_keys() {
+        let shortcut_lower = shortcut_key.to_ascii_lowercase();
+        let modifier_prefix = if lower == shortcut_lower {
+            Some("")
+        } else if lower.ends_with(&shortcut_lower) {
+            let prefix_end = trimmed.len().saturating_sub(shortcut_key.len());
+            let prefix = &trimmed[..prefix_end];
+            prefix
+                .strip_suffix('+')
+                .filter(|without_separator| !without_separator.is_empty())
+        } else {
+            None
+        };
+
+        let Some(modifier_prefix) = modifier_prefix else {
+            continue;
+        };
+        let Some(modifiers) = parse_overlay_shortcut_modifiers(modifier_prefix) else {
+            continue;
+        };
+        shortcuts.push(Shortcut::new(modifiers, shortcut_code));
+    }
+
+    shortcuts
+}
+
+fn sanitize_overlay_position(position: &str) -> String {
+    match position.trim().to_lowercase().as_str() {
+        "top-left" | "top-right" | "bottom-left" | "bottom-right" | "center" => {
+            position.trim().to_lowercase()
+        }
+        _ => "top-right".to_string(),
+    }
+}
+
+fn ensure_game_overlay_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(GAME_OVERLAY_WINDOW_LABEL) {
+        return Ok(window);
+    }
+
+    let page_load_app = app.clone();
+    let window = tauri::WebviewWindowBuilder::new(
+        app,
+        GAME_OVERLAY_WINDOW_LABEL,
+        tauri::WebviewUrl::App("index.html#window=game-overlay".into()),
+    )
+    .on_page_load(move |_window, payload| {
+        let event = match payload.event() {
+            tauri::webview::PageLoadEvent::Started => "started",
+            tauri::webview::PageLoadEvent::Finished => "finished",
+        };
+        set_game_overlay_debug(
+            &page_load_app,
+            format!("page load {event}: {}", payload.url()),
+        );
+    })
+    .title("HQ Overlay")
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .fullscreen(true)
+    .focused(false)
+    .focusable(false)
+    .visible(false)
+    .build()
+    .map_err(|e| format!("failed to create game overlay window: {e}"))?;
+
+    apply_game_overlay_interaction(&window, false)?;
+    set_game_overlay_debug(app, "window created");
+    Ok(window)
+}
+
+fn apply_game_overlay_interaction(
+    window: &tauri::WebviewWindow,
+    controls_open: bool,
+) -> Result<(), String> {
+    window
+        .set_ignore_cursor_events(!controls_open)
+        .map_err(|e| e.to_string())?;
+    window
+        .set_focusable(controls_open)
+        .map_err(|e| e.to_string())?;
+    if controls_open {
+        let _ = window.set_focus();
+    }
+    Ok(())
+}
+
+fn set_game_overlay_controls_open_inner(
+    app: &tauri::AppHandle,
+    state: &GameOverlayState,
+    open: bool,
+) -> Result<bool, String> {
+    state.controls_open.store(open, Ordering::Relaxed);
+    let window = ensure_game_overlay_window(app)?;
+    window.show().map_err(|e| e.to_string())?;
+    window.set_always_on_top(true).map_err(|e| e.to_string())?;
+    force_game_overlay_topmost(&window)?;
+    apply_game_overlay_interaction(&window, open)?;
+    app.emit_to(
+        GAME_OVERLAY_WINDOW_LABEL,
+        "overlay://controls-open-changed",
+        open,
+    )
+    .map_err(|e| e.to_string())?;
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let _ = app_handle.emit_to(
+            GAME_OVERLAY_WINDOW_LABEL,
+            "overlay://controls-open-changed",
+            open,
+        );
+    });
+    set_game_overlay_debug(app, format!("controls_open={open}"));
+    Ok(open)
+}
+
+#[cfg(target_os = "windows")]
+fn force_game_overlay_topmost(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    let ok = unsafe {
+        SetWindowPos(
+            hwnd.0 as HWND,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        )
+    };
+    if ok == 0 {
+        return Err("SetWindowPos(HWND_TOPMOST) failed".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn force_game_overlay_topmost(_window: &tauri::WebviewWindow) -> Result<(), String> {
+    Ok(())
+}
+
+fn hide_game_overlay_window(app: &tauri::AppHandle, close_controls: bool) {
+    if let Some(window) = app.get_webview_window(GAME_OVERLAY_WINDOW_LABEL) {
+        if close_controls {
+            app.state::<GameOverlayState>()
+                .controls_open
+                .store(false, Ordering::Relaxed);
+            let _ = apply_game_overlay_interaction(&window, false);
+            let _ = app.emit_to(
+                GAME_OVERLAY_WINDOW_LABEL,
+                "overlay://controls-open-changed",
+                false,
+            );
+        }
+        let _ = window.hide();
+        if app
+            .state::<GameOverlayState>()
+            .window_visible
+            .swap(false, Ordering::Relaxed)
+        {
+            set_game_overlay_debug(
+                app,
+                format!("window hidden close_controls={close_controls}"),
+            );
+        }
+    }
+}
+
+fn hide_game_overlay(app: &tauri::AppHandle) {
+    if app
+        .state::<GameOverlayState>()
+        .controls_open
+        .load(Ordering::Relaxed)
+    {
+        set_game_overlay_debug(app, "hide skipped because overlay controls are open");
+        return;
+    }
+    #[cfg(target_os = "windows")]
+    if find_lethal_company_window(&HashSet::new()).is_some() {
+        set_game_overlay_debug(
+            app,
+            "hide skipped because Lethal Company window still exists",
+        );
+        return;
+    }
+    hide_game_overlay_window(app, true);
+}
+
+fn set_game_overlay_debug(app: &tauri::AppHandle, message: impl Into<String>) {
+    let message = message.into();
+    log::info!("game overlay: {message}");
+    let state = app.state::<GameOverlayState>();
+    {
+        if let Ok(mut last_message) = state.last_message.lock() {
+            *last_message = message;
+        };
+    }
+}
+
+fn set_game_overlay_error(app: &tauri::AppHandle, message: impl Into<String>) {
+    let message = message.into();
+    log::error!("game overlay: {message}");
+    let state = app.state::<GameOverlayState>();
+    {
+        if let Ok(mut last_error) = state.last_error.lock() {
+            *last_error = Some(message.clone());
+        };
+    }
+    {
+        if let Ok(mut last_message) = state.last_message.lock() {
+            *last_message = message;
+        };
+    }
+}
+
+fn game_overlay_debug_status(state: &GameOverlayState) -> GameOverlayDebugStatus {
+    GameOverlayDebugStatus {
+        controls_open: state.controls_open.load(Ordering::Relaxed),
+        monitor_running: state.monitor_running.load(Ordering::Relaxed),
+        last_foreground_pid: state.last_foreground_pid.load(Ordering::Relaxed),
+        last_match: state.last_match.load(Ordering::Relaxed),
+        show_count: state.show_count.load(Ordering::Relaxed),
+        last_message: state
+            .last_message
+            .lock()
+            .map(|message| message.clone())
+            .unwrap_or_default(),
+        last_error: state
+            .last_error
+            .lock()
+            .map(|error| error.clone())
+            .unwrap_or_else(|_| Some("overlay debug lock failed".to_string())),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn foreground_window_pid_and_rect() -> Option<(u32, RECT)> {
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_null() {
+        return None;
+    }
+
+    let mut pid = 0u32;
+    unsafe {
+        GetWindowThreadProcessId(hwnd, &mut pid);
+    }
+    if pid == 0 {
+        return None;
+    }
+
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    let ok = unsafe { GetWindowRect(hwnd, &mut rect) };
+    if ok == 0 || rect.right <= rect.left || rect.bottom <= rect.top {
+        return None;
+    }
+
+    Some((pid, rect))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_process_image_path(pid: u32) -> Option<std::path::PathBuf> {
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_QUERY_INFORMATION,
+            0,
+            pid,
+        )
+    };
+    if handle.is_null() {
+        return None;
+    }
+
+    let mut buffer = vec![0u16; 32_768];
+    let mut size = buffer.len() as u32;
+    let ok = unsafe { QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut size) };
+    unsafe {
+        CloseHandle(handle);
+    }
+    if ok == 0 || size == 0 {
+        return None;
+    }
+
+    buffer.truncate(size as usize);
+    Some(std::path::PathBuf::from(OsString::from_wide(&buffer)))
+}
+
+#[cfg(target_os = "windows")]
+fn is_lethal_company_process(pid: u32) -> bool {
+    windows_process_image_path(pid)
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
+        .map(|name| name.eq_ignore_ascii_case("Lethal Company.exe"))
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_window_title(hwnd: HWND) -> String {
+    let len = unsafe { GetWindowTextLengthW(hwnd) };
+    if len <= 0 {
+        return String::new();
+    }
+    let mut buffer = vec![0u16; len as usize + 1];
+    let written = unsafe { GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
+    if written <= 0 {
+        return String::new();
+    }
+    buffer.truncate(written as usize);
+    String::from_utf16_lossy(&buffer)
+}
+
+#[cfg(target_os = "windows")]
+fn is_lethal_company_window_title(title: &str) -> bool {
+    title.to_ascii_lowercase().contains("lethal company")
+}
+
+#[cfg(target_os = "windows")]
+fn foreground_matches_game(foreground_pid: u32, active_pids: &HashSet<u32>) -> bool {
+    active_pids.contains(&foreground_pid) || is_lethal_company_process(foreground_pid)
+}
+
+#[cfg(target_os = "windows")]
+struct FindLethalCompanyWindowState {
+    active_pids: HashSet<u32>,
+    result: Option<(u32, RECT)>,
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn enum_lethal_company_window(hwnd: HWND, lparam: LPARAM) -> i32 {
+    if unsafe { IsWindowVisible(hwnd) } == 0 {
+        return 1;
+    }
+
+    let mut pid = 0u32;
+    unsafe {
+        GetWindowThreadProcessId(hwnd, &mut pid);
+    }
+    if pid == 0 {
+        return 1;
+    }
+
+    let title = windows_window_title(hwnd);
+    let matches = state_matches_window_pid_or_title(pid, &title, unsafe {
+        &*(lparam as *const FindLethalCompanyWindowState)
+    });
+    if !matches {
+        return 1;
+    }
+
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    let ok = unsafe { GetWindowRect(hwnd, &mut rect) };
+    if ok == 0 || rect.right <= rect.left || rect.bottom <= rect.top {
+        return 1;
+    }
+
+    let state = unsafe { &mut *(lparam as *mut FindLethalCompanyWindowState) };
+    state.result = Some((pid, rect));
+    0
+}
+
+#[cfg(target_os = "windows")]
+fn state_matches_window_pid_or_title(
+    pid: u32,
+    title: &str,
+    state: &FindLethalCompanyWindowState,
+) -> bool {
+    state.active_pids.contains(&pid)
+        || is_lethal_company_window_title(title)
+        || is_lethal_company_process(pid)
+}
+
+#[cfg(target_os = "windows")]
+fn find_lethal_company_window(active_pids: &HashSet<u32>) -> Option<(u32, RECT)> {
+    let mut state = FindLethalCompanyWindowState {
+        active_pids: active_pids.clone(),
+        result: None,
+    };
+    unsafe {
+        EnumWindows(
+            Some(enum_lethal_company_window),
+            &mut state as *mut FindLethalCompanyWindowState as LPARAM,
+        );
+    }
+    state.result
+}
+
+#[cfg(target_os = "windows")]
+fn overlay_target_window(active_pids: &HashSet<u32>) -> Option<(u32, RECT)> {
+    if let Some((foreground_pid, rect)) = foreground_window_pid_and_rect() {
+        if foreground_matches_game(foreground_pid, active_pids) {
+            return Some((foreground_pid, rect));
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn foreground_lethal_company_window() -> Option<(u32, RECT)> {
+    let (foreground_pid, rect) = foreground_window_pid_and_rect()?;
+    if is_lethal_company_process(foreground_pid) {
+        Some((foreground_pid, rect))
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn show_game_overlay_attached_to_rect(
+    app: &tauri::AppHandle,
+    overlay_state: &GameOverlayState,
+    controls_open: bool,
+    target_pid: u32,
+    rect: RECT,
+    source: &str,
+) {
+    let Ok(window) = ensure_game_overlay_window(app) else {
+        set_game_overlay_error(app, "failed to create overlay window in monitor");
+        return;
+    };
+    let width = (rect.right - rect.left).max(1) as u32;
+    let height = (rect.bottom - rect.top).max(1) as u32;
+
+    if let Err(e) = window.set_fullscreen(false) {
+        set_game_overlay_error(app, format!("{source} set_fullscreen(false) failed: {e}"));
+    }
+    if let Err(e) = window.set_position(tauri::PhysicalPosition::new(rect.left, rect.top)) {
+        set_game_overlay_error(app, format!("{source} set_position failed: {e}"));
+    }
+    if let Err(e) = window.set_size(tauri::PhysicalSize::new(width, height)) {
+        set_game_overlay_error(app, format!("{source} set_size failed: {e}"));
+    }
+    if let Err(e) = window.set_always_on_top(true) {
+        set_game_overlay_error(app, format!("{source} set_always_on_top failed: {e}"));
+    }
+    if let Err(e) = force_game_overlay_topmost(&window) {
+        set_game_overlay_error(app, format!("{source} force topmost failed: {e}"));
+    }
+    if let Err(e) = apply_game_overlay_interaction(&window, controls_open) {
+        set_game_overlay_error(app, format!("{source} apply interaction failed: {e}"));
+    }
+    if let Err(e) = window.show() {
+        set_game_overlay_error(app, format!("{source} show failed: {e}"));
+    } else {
+        overlay_state.window_visible.store(true, Ordering::Relaxed);
+        overlay_state
+            .last_foreground_pid
+            .store(target_pid, Ordering::Relaxed);
+        overlay_state.last_match.store(true, Ordering::Relaxed);
+        let count = overlay_state.show_count.fetch_add(1, Ordering::Relaxed) + 1;
+        if count <= 6 || controls_open {
+            set_game_overlay_debug(
+                app,
+                format!(
+                    "{source} window shown pid={target_pid} rect=({},{} {}x{}) controls_open={controls_open} count={count}",
+                    rect.left, rect.top, width, height
+                ),
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn start_game_overlay_monitor(app: &tauri::AppHandle) {
+    let overlay_state = app.state::<GameOverlayState>();
+    if overlay_state.monitor_running.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    set_game_overlay_debug(app, "monitor started");
+
+    let app_handle = app.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(80));
+
+        let overlay_state = app_handle.state::<GameOverlayState>();
+        if !overlay_state.monitor_running.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let active_pids: HashSet<u32> = app_handle
+            .state::<GameState>()
+            .active
+            .lock()
+            .map(|active_games| {
+                active_games
+                    .iter()
+                    .map(|active| active.child.id())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let controls_open = overlay_state.controls_open.load(Ordering::Relaxed);
+        if active_pids.is_empty() {
+            overlay_state.last_match.store(false, Ordering::Relaxed);
+            if overlay_state.preview_mode.load(Ordering::Relaxed) {
+                if controls_open {
+                    continue;
+                }
+                if let Some((target_pid, rect)) = foreground_lethal_company_window() {
+                    show_game_overlay_attached_to_rect(
+                        &app_handle,
+                        overlay_state.inner(),
+                        controls_open,
+                        target_pid,
+                        rect,
+                        "preview",
+                    );
+                    continue;
+                }
+                hide_game_overlay_window(&app_handle, false);
+                continue;
+            }
+            hide_game_overlay_window(&app_handle, true);
+            continue;
+        }
+        let target_window = overlay_target_window(&active_pids);
+        let Some((foreground_pid, rect)) = target_window else {
+            overlay_state.last_match.store(false, Ordering::Relaxed);
+            if !controls_open {
+                hide_game_overlay_window(&app_handle, false);
+            }
+            continue;
+        };
+        overlay_state
+            .last_foreground_pid
+            .store(foreground_pid, Ordering::Relaxed);
+
+        if controls_open && foreground_pid == std::process::id() {
+            continue;
+        }
+
+        overlay_state.last_match.store(true, Ordering::Relaxed);
+
+        show_game_overlay_attached_to_rect(
+            &app_handle,
+            overlay_state.inner(),
+            controls_open,
+            foreground_pid,
+            rect,
+            "monitor",
+        );
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn start_game_overlay_monitor(app: &tauri::AppHandle) {
+    match ensure_game_overlay_window(app) {
+        Ok(window) => {
+            let _ = window.set_fullscreen(true);
+            let _ = window.set_always_on_top(true);
+            let _ = window.show();
+        }
+        Err(e) => log::warn!("{e}"),
+    }
+}
+
+fn show_game_overlay(app: &tauri::AppHandle) {
+    if let Err(e) = ensure_game_overlay_window(app) {
+        log::warn!("{e}");
+        return;
+    }
+    start_game_overlay_monitor(app);
+}
+
+fn handle_game_overlay_shortcut(app: &tauri::AppHandle, shortcut_label: &str) {
+    let active_pids: HashSet<u32> = app
+        .state::<GameState>()
+        .active
+        .lock()
+        .map(|active_games| {
+            active_games
+                .iter()
+                .map(|active| active.child.id())
+                .collect()
+        })
+        .unwrap_or_default();
+    if active_pids.is_empty() {
+        let state = app.state::<GameOverlayState>();
+        if !state.preview_mode.load(Ordering::Relaxed) {
+            set_game_overlay_debug(
+                app,
+                "overlay shortcut ignored because no launched Lethal Company process is active",
+            );
+            return;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            if !state.controls_open.load(Ordering::Relaxed)
+                && foreground_lethal_company_window().is_none()
+            {
+                set_game_overlay_debug(
+                    app,
+                    "overlay shortcut ignored because Lethal Company is not focused",
+                );
+                return;
+            }
+        }
+        let next_open = !state.controls_open.load(Ordering::Relaxed);
+        if let Err(e) = set_game_overlay_controls_open_inner(app, state.inner(), next_open) {
+            log::warn!("Failed to toggle game overlay controls: {e}");
+        }
+        return;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let Some((target_pid, _)) = overlay_target_window(&active_pids) else {
+            let foreground = foreground_window_pid_and_rect()
+                .map(|(pid, _)| {
+                    let image = windows_process_image_path(pid)
+                        .map(|path| path.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    format!("foreground pid={pid}, image={image}")
+                })
+                .unwrap_or_else(|| "no foreground window".to_string());
+            set_game_overlay_error(
+                app,
+                format!("{shortcut_label} pressed but no Lethal Company window was found ({foreground})"),
+            );
+            return;
+        };
+        set_game_overlay_debug(
+            app,
+            format!("{shortcut_label} accepted for Lethal Company pid={target_pid}"),
+        );
+    }
+    let state = app.state::<GameOverlayState>();
+    let next_open = !state.controls_open.load(Ordering::Relaxed);
+    if let Err(e) = set_game_overlay_controls_open_inner(app, state.inner(), next_open) {
+        log::warn!("Failed to toggle game overlay controls: {e}");
+    }
+}
+
+fn register_game_overlay_shortcut(app: &tauri::AppHandle) {
+    let shortcut_label = read_game_overlay_config(app)
+        .map(|cfg| cfg.general.overlay_key)
+        .unwrap_or_else(|_| "Insert".to_string());
+    let shortcuts = overlay_shortcuts_for_key(&shortcut_label);
+    let state = app.state::<GameOverlayState>();
+    let mut registered = state.registered_overlay_shortcut.lock().unwrap();
+
+    if registered
+        .as_ref()
+        .map(|current| current.eq_ignore_ascii_case(&shortcut_label))
+        .unwrap_or(false)
+    {
+        return;
+    }
+
+    if let Some(previous_label) = registered.take() {
+        let previous_shortcuts = overlay_shortcuts_for_key(&previous_label);
+        if !previous_shortcuts.is_empty() {
+            if let Err(e) = app.global_shortcut().unregister_multiple(previous_shortcuts) {
+                log::warn!("Failed to unregister previous overlay shortcut {previous_label}: {e}");
+            }
+        }
+    }
+
+    if shortcuts.is_empty() {
+        set_game_overlay_error(
+            app,
+            format!("Unsupported overlay shortcut: {shortcut_label}"),
+        );
+        return;
+    }
+
+    let shortcut_label_for_handler = shortcut_label.clone();
+    match app
+        .global_shortcut()
+        .on_shortcuts(shortcuts, move |app, _shortcut, event| {
+            if event.state != ShortcutState::Pressed {
+                return;
+            }
+            handle_game_overlay_shortcut(app, &shortcut_label_for_handler);
+        }) {
+        Ok(()) => {
+            set_game_overlay_debug(app, format!("registered overlay shortcut {shortcut_label}"));
+            *registered = Some(shortcut_label);
+        }
+        Err(e) => {
+            set_game_overlay_error(
+                app,
+                format!("Failed to register overlay shortcut {shortcut_label}: {e}"),
+            );
+        }
+    }
 }
 
 fn normalize_mod_id(dev: &str, name: &str) -> DisabledMod {
@@ -4556,6 +6346,162 @@ fn pick_steam_overlay_path(initial_path: Option<String>) -> Result<Option<String
 }
 
 #[tauri::command]
+fn get_game_overlay_config(app: tauri::AppHandle) -> Result<GameOverlayConfig, String> {
+    read_game_overlay_config(&app)
+}
+
+#[tauri::command]
+fn get_game_overlay_modules(app: tauri::AppHandle) -> Result<Vec<GameOverlayModuleDto>, String> {
+    read_game_overlay_modules(&app)
+}
+
+#[tauri::command]
+fn get_game_overlay_debug_status(
+    state: State<'_, GameOverlayState>,
+) -> Result<GameOverlayDebugStatus, String> {
+    Ok(game_overlay_debug_status(&state))
+}
+
+#[tauri::command]
+fn report_game_overlay_frontend_ready(app: tauri::AppHandle) -> Result<(), String> {
+    set_game_overlay_debug(&app, "frontend ready");
+    Ok(())
+}
+
+#[tauri::command]
+fn report_game_overlay_frontend_info(app: tauri::AppHandle, message: String) -> Result<(), String> {
+    set_game_overlay_debug(&app, format!("frontend info: {message}"));
+    Ok(())
+}
+
+#[tauri::command]
+fn report_game_overlay_frontend_error(
+    app: tauri::AppHandle,
+    message: String,
+) -> Result<(), String> {
+    set_game_overlay_error(&app, format!("frontend error: {message}"));
+    Ok(())
+}
+
+#[tauri::command]
+fn set_game_overlay_config(
+    app: tauri::AppHandle,
+    config: GameOverlayConfig,
+) -> Result<GameOverlayConfig, String> {
+    let cfg = sanitize_game_overlay_config(config);
+    write_game_overlay_config(&app, &cfg)?;
+    register_game_overlay_shortcut(&app);
+    let _ = app.emit_to(
+        GAME_OVERLAY_WINDOW_LABEL,
+        "overlay://config-changed",
+        cfg.clone(),
+    );
+    Ok(cfg)
+}
+
+#[tauri::command]
+fn toggle_game_overlay_only(
+    app: tauri::AppHandle,
+    state: State<'_, GameOverlayState>,
+) -> Result<bool, String> {
+    if state.preview_mode.load(Ordering::Relaxed) {
+        state.preview_mode.store(false, Ordering::Relaxed);
+        state.controls_open.store(false, Ordering::Relaxed);
+        hide_game_overlay_window(&app, true);
+        let _ = app.emit_to(
+            GAME_OVERLAY_WINDOW_LABEL,
+            "overlay://controls-open-changed",
+            false,
+        );
+        set_game_overlay_debug(&app, "overlay only toggled off");
+        return Ok(false);
+    }
+
+    state.preview_mode.store(true, Ordering::Relaxed);
+    state.controls_open.store(false, Ordering::Relaxed);
+    let _ = app.emit_to(
+        GAME_OVERLAY_WINDOW_LABEL,
+        "overlay://controls-open-changed",
+        false,
+    );
+    set_game_overlay_debug(
+        &app,
+        "open overlay only requested; waiting for Lethal Company window",
+    );
+    start_game_overlay_monitor(&app);
+    Ok(true)
+}
+
+#[tauri::command]
+fn open_game_overlay_only(
+    app: tauri::AppHandle,
+    state: State<'_, GameOverlayState>,
+) -> Result<bool, String> {
+    state.preview_mode.store(false, Ordering::Relaxed);
+    toggle_game_overlay_only(app, state)
+}
+
+#[tauri::command]
+fn close_game_overlay_only(
+    app: tauri::AppHandle,
+    state: State<'_, GameOverlayState>,
+) -> Result<bool, String> {
+    state.preview_mode.store(false, Ordering::Relaxed);
+    state.controls_open.store(false, Ordering::Relaxed);
+    hide_game_overlay_window(&app, true);
+    let _ = app.emit_to(
+        GAME_OVERLAY_WINDOW_LABEL,
+        "overlay://controls-open-changed",
+        false,
+    );
+    set_game_overlay_debug(&app, "overlay only closed");
+    Ok(true)
+}
+
+#[tauri::command]
+fn open_game_overlay_modules_folder(app: tauri::AppHandle) -> Result<bool, String> {
+    ensure_default_game_overlay_modules(&app)?;
+    let dir = game_overlay_module_dir(&app)?;
+    open_folder_path(&dir)?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn set_game_overlay_controls_open(
+    app: tauri::AppHandle,
+    state: State<'_, GameOverlayState>,
+    open: bool,
+) -> Result<bool, String> {
+    set_game_overlay_controls_open_inner(&app, &state, open)
+}
+
+#[tauri::command]
+fn show_game_overlay_end_summary(
+    app: tauri::AppHandle,
+    mut payload: GameOverlayEndSummaryPayload,
+) -> Result<bool, String> {
+    if payload.duration_ms.is_none() {
+        payload.duration_ms = Some(
+            read_game_overlay_config(&app)?
+                .general
+                .end_summary_duration_ms,
+        );
+    }
+    let window = ensure_game_overlay_window(&app)?;
+    window.show().map_err(|e| e.to_string())?;
+    window.set_always_on_top(true).map_err(|e| e.to_string())?;
+    force_game_overlay_topmost(&window)?;
+    apply_game_overlay_interaction(&window, false)?;
+    app.emit_to(
+        GAME_OVERLAY_WINDOW_LABEL,
+        "overlay://show-end-summary",
+        payload,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
 async fn launch_game(
     app: tauri::AppHandle,
     version: u32,
@@ -4615,6 +6561,7 @@ async fn launch_game(
     });
     let lcstats_enabled = is_lcstats_enabled(&app)?;
     lcstats_autosheet::start_for_launch(app.clone(), lcstats_enabled, &lcstats_state);
+    show_game_overlay(&app);
     Ok(pid)
 }
 
@@ -4686,6 +6633,7 @@ async fn launch_game_practice(
     });
     let lcstats_enabled = is_lcstats_enabled(&app)?;
     lcstats_autosheet::start_for_launch(app.clone(), lcstats_enabled, &lcstats_state);
+    show_game_overlay(&app);
     Ok(pid)
 }
 
@@ -4818,6 +6766,7 @@ async fn launch_game_preset(
     });
     let lcstats_enabled = is_lcstats_enabled(&app)?;
     lcstats_autosheet::start_for_launch(app.clone(), lcstats_enabled, &lcstats_state);
+    show_game_overlay(&app);
     Ok(pid)
 }
 
@@ -5019,6 +6968,7 @@ fn get_game_status(
 
     if any_finished {
         lcstats_autosheet::stop(&lcstats_state);
+        hide_game_overlay(&app);
         if let Err(e) = restore_hqol_wesley_dont_store_backup_if_present(&app) {
             log::warn!("Failed to restore HQoL Wesley dont-store backup after exit: {e}");
         }
@@ -5044,6 +6994,7 @@ fn list_running_games(
     if any_finished {
         if guard.is_empty() {
             lcstats_autosheet::stop(&lcstats_state);
+            hide_game_overlay(&app);
         }
         if let Err(e) = restore_hqol_wesley_dont_store_backup_if_present(&app) {
             log::warn!("Failed to restore HQoL Wesley dont-store backup after exit: {e}");
@@ -5082,6 +7033,7 @@ fn stop_game_instance(
 
     if guard.is_empty() {
         lcstats_autosheet::stop(&lcstats_state);
+        hide_game_overlay(&app);
         terminate_linux_game_processes_for_version(&app, active.version);
         if let Err(e) = restore_hqol_wesley_dont_store_backup_if_present(&app) {
             log::warn!(
@@ -5123,6 +7075,7 @@ fn stop_game(
             terminate_linux_game_processes_for_version(&app, version);
         }
         lcstats_autosheet::stop(&lcstats_state);
+        hide_game_overlay(&app);
         if let Err(e) = restore_hqol_wesley_dont_store_backup_if_present(&app) {
             log::warn!("Failed to restore HQoL Wesley dont-store backup after stop: {e}");
         }
@@ -5906,7 +7859,7 @@ fn write_config_file(app: tauri::AppHandle, args: WriteConfigArgs) -> Result<boo
 }
 
 // =========================
-// 🔹 AUTO-UPDATE COMMANDS
+// ðŸ”¹ AUTO-UPDATE COMMANDS
 // =========================
 
 #[derive(Debug, Clone, Serialize)]
@@ -5974,7 +7927,7 @@ async fn download_app_update(app: tauri::AppHandle) -> Result<bool, String> {
         .parse()
         .map_err(|e| format!("Failed to parse updater endpoint: {e}"))?;
 
-    // Tauri updater 사용 (엔드포인트는 tauri.conf.json에서 설정, GitHub Releases latest.json)
+    // Tauri updater ì‚¬ìš© (ì—”ë“œí¬ì¸íŠ¸ëŠ” tauri.conf.jsonì—ì„œ ì„¤ì •, GitHub Releases latest.json)
     let updater = app
         .updater_builder()
         .endpoints(vec![endpoint])
@@ -6046,7 +7999,7 @@ async fn install_app_update(app: tauri::AppHandle) -> Result<bool, String> {
         .parse()
         .map_err(|e| format!("Failed to parse updater endpoint: {e}"))?;
 
-    // Tauri updater 사용 (엔드포인트는 tauri.conf.json에서 설정, GitHub Releases latest.json)
+    // Tauri updater ì‚¬ìš© (ì—”ë“œí¬ì¸íŠ¸ëŠ” tauri.conf.jsonì—ì„œ ì„¤ì •, GitHub Releases latest.json)
     let updater = app
         .updater_builder()
         .endpoints(vec![endpoint])
@@ -6133,6 +8086,7 @@ pub fn run() {
         .manage(GameState::default())
         .manage(DownloadState::default())
         .manage(PrepareState::default())
+        .manage(GameOverlayState::default())
         .manage(discord_presence::DiscordPresenceState::default())
         .manage(lcstats_autosheet::LcStatsAutosheetState::default())
         .manage(downloader::DepotLoginState::default())
@@ -6145,13 +8099,20 @@ pub fn run() {
                 tauri::Error::Setup(err.into())
             })?;
 
+            register_game_overlay_shortcut(app.handle());
+            start_game_overlay_monitor(app.handle());
+
             // Startup housekeeping (best-effort, won't block UI):
             // - Disable installed base mods that remote manifest marks as enabled=false
             // - Ensure default config is downloaded if shared config dir is empty
+            // - Ensure default overlay modules exist for user editing
             // - Run disablemod/security migrations when needed
             // - Warm the Thunderstore package cache for later update checks
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                if let Err(e) = ensure_default_game_overlay_modules(&app_handle) {
+                    log::warn!("Failed to ensure default overlay modules on startup: {e}");
+                }
                 if let Err(e) = migrate_disablemod_v4_on_startup(&app_handle).await {
                     log::warn!("Failed to migrate disablemod.json on startup: {e}");
                 }
@@ -6246,6 +8207,19 @@ pub fn run() {
             get_steam_overlay_config,
             set_steam_overlay_config,
             pick_steam_overlay_path,
+            get_game_overlay_config,
+            get_game_overlay_modules,
+            get_game_overlay_debug_status,
+            report_game_overlay_frontend_ready,
+            report_game_overlay_frontend_info,
+            report_game_overlay_frontend_error,
+            set_game_overlay_config,
+            toggle_game_overlay_only,
+            open_game_overlay_only,
+            close_game_overlay_only,
+            open_game_overlay_modules_folder,
+            set_game_overlay_controls_open,
+            show_game_overlay_end_summary,
             downloader::depot_login,
             downloader::depot_login_start,
             downloader::depot_login_submit_code,

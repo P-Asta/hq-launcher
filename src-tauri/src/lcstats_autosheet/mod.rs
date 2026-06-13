@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tauri::Emitter;
 
 const LCSTATS_SSE_URL: &str = "http://localhost:2145/";
 const LCSTATS_RETRY_DELAY: Duration = Duration::from_secs(3);
@@ -193,7 +194,8 @@ async fn run_listener(app: tauri::AppHandle, state: LcStatsAutosheetState) -> Re
             summary.seed_text(),
             summary.moon_name()
         );
-        remember_latest_payload(&state, payload, stats.clone())?;
+        remember_latest_payload(&state, payload.clone(), stats.clone())?;
+        emit_overlay_lcstats_update(&app, payload, stats.clone());
         let settings = match crate::google_oauth::get_settings(app.clone()) {
             Ok(settings) => settings,
             Err(e) => {
@@ -248,6 +250,17 @@ async fn run_listener(app: tauri::AppHandle, state: LcStatsAutosheetState) -> Re
             }
         }
     }
+}
+
+fn emit_overlay_lcstats_update(app: &tauri::AppHandle, raw: String, stats: Value) {
+    let payload = serde_json::json!({
+        "source": "lcstatstracker",
+        "receivedAt": now_epoch_secs(),
+        "raw": raw,
+        "stats": stats,
+    });
+
+    let _ = app.emit_to("game-overlay", "overlay://lcstats-updated", payload);
 }
 
 fn remember_latest_payload(

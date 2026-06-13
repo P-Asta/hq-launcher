@@ -16,6 +16,7 @@ A game launcher built with [React](https://react.dev/) and [Tauri](https://tauri
 - **Game Launch/Stop**: One-click game execution and termination
 - **Mod Management**: Search, enable/disable, and configure mods
 - **Config Editor**: Built-in BepInEx configuration file editor with a docked, resizable side-by-side layout
+- **Game Overlay Modules**: Editable in-game widgets with layout snapping and a small JS API
 - **Auto Updates**: Automatic updates for both launcher and game versions
 - **Practice Modes**: Launch HQ, Brutal, or Wesley presets in a practice-ready setup with version-compatible practice mods.
 
@@ -96,6 +97,10 @@ yarn tauri dev
 # Build for production
 yarn tauri build
 ```
+
+### Game overlay module development
+
+See [docs/GAME_OVERLAY_MODULES.md](docs/GAME_OVERLAY_MODULES.md) for the overlay module API and VS Code autocomplete setup.
 
 ## Tech Stack
 

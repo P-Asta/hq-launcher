@@ -1,12 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { Component, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { AlertTriangle, Check, Copy, X } from "lucide-react";
+import GameOverlay from "./GameOverlay";
 import LauncherPage from "./pages/LauncherPage";
 import { LoginDialog } from "./components/auth/LoginDialog";
 import { UpdateDialog } from "./components/UpdateDialog";
 import Titlebar from "./Titlebar";
 import { Dialog, DialogContent } from "./components/ui/dialog";
+import { getWindowMode } from "./lib/windowMode";
 
 function Splash({ message }) {
   return (
@@ -138,7 +140,7 @@ function ErrorInbox({ errors }) {
   );
 }
 
-export default function AppRoot() {
+function LauncherRoot() {
   const [loginState, setLoginState] = useState({
     status: "loading", // loading | ready
     is_logged_in: false,
@@ -303,4 +305,53 @@ export default function AppRoot() {
       </div>
     </div>
   );
+}
+
+class OverlayErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    invoke("report_game_overlay_frontend_error", {
+      message: `GameOverlay render failed: ${error?.message ?? error}\n${info?.componentStack ?? ""}`,
+    }).catch(console.error);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="fixed inset-0 z-[2147483647] bg-black/70 p-6 text-white">
+          <div className="rounded border border-red-300/40 bg-red-950/80 p-4 text-sm shadow-2xl shadow-black/60">
+            <div className="mb-2 font-semibold text-red-100">GameOverlay render failed</div>
+            <pre className="whitespace-pre-wrap break-words text-xs text-red-100/80">
+              {String(this.state.error?.stack ?? this.state.error?.message ?? this.state.error)}
+            </pre>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+export default function AppRoot() {
+  const isGameOverlay = getWindowMode() === "game-overlay";
+
+  if (isGameOverlay) {
+    invoke("report_game_overlay_frontend_info", { message: "AppRoot rendering GameOverlay" }).catch(console.error);
+    return (
+      <OverlayErrorBoundary>
+        <GameOverlay />
+      </OverlayErrorBoundary>
+    );
+  }
+
+  return <LauncherRoot />;
 }
