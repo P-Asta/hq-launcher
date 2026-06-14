@@ -22,6 +22,7 @@ setWrapperClass("rounded border border-white/15 bg-black/70 p-3");
 
 register("settings", [
   Setting.toggle("enabled", "Enabled", true),
+  Setting.key("toggleKey", "Toggle Key", ""),
   Setting.color("color", "Color", "#ffffff"),
   Setting.selectMenu("align", "Align", [
     { label: "Left", value: "left" },
@@ -29,10 +30,18 @@ register("settings", [
   ], "left")
 ]);
 
-register("visible", ({ settings, context }) => settings.enabled !== false || context.editMode);
+let runtimeEnabled = null;
+register("tick", ({ settings, api }) => {
+  if (runtimeEnabled == null) runtimeEnabled = settings.enabled !== false;
+  if (settings.toggleKey && api.input.consumePress(settings.toggleKey)) {
+    runtimeEnabled = !runtimeEnabled;
+  }
+});
 
-register("renderOverlay", ({ context, settings, api }) => {
-  const quota = api.valueAt(context.lcstats, "QuotaInfo.NewQuota", 0);
+register("visible", ({ context }) => runtimeEnabled || context.editMode);
+
+register("renderOverlay", ({ settings, api }) => {
+  const quota = api.valueAt(api.getLcStats(), "QuotaInfo.NewQuota", 0);
   return `<div class="overlay-title" style="color:${settings.color}">Quota</div>
     <div class="overlay-value">${api.number(quota)}</div>`;
 });
@@ -51,6 +60,7 @@ register("renderOverlay", ({ context, settings, api }) => {
 - `register("visible", fn)`: Return `false` to hide the module.
 - `register("derive", fn)`: Compute data passed into render handlers.
 - `register("renderOverlay", fn)`: Return an HTML string.
+- `register("tick", fn)`: Run before visibility/render checks. Useful for input-driven module state.
 
 ## Settings Inputs
 
@@ -60,12 +70,66 @@ register("renderOverlay", ({ context, settings, api }) => {
 - `Setting.number(key, label, defaultValue, min, max, step)`: numeric input.
 - `Setting.key(key, label, defaultValue)`: key capture button. Values are strings like `Insert`, `Ctrl+Shift+K`, or `Ctrl+Shift+*`.
 - `Setting.hotkey(key, label, defaultValue)`: alias for `key`.
+- `Setting.image(key, label, defaultValue)`: image upload. Values are `data:image/...` URLs that can be used as an `<img src>`.
 - `Setting.text(key, label, defaultValue)`: single-line text input.
 - `Setting.textarea(key, label, defaultValue)`: multi-line text input.
 - `Setting.select(key, label, options, defaultValue)`: select menu.
 - `Setting.selectMenu(key, label, options, defaultValue)`: alias for `select`.
 
-`context` includes `elapsedSeconds`, `lcstats`, `lcstatsRaw`, `lcstatsAgeMs`, `displayTimeMs`, `leaderboard`, `endSummary`, `editMode`, and formatting helpers. `context.recordChecker` is kept as a deprecated alias for `context.leaderboard`. Use `api.html(value)` for untrusted text before returning HTML.
+`context` includes `elapsedSeconds`, `lcstats`, `lcstatsRaw`, `lcstatsAgeMs`, `streamOverlays`, `streamOverlaysAgeMs`, `displayTimeMs`, `leaderboard`, `endSummary`, `editMode`, and formatting helpers. `context.recordChecker` is kept as a deprecated alias for `context.leaderboard`. Use `api.html(value)` for untrusted text before returning HTML.
+
+## Short API Helpers
+
+Most modules can stay compact by reading live data through `api`:
+
+```js
+register("renderOverlay", ({ api }) => {
+  const stats = api.getLcStats();
+  const stream = api.getStreamOverlay();
+  const moon = stream?.moonName ?? api.valueAt(stats, "Moon", "Unknown");
+  const quota = stream?.quotaValue ?? api.valueAt(stats, "QuotaInfo.NewQuota", 0);
+
+  return `<div>${api.html(moon)}</div><div>${api.number(quota)}</div>`;
+});
+```
+
+- `api.getLcStats()`: latest LCStatsTracker payload view.
+- `api.getLcStatsRaw()`: raw latest LCStatsTracker payload string, or `null`.
+- `api.getStreamOverlay()`: latest StreamOverlays payload, or `null`.
+- `api.valueAt(root, path, fallback)`: read a nested value from an object.
+- `api.valueAtAny(root, paths, fallback)`: read the first matching nested value.
+- `api.number(value)`: numeric display formatting.
+- `api.html(value)`: HTML escaping.
+
+StreamOverlays reading is opt-in. Enable `Use StreamOverlays API` in the launcher Overlay Settings when a module needs it.
+
+## Input API
+
+Use `Setting.key(...)` for a configurable shortcut and `api.input` inside `tick`, `visible`, `derive`, or `renderOverlay`.
+
+```js
+let enabled = true;
+
+register("settings", [
+  Setting.key("toggleKey", "Toggle Key", "Ctrl+K")
+]);
+
+register("tick", ({ settings, api }) => {
+  if (api.input.consumePress(settings.toggleKey)) {
+    enabled = !enabled;
+  }
+});
+
+register("visible", () => enabled);
+```
+
+- `api.input.consumePress(shortcut)`: one-shot key down check, best for toggles/actions.
+- `api.input.consumeRelease(shortcut)`: one-shot key release check.
+- `api.input.down(shortcut)` / `held(shortcut)` / `shortcut(shortcut)`: true while the shortcut is held.
+- `api.input.pressed(shortcut)` / `released(shortcut)`: transient recent press/release checks.
+- `api.input.events()`: recent normalized input events.
+
+Shortcuts use the same strings as key settings, such as `Insert`, `K`, `Ctrl+Shift+K`, or `Numpad1`.
 
 ## Leaderboard Data
 

@@ -3,7 +3,7 @@ type OverlaySettingSchema =
   | { key: string; label: string; type: "color"; default?: string }
   | { key: string; label: string; type: "number"; min?: number; max?: number; step?: number; default?: number }
   | { key: string; label: string; type: "range"; min: number; max: number; step?: number; default?: number }
-  | { key: string; label: string; type: "text" | "textarea" | "key"; default?: string }
+  | { key: string; label: string; type: "text" | "textarea" | "key" | "image"; default?: string }
   | { key: string; label: string; type: "select"; options: Array<{ label: string; value: string }>; default?: string };
 
 /** Shortcut strings captured by key buttons, for example "Insert", "Ctrl+Shift+K", or "Ctrl+Shift+*". */
@@ -75,6 +75,19 @@ type OverlayEndSummary = {
   expiresAt?: number;
 };
 
+type OverlayStreamOverlays = {
+  type?: string;
+  messageType?: string;
+  showOverlay?: boolean;
+  crewCount?: number;
+  moonName?: string;
+  weatherName?: string;
+  quotaValue?: number;
+  quotaIndex?: number;
+  lootValue?: number;
+  [key: string]: any;
+};
+
 type OverlayContext = {
   editMode: boolean;
   controlsOpen: boolean;
@@ -83,12 +96,16 @@ type OverlayContext = {
   lcstatsRaw: string | null;
   lcstatsPayload: { raw: string; stats: any } | null;
   lcstatsAgeMs: number | null;
+  streamOverlays: OverlayStreamOverlays | null;
+  streamOverlay: OverlayStreamOverlays | null;
+  streamOverlaysAgeMs: number | null;
   displayTimeMs: number;
   leaderboard: LeaderboardState;
   /** @deprecated Use context.leaderboard. */
   recordChecker: LeaderboardState;
   endSummary: OverlayEndSummary | null;
   events: any[];
+  inputSequence: number;
   formatSeconds(totalSeconds: number): string;
   escapeHtml(value: any): string;
   html(value: any): string;
@@ -97,6 +114,31 @@ type OverlayContext = {
   intish(value: any, fallback?: number): number;
   valueAt(root: any, path: string | string[], fallback?: any): any;
   valueAtAny(root: any, paths: Array<string | string[]>, fallback?: any): any;
+};
+
+type OverlayInputEvent = {
+  id: string | number;
+  type: "keydown" | "keyup";
+  key: string;
+  shortcut: OverlayShortcutString;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+  metaKey: boolean;
+  source: "window" | "module-key" | "overlay-key" | "global-shortcut" | string;
+  receivedAt: number;
+};
+
+type OverlayInputApi = {
+  down(shortcut: OverlayShortcutString): boolean;
+  held(shortcut: OverlayShortcutString): boolean;
+  shortcut(shortcut: OverlayShortcutString): boolean;
+  pressed(shortcut: OverlayShortcutString): boolean;
+  released(shortcut: OverlayShortcutString): boolean;
+  consumePress(shortcut: OverlayShortcutString): boolean;
+  consumeRelease(shortcut: OverlayShortcutString): boolean;
+  events(): OverlayInputEvent[];
+  last(): OverlayInputEvent | null;
 };
 
 type OverlayHandlerArgs<TData = any> = {
@@ -119,6 +161,11 @@ type OverlayModuleApi = {
   valueAtAny(root: any, paths: Array<string | string[]>, fallback?: any): any;
   className(name?: string): string;
   now(): number;
+  input: OverlayInputApi;
+  readonly context: OverlayContext | null;
+  getLcStats(): any;
+  getLcStatsRaw(): string | null;
+  getStreamOverlay(): OverlayStreamOverlays | null;
 };
 
 declare const Setting: {
@@ -128,6 +175,7 @@ declare const Setting: {
   range(key: string, label: string, min: number, max: number, step?: number, defaultValue?: number): OverlaySettingSchema;
   text(key: string, label: string, defaultValue?: string): OverlaySettingSchema;
   textarea(key: string, label: string, defaultValue?: string): OverlaySettingSchema;
+  image(key: string, label: string, defaultValue?: string): OverlaySettingSchema;
   key(key: string, label: string, defaultValue?: OverlayShortcutString): OverlaySettingSchema;
   hotkey(key: string, label: string, defaultValue?: OverlayShortcutString): OverlaySettingSchema;
   select(key: string, label: string, options: Array<{ label: string; value: string }>, defaultValue?: string): OverlaySettingSchema;

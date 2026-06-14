@@ -40,6 +40,18 @@ pub fn start_for_launch(
         log::info!("LCStatsTracker AutoSheet listener skipped: LCStatsTracker mod is disabled");
         return;
     }
+    let settings = match crate::google_oauth::get_settings(app.clone()) {
+        Ok(settings) => settings,
+        Err(e) => {
+            log::error!("LCStatsTracker AutoSheet listener skipped: failed to read settings: {e}");
+            return;
+        }
+    };
+    if !settings.use_lcstats_api {
+        log::info!("LCStatsTracker AutoSheet listener skipped: LCStatsTracker API use is disabled");
+        state.running.store(false, Ordering::Release);
+        return;
+    }
     match crate::google_oauth::auth_status(app.clone()) {
         Ok(status) if status.authenticated => {}
         Ok(_) => {
@@ -53,13 +65,6 @@ pub fn start_for_launch(
             return;
         }
     }
-    let settings = match crate::google_oauth::get_settings(app.clone()) {
-        Ok(settings) => settings,
-        Err(e) => {
-            log::error!("LCStatsTracker AutoSheet listener skipped: failed to read settings: {e}");
-            return;
-        }
-    };
     if settings.spreadsheet_id.trim().is_empty() || settings.active_sheet_name.trim().is_empty() {
         log::info!("LCStatsTracker AutoSheet listener skipped: spreadsheet or sheet is not set");
         return;
@@ -84,10 +89,14 @@ pub fn start_manual(
     app: tauri::AppHandle,
     state: &tauri::State<'_, LcStatsAutosheetState>,
 ) -> Result<bool, String> {
+    let settings = crate::google_oauth::get_settings(app.clone())?;
+    if !settings.use_lcstats_api {
+        stop(state);
+        return Err("LCStatsTracker API use is disabled in launcher settings.".to_string());
+    }
     if !crate::google_oauth::auth_status(app.clone())?.authenticated {
         return Err("Google login is required to track LCStatsTracker.".to_string());
     }
-    let settings = crate::google_oauth::get_settings(app.clone())?;
     if settings.spreadsheet_id.trim().is_empty() || settings.active_sheet_name.trim().is_empty() {
         return Err("Spreadsheet and sheet are required to track LCStatsTracker.".to_string());
     }

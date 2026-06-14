@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Pencil, RefreshCw, X } from "lucide-react";
+import { ImageIcon, Pencil, RefreshCw, Trash2, Upload, X } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { Slider } from "./components/ui/slider";
 import { cn } from "./lib/cn";
 
 const DEFAULT_CONFIG = {
   general: {
+    enabled: true,
+    use_stream_overlays_api: false,
     overlay_key: "Insert",
     end_summary_duration_ms: 10000,
   },
@@ -19,6 +21,23 @@ const DEFAULT_CONFIG = {
   },
 };
 
+const fallbackCrosshairState = {
+  runtimeEnabled: null,
+  lastSettingEnabled: null,
+};
+
+function isFallbackCrosshairEnabled(settings, api) {
+  const settingEnabled = settings.enabled !== false;
+  if (fallbackCrosshairState.runtimeEnabled == null || fallbackCrosshairState.lastSettingEnabled !== settingEnabled) {
+    fallbackCrosshairState.runtimeEnabled = settingEnabled;
+    fallbackCrosshairState.lastSettingEnabled = settingEnabled;
+  }
+  if (settings.toggleKey && api?.input?.consumePress(settings.toggleKey)) {
+    fallbackCrosshairState.runtimeEnabled = !fallbackCrosshairState.runtimeEnabled;
+  }
+  return fallbackCrosshairState.runtimeEnabled;
+}
+
 const FALLBACK_MODULES = [
   {
     id: "crosshair",
@@ -29,6 +48,7 @@ const FALLBACK_MODULES = [
     defaultPosition: { x: 50, y: 50 },
     defaultSettings: {
       enabled: false,
+      toggleKey: "",
       style: "plus",
       color: "#ffffff",
       size: 24,
@@ -38,6 +58,7 @@ const FALLBACK_MODULES = [
     },
     settings: [
       { key: "enabled", label: "Enabled", type: "boolean", default: false },
+      { key: "toggleKey", label: "Toggle Key", type: "key", default: "" },
       {
         key: "style",
         label: "Style",
@@ -58,7 +79,10 @@ const FALLBACK_MODULES = [
     ],
     css: ".overlay-module-crosshair{transform:translate(-50%,-50%)}",
     wrapperClass: "",
-    visible: ({ settings }) => settings.enabled !== false,
+    tick: ({ settings, api }) => {
+      isFallbackCrosshairEnabled(settings, api);
+    },
+    visible: ({ settings, api }) => isFallbackCrosshairEnabled(settings, api),
     derive: ({ context }) => context,
     render: ({ settings }) => {
       const size = Number(settings.size ?? 24);
@@ -104,6 +128,42 @@ const FALLBACK_MODULES = [
     visible: ({ settings }) => settings.enabled !== false,
     derive: ({ context }) => context,
     render: ({ context }) => `<div class="overlay-title">Game Timer</div><div class="overlay-value">${formatSeconds(context.elapsedSeconds)}</div>`,
+  },
+  {
+    id: "image",
+    fileName: "builtin:fallback-image",
+    name: "Image",
+    description: "Display an uploaded image on the overlay.",
+    locked: false,
+    defaultPosition: { x: 64, y: 16 },
+    defaultSettings: {
+      enabled: false,
+      image: "",
+      width: 240,
+      opacity: 1,
+      radius: 0,
+    },
+    settings: [
+      { key: "enabled", label: "Enabled", type: "boolean", default: false },
+      { key: "image", label: "Image", type: "image", default: "" },
+      { key: "width", label: "Width", type: "range", min: 48, max: 900, step: 1, default: 240 },
+      { key: "opacity", label: "Opacity", type: "range", min: 0.05, max: 1, step: 0.05, default: 1 },
+      { key: "radius", label: "Corner Radius", type: "range", min: 0, max: 48, step: 1, default: 0 },
+    ],
+    css: "",
+    wrapperClass: "",
+    visible: ({ context, settings }) => settings.enabled !== false && (context.editMode || settings.image),
+    derive: ({ context }) => context,
+    render: ({ settings }) => {
+      const src = String(settings.image ?? "");
+      if (!src) {
+        return `<div class="rounded border border-dashed border-white/25 bg-black/45 px-4 py-3 text-sm text-white/55">Upload an image</div>`;
+      }
+      const width = Math.max(48, Math.min(900, Number(settings.width ?? 240) || 240));
+      const opacity = Math.max(0.05, Math.min(1, Number(settings.opacity ?? 1) || 1));
+      const radius = Math.max(0, Math.min(48, Number(settings.radius ?? 0) || 0));
+      return `<img src="${escapeHtml(src)}" alt="" style="display:block;width:${width}px;max-width:90vw;height:auto;opacity:${opacity};border-radius:${radius}px;filter:drop-shadow(0 12px 28px rgba(0,0,0,.45));" />`;
+    },
   },
 ];
 
@@ -158,8 +218,32 @@ function valueAtAny(root, paths, fallback = undefined) {
   return fallback;
 }
 
+function isStreamOverlaysPayload(value) {
+  if (!value || typeof value !== "object") return false;
+  return value.type === "data"
+    || value.showOverlay !== undefined
+    || value.crewCount !== undefined
+    || value.moonName !== undefined
+    || value.weatherName !== undefined
+    || value.quotaValue !== undefined
+    || value.quotaIndex !== undefined
+    || value.lootValue !== undefined;
+}
+
+function extractStreamOverlaysPayload(value) {
+  if (!value || typeof value !== "object") return null;
+  const candidates = [
+    value,
+    value.data,
+    value.payload,
+    value.message,
+  ];
+  return candidates.find(isStreamOverlaysPayload) ?? null;
+}
+
 const HQ_FIRESTORE_PROJECT = "highquotahq214";
 const HQ_FIRESTORE_API_KEY = "AIzaSyCklz28QDpVHdagTruIxlPc5hdi-fj6QxE";
+const hqRunsSessionCache = new Map();
 const HQ_COLLECTIONS = {
   hq: "leaderboards_hq",
   sdc: "leaderboards_sdc",
@@ -244,24 +328,21 @@ function firestoreDocument(doc) {
 }
 
 async function fetchHqRuns(collectionName) {
-  const cacheKey = `hq-overlay-leaderboard-${collectionName}`;
-  const cached = localStorage.getItem(cacheKey);
-  if (cached) {
-    try {
-      const parsed = JSON.parse(cached);
-      if (Date.now() - parsed.timestamp < 24 * 60 * 60 * 1000) return parsed.runs;
-    } catch {
-      localStorage.removeItem(cacheKey);
-    }
-  }
+  if (hqRunsSessionCache.has(collectionName)) return hqRunsSessionCache.get(collectionName);
 
   const url = `https://firestore.googleapis.com/v1/projects/${HQ_FIRESTORE_PROJECT}/databases/(default)/documents/${collectionName}?pageSize=1000&key=${HQ_FIRESTORE_API_KEY}`;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`HighQuotaHQ fetch failed: ${response.status}`);
-  const payload = await response.json();
-  const runs = (payload.documents ?? []).map(firestoreDocument);
-  localStorage.setItem(cacheKey, JSON.stringify({ timestamp: Date.now(), runs }));
-  return runs;
+  const request = fetch(url)
+    .then((response) => {
+      if (!response.ok) throw new Error(`HighQuotaHQ fetch failed: ${response.status}`);
+      return response.json();
+    })
+    .then((payload) => (payload.documents ?? []).map(firestoreDocument))
+    .catch((error) => {
+      hqRunsSessionCache.delete(collectionName);
+      throw error;
+    });
+  hqRunsSessionCache.set(collectionName, request);
+  return request;
 }
 
 function normalizeHqMoon(value) {
@@ -476,7 +557,117 @@ function safeClassName(value) {
     .replace(/^-|-$/g, "");
 }
 
-function createModuleApi(moduleId) {
+function normalizeInputKeyName(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  if (/^Key[A-Z]$/i.test(text)) return text.slice(3).toUpperCase();
+  if (/^Digit[0-9]$/i.test(text)) return text.slice(5);
+  if (text === " ") return "Space";
+  if (text.length === 1) return text.toUpperCase();
+  const aliases = {
+    control: "Ctrl",
+    ctrl: "Ctrl",
+    escape: "Escape",
+    esc: "Escape",
+    command: "Meta",
+    cmd: "Meta",
+    win: "Meta",
+    windows: "Meta",
+    option: "Alt",
+    return: "Enter",
+  };
+  return aliases[text.toLowerCase()] ?? text;
+}
+
+function shortcutParts(value) {
+  return String(value ?? "")
+    .split("+")
+    .map((part) => normalizeInputKeyName(part))
+    .filter(Boolean);
+}
+
+function canonicalShortcut(value) {
+  const parts = shortcutParts(value);
+  const modifiers = [];
+  if (parts.some((part) => part === "Ctrl")) modifiers.push("Ctrl");
+  if (parts.some((part) => part === "Shift")) modifiers.push("Shift");
+  if (parts.some((part) => part === "Alt")) modifiers.push("Alt");
+  if (parts.some((part) => part === "Meta")) modifiers.push("Meta");
+  const key = parts.find((part) => !["Ctrl", "Shift", "Alt", "Meta"].includes(part)) ?? "";
+  return [...modifiers, key].filter(Boolean).join("+");
+}
+
+function eventShortcutFromKeyboardEvent(event) {
+  const key = normalizeInputKeyName(event.key || event.code);
+  if (!key || ["Ctrl", "Shift", "Alt", "Meta"].includes(key)) return "";
+  return [
+    event.ctrlKey ? "Ctrl" : "",
+    event.shiftKey ? "Shift" : "",
+    event.altKey ? "Alt" : "",
+    event.metaKey ? "Meta" : "",
+    key,
+  ].filter(Boolean).join("+");
+}
+
+function createInputSnapshot() {
+  return {
+    down: new Set(),
+    events: [],
+    sequence: 0,
+  };
+}
+
+function matchesInputShortcut(event, shortcut) {
+  const wanted = canonicalShortcut(shortcut);
+  if (!wanted) return false;
+  if (event.shortcut === wanted) return true;
+  const wantedParts = shortcutParts(wanted);
+  const wantedKey = wantedParts.find((part) => !["Ctrl", "Shift", "Alt", "Meta"].includes(part));
+  return event.key === wantedKey
+    && !!event.ctrlKey === wantedParts.includes("Ctrl")
+    && !!event.shiftKey === wantedParts.includes("Shift")
+    && !!event.altKey === wantedParts.includes("Alt")
+    && !!event.metaKey === wantedParts.includes("Meta");
+}
+
+function createInputApi(moduleId, inputSnapshotRef, consumedInputRef) {
+  function current() {
+    return inputSnapshotRef.current ?? createInputSnapshot();
+  }
+
+  function consume(type, shortcut) {
+    const snapshot = current();
+    const event = snapshot.events.find((item) => item.type === type && matchesInputShortcut(item, shortcut));
+    if (!event) return false;
+    const key = `${moduleId}:${type}:${canonicalShortcut(shortcut)}:${event.id}`;
+    if (consumedInputRef.current.has(key)) return false;
+    consumedInputRef.current.add(key);
+    if (consumedInputRef.current.size > 512) {
+      const first = consumedInputRef.current.values().next().value;
+      consumedInputRef.current.delete(first);
+    }
+    return true;
+  }
+
+  return {
+    down: (shortcut) => current().down.has(canonicalShortcut(shortcut)),
+    held: (shortcut) => current().down.has(canonicalShortcut(shortcut)),
+    shortcut: (shortcut) => current().down.has(canonicalShortcut(shortcut)),
+    pressed: (shortcut) => current().events.some((event) => event.type === "keydown" && matchesInputShortcut(event, shortcut)),
+    released: (shortcut) => current().events.some((event) => event.type === "keyup" && matchesInputShortcut(event, shortcut)),
+    consumePress: (shortcut) => consume("keydown", shortcut),
+    consumeRelease: (shortcut) => consume("keyup", shortcut),
+    events: () => current().events.slice(),
+    last: () => current().events[0] ?? null,
+  };
+}
+
+function createModuleApi(
+  moduleId,
+  inputSnapshotRef = { current: createInputSnapshot() },
+  consumedInputRef = { current: new Set() },
+  contextRef = { current: null },
+) {
   return {
     id: moduleId,
     formatSeconds,
@@ -489,6 +680,13 @@ function createModuleApi(moduleId) {
     valueAtAny,
     className: (name) => `overlay-module-${safeClassName(moduleId)} ${name ? safeClassName(name) : ""}`.trim(),
     now: () => Date.now(),
+    input: createInputApi(moduleId, inputSnapshotRef, consumedInputRef),
+    get context() {
+      return contextRef.current;
+    },
+    getLcStats: () => contextRef.current?.lcstats ?? null,
+    getLcStatsRaw: () => contextRef.current?.lcstatsRaw ?? null,
+    getStreamOverlay: () => contextRef.current?.streamOverlays ?? null,
   };
 }
 
@@ -510,7 +708,7 @@ function defaultSettingsFromSchema(items) {
       settings[item.key] = item.options?.[0]?.value ?? "";
     } else if (item.type === "number") {
       settings[item.key] = item.default ?? item.min ?? 0;
-    } else if (item.type === "key") {
+    } else if (item.type === "key" || item.type === "image") {
       settings[item.key] = "";
     } else {
       settings[item.key] = item.min ?? "";
@@ -555,6 +753,7 @@ function createCtRuntime(raw) {
     }),
     text: (key, label, defaultValue = "") => ({ key, label, type: "text", default: defaultValue }),
     textarea: (key, label, defaultValue = "") => ({ key, label, type: "textarea", default: defaultValue }),
+    image: (key, label, defaultValue = "") => ({ key, label, type: "image", default: defaultValue }),
     key: (key, label, defaultValue = "") => ({ key, label, type: "key", default: defaultValue }),
     number: (key, label, defaultValue = 0, min = undefined, max = undefined, step = 1) => ({
       key,
@@ -714,6 +913,11 @@ function evaluateModule(raw) {
         }
         return data;
       },
+      tick: (ctx) => {
+        for (const handler of runtime.handlers.tick) {
+          handler(ctx);
+        }
+      },
       render: (ctx) => runtime.handlers.renderOverlay.map((handler) => handler(ctx)).join(""),
     };
   } catch (error) {
@@ -755,7 +959,7 @@ function settingValue(settings, item) {
   if (item.type === "color") return "#ffffff";
   if (item.type === "select") return item.options?.[0]?.value ?? "";
   if (item.type === "number") return item.min ?? 0;
-  if (item.type === "key") return "";
+  if (item.type === "key" || item.type === "image") return "";
   return item.min ?? "";
 }
 
@@ -765,8 +969,21 @@ function resetValueForSetting(item) {
   if (item.type === "color") return "#ffffff";
   if (item.type === "select") return item.options?.[0]?.value ?? "";
   if (item.type === "number") return item.min ?? 0;
-  if (item.type === "key") return "";
+  if (item.type === "key" || item.type === "image") return "";
   return item.min ?? "";
+}
+
+function collectModuleInputShortcuts(modules, config) {
+  const shortcuts = new Set();
+  for (const module of modules) {
+    const settings = config.module_settings?.[module.id] ?? module.defaultSettings ?? {};
+    for (const item of module.settings ?? []) {
+      if (item.type !== "key") continue;
+      const shortcut = canonicalShortcut(settings[item.key] ?? item.default);
+      if (shortcut) shortcuts.add(shortcut);
+    }
+  }
+  return Array.from(shortcuts);
 }
 
 function normalizeShortcutBaseKey(event) {
@@ -844,7 +1061,65 @@ function ResetButton({ onClick }) {
   );
 }
 
-function ModuleSettings({ module, settings, onChange, onReset }) {
+function ImageSettingInput({ value, onChange, onReset }) {
+  const fileInputRef = useRef(null);
+  const hasImage = typeof value === "string" && value.startsWith("data:image/");
+
+  function pickImage() {
+    fileInputRef.current?.click();
+  }
+
+  function handleFileChange(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !file.type.startsWith("image/")) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        onChange(reader.result);
+      }
+    };
+    reader.readAsDataURL(file);
+  }
+
+  return (
+    <div className="rounded border border-white/10 bg-black/20 p-3">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleFileChange}
+        className="hidden"
+      />
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm text-white/80">
+          <ImageIcon className="h-4 w-4 text-white/45" />
+          <span>{hasImage ? "Image selected" : "No image selected"}</span>
+        </div>
+        <ResetButton onClick={onReset} />
+      </div>
+      {hasImage ? (
+        <div className="mb-3 overflow-hidden rounded border border-white/10 bg-black/35">
+          <img src={value} alt="" className="max-h-40 w-full object-contain" />
+        </div>
+      ) : null}
+      <div className="flex gap-2">
+        <Button type="button" variant="secondary" size="sm" className="h-9 flex-1 rounded" onClick={pickImage}>
+          <Upload className="h-4 w-4" />
+          Upload
+        </Button>
+        {hasImage ? (
+          <Button type="button" variant="secondary" size="sm" className="h-9 rounded px-3" onClick={() => onChange("")}>
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ModuleSettings({ module, settings, onChange, onPreview, onReset }) {
   const [activeKeyInput, setActiveKeyInput] = useState(null);
 
   if (!module) {
@@ -916,7 +1191,8 @@ function ModuleSettings({ module, settings, onChange, onReset }) {
                 min={Number(item.min ?? 0)}
                 max={Number(item.max ?? 100)}
                 step={Number(item.step ?? 1)}
-                onValueChange={([next]) => onChange(item.key, next)}
+                onValueChange={([next]) => onPreview(item.key, next)}
+                onValueCommit={([next]) => onChange(item.key, next)}
               />
             </div>
           );
@@ -1007,6 +1283,21 @@ function ModuleSettings({ module, settings, onChange, onReset }) {
           );
         }
 
+        if (item.type === "image") {
+          return (
+            <div key={item.key}>
+              <div className="mb-2 flex items-center justify-between gap-3 text-xs text-white/55">
+                <span>{item.label || item.key}</span>
+              </div>
+              <ImageSettingInput
+                value={String(value ?? "")}
+                onChange={(next) => onChange(item.key, next)}
+                onReset={() => onReset(item)}
+              />
+            </div>
+          );
+        }
+
         return (
           <div key={item.key}>
             <div className="mb-2 flex items-center justify-between gap-3 text-xs text-white/55">
@@ -1070,6 +1361,8 @@ export default function GameOverlay() {
   const [overlayDebug, setOverlayDebug] = useState(null);
   const [lcStatsPayload, setLcStatsPayload] = useState(null);
   const [lcStatsAt, setLcStatsAt] = useState(null);
+  const [streamOverlaysPayload, setStreamOverlaysPayload] = useState(null);
+  const [streamOverlaysAt, setStreamOverlaysAt] = useState(null);
   const [leaderboard, setLeaderboard] = useState({
     status: "idle",
     collections: HQ_LEADERBOARD_COLLECTIONS,
@@ -1078,6 +1371,8 @@ export default function GameOverlay() {
   });
   const [endSummary, setEndSummary] = useState(null);
   const [overlayEvents, setOverlayEvents] = useState([]);
+  const [overlayLogs, setOverlayLogs] = useState([]);
+  const [inputSequence, setInputSequence] = useState(0);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [snapGuides, setSnapGuides] = useState([]);
   const [controlsPosition, setControlsPosition] = useState({ right: 24, top: 24 });
@@ -1086,6 +1381,40 @@ export default function GameOverlay() {
   const controlsDragRef = useRef(null);
   const latestConfigRef = useRef(DEFAULT_CONFIG);
   const renderReportRef = useRef("");
+  const inputSnapshotRef = useRef(createInputSnapshot());
+  const consumedInputRef = useRef(new Set());
+  const overlayContextRef = useRef(null);
+  const configVersionRef = useRef(0);
+
+  function pushOverlayLog(level, message, details = undefined) {
+    const entry = {
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      at: Date.now(),
+      level,
+      message: String(message ?? ""),
+      details,
+    };
+    setOverlayLogs((current) => [entry, ...current].slice(0, 160));
+  }
+
+  function pushInputEvent(event) {
+    inputSnapshotRef.current = {
+      down: event.down ?? inputSnapshotRef.current.down,
+      events: [event, ...inputSnapshotRef.current.events].slice(0, 80),
+      sequence: event.sequence,
+    };
+    setOverlayEvents((current) => [{ type: "input", ...event }, ...current].slice(0, 40));
+    setInputSequence(event.sequence);
+    window.setTimeout(() => {
+      if (!inputSnapshotRef.current.events.some((item) => item.id === event.id)) return;
+      inputSnapshotRef.current = {
+        ...inputSnapshotRef.current,
+        events: inputSnapshotRef.current.events.filter((item) => item.id !== event.id),
+        sequence: inputSnapshotRef.current.sequence + 1,
+      };
+      setInputSequence(inputSnapshotRef.current.sequence);
+    }, 250);
+  }
 
   useEffect(() => {
     latestConfigRef.current = config;
@@ -1159,6 +1488,59 @@ export default function GameOverlay() {
   }, []);
 
   useEffect(() => {
+    function handleKeyDown(event) {
+      if (generalKeyListening || event.repeat || isInteractiveDragTarget(event.target)) return;
+      const shortcut = canonicalShortcut(eventShortcutFromKeyboardEvent(event));
+      if (!shortcut) return;
+      const down = new Set(inputSnapshotRef.current.down);
+      down.add(shortcut);
+      pushInputEvent({
+        id: `${Date.now()}-${inputSnapshotRef.current.sequence + 1}`,
+        type: "keydown",
+        key: normalizeInputKeyName(event.key || event.code),
+        shortcut,
+        ctrlKey: event.ctrlKey,
+        shiftKey: event.shiftKey,
+        altKey: event.altKey,
+        metaKey: event.metaKey,
+        source: "window",
+        receivedAt: Date.now(),
+        sequence: inputSnapshotRef.current.sequence + 1,
+        down,
+      });
+    }
+
+    function handleKeyUp(event) {
+      if (generalKeyListening || isInteractiveDragTarget(event.target)) return;
+      const shortcut = canonicalShortcut(eventShortcutFromKeyboardEvent(event));
+      if (!shortcut) return;
+      const down = new Set(inputSnapshotRef.current.down);
+      down.delete(shortcut);
+      pushInputEvent({
+        id: `${Date.now()}-${inputSnapshotRef.current.sequence + 1}`,
+        type: "keyup",
+        key: normalizeInputKeyName(event.key || event.code),
+        shortcut,
+        ctrlKey: event.ctrlKey,
+        shiftKey: event.shiftKey,
+        altKey: event.altKey,
+        metaKey: event.metaKey,
+        source: "window",
+        receivedAt: Date.now(),
+        sequence: inputSnapshotRef.current.sequence + 1,
+        down,
+      });
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [generalKeyListening]);
+
+  useEffect(() => {
     if (!controlsOpen) return undefined;
     let disposed = false;
     async function refreshDebug() {
@@ -1178,11 +1560,185 @@ export default function GameOverlay() {
   }, [controlsOpen]);
 
   useEffect(() => {
+    if (config.general?.use_stream_overlays_api !== true) {
+      setStreamOverlaysPayload(null);
+      setStreamOverlaysAt(null);
+      pushOverlayLog("info", "StreamOverlays API disabled");
+      return undefined;
+    }
+
+    let disposed = false;
+    let socket = null;
+    let reconnectTimer = null;
+
+    function clearReconnectTimer() {
+      if (reconnectTimer != null) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    }
+
+    function scheduleReconnect(url) {
+      if (disposed || reconnectTimer != null) return;
+      pushOverlayLog("warn", "StreamOverlays reconnect scheduled", url);
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        connectStreamOverlays(url);
+      }, 1500);
+    }
+
+    async function parseStreamOverlaysMessage(data) {
+      if (typeof data === "string") {
+        return JSON.parse(data);
+      }
+      if (data instanceof ArrayBuffer) {
+        return JSON.parse(new TextDecoder().decode(data));
+      }
+      if (data instanceof Blob) {
+        return JSON.parse(await data.text());
+      }
+      return null;
+    }
+
+    function connectStreamOverlays(url) {
+      if (disposed || !url) return;
+      pushOverlayLog("info", "StreamOverlays connecting", url);
+      try {
+        socket = new WebSocket(url);
+      } catch (error) {
+        pushOverlayLog("error", "StreamOverlays connect failed", String(error?.message ?? error));
+        invoke("report_game_overlay_frontend_error", {
+          message: `stream overlays connect failed: ${error?.message ?? error}`,
+        }).catch(console.error);
+        scheduleReconnect(url);
+        return;
+      }
+
+      socket.addEventListener("open", () => {
+        if (disposed) return;
+        pushOverlayLog("success", "StreamOverlays websocket connected", url);
+        invoke("report_game_overlay_frontend_info", {
+          message: `stream overlays websocket connected: ${url}`,
+        }).catch(console.error);
+      });
+
+      socket.addEventListener("message", (event) => {
+        parseStreamOverlaysMessage(event.data)
+          .then((message) => {
+            if (disposed) return;
+            const payload = extractStreamOverlaysPayload(message);
+            if (!payload) {
+              pushOverlayLog(
+                "warn",
+                "StreamOverlays message ignored",
+                message && typeof message === "object" ? Object.keys(message).join(", ") : String(message),
+              );
+              return;
+            }
+            pushOverlayLog(
+              "success",
+              "StreamOverlays payload received",
+              Object.keys(payload).join(", "),
+            );
+            setStreamOverlaysPayload(payload);
+            setStreamOverlaysAt(Date.now());
+          })
+          .catch((error) => {
+            if (!disposed) {
+              pushOverlayLog("error", "StreamOverlays message parse failed", String(error?.message ?? error));
+              invoke("report_game_overlay_frontend_error", {
+                message: `stream overlays message parse failed: ${error?.message ?? error}`,
+              }).catch(console.error);
+            }
+          });
+      });
+
+      socket.addEventListener("error", () => {
+        if (disposed) return;
+        pushOverlayLog("error", "StreamOverlays websocket error", url);
+        invoke("report_game_overlay_frontend_error", {
+          message: `stream overlays websocket error: ${url}`,
+        }).catch(console.error);
+      });
+
+      socket.addEventListener("close", () => {
+        if (disposed) return;
+        pushOverlayLog("warn", "StreamOverlays websocket closed", url);
+        setStreamOverlaysPayload(null);
+        setStreamOverlaysAt(null);
+        scheduleReconnect(url);
+      });
+    }
+
+    invoke("get_stream_overlays_ws_url")
+      .then((url) => {
+        if (disposed) return;
+        if (!url) {
+          pushOverlayLog("warn", "StreamOverlays websocket URL unavailable");
+          setStreamOverlaysPayload(null);
+          setStreamOverlaysAt(null);
+          return;
+        }
+        pushOverlayLog("info", "StreamOverlays websocket URL resolved", url);
+        connectStreamOverlays(url);
+      })
+      .catch((error) => {
+        if (!disposed) {
+          pushOverlayLog("error", "StreamOverlays websocket URL failed", String(error?.message ?? error));
+          invoke("report_game_overlay_frontend_error", {
+            message: `stream overlays websocket url failed: ${error?.message ?? error}`,
+          }).catch(console.error);
+        }
+      });
+
+    return () => {
+      disposed = true;
+      clearReconnectTimer();
+      if (socket) {
+        socket.close();
+      }
+    };
+  }, [config.general?.use_stream_overlays_api]);
+
+  useEffect(() => {
     let unlistenControls = null;
     let unlistenConfig = null;
     let unlistenEndSummary = null;
     let unlistenLcStats = null;
+    let unlistenStreamOverlays = null;
+    let unlistenStreamOverlaysLog = null;
+    let unlistenInput = null;
     let disposed = false;
+
+    function pushTauriInputEvent(payload) {
+      const shortcut = canonicalShortcut(payload?.shortcut ?? payload?.key ?? "");
+      if (!shortcut) return;
+      const type = payload?.state === "Released" || payload?.state === "released" || payload?.type === "keyup"
+        ? "keyup"
+        : "keydown";
+      const parts = shortcutParts(shortcut);
+      const down = new Set(inputSnapshotRef.current.down);
+      if (type === "keydown") {
+        down.add(shortcut);
+      } else {
+        down.delete(shortcut);
+      }
+      const event = {
+        id: payload?.id ?? `${Date.now()}-${inputSnapshotRef.current.sequence + 1}`,
+        type,
+        key: parts.find((part) => !["Ctrl", "Shift", "Alt", "Meta"].includes(part)) ?? shortcut,
+        shortcut,
+        ctrlKey: parts.includes("Ctrl"),
+        shiftKey: parts.includes("Shift"),
+        altKey: parts.includes("Alt"),
+        metaKey: parts.includes("Meta"),
+        source: payload?.source ?? "global-shortcut",
+        receivedAt: Date.now(),
+        sequence: inputSnapshotRef.current.sequence + 1,
+        down,
+      };
+      pushInputEvent(event);
+    }
 
     (async () => {
       unlistenControls = await listen("overlay://controls-open-changed", (event) => {
@@ -1205,6 +1761,22 @@ export default function GameOverlay() {
           ...current,
         ].slice(0, 20));
       });
+      unlistenStreamOverlays = await listen("overlay://stream-overlays-updated", (event) => {
+        if (disposed) return;
+        const payload = extractStreamOverlaysPayload(event.payload) ?? event.payload ?? null;
+        if (!payload) return;
+        pushOverlayLog("success", "StreamOverlays payload received from Rust", Object.keys(payload).join(", "));
+        setStreamOverlaysPayload(payload);
+        setStreamOverlaysAt(Date.now());
+      });
+      unlistenStreamOverlaysLog = await listen("overlay://stream-overlays-log", (event) => {
+        if (disposed) return;
+        pushOverlayLog("warn", "StreamOverlays Rust monitor", event.payload ?? "");
+      });
+      unlistenInput = await listen("overlay://input-shortcut", (event) => {
+        if (disposed) return;
+        pushTauriInputEvent(event.payload ?? {});
+      });
       unlistenEndSummary = await listen("overlay://show-end-summary", (event) => {
         if (disposed) return;
         const payload = event.payload ?? {};
@@ -1225,8 +1797,20 @@ export default function GameOverlay() {
       if (typeof unlistenConfig === "function") unlistenConfig();
       if (typeof unlistenEndSummary === "function") unlistenEndSummary();
       if (typeof unlistenLcStats === "function") unlistenLcStats();
+      if (typeof unlistenStreamOverlays === "function") unlistenStreamOverlays();
+      if (typeof unlistenStreamOverlaysLog === "function") unlistenStreamOverlaysLog();
+      if (typeof unlistenInput === "function") unlistenInput();
     };
   }, [modules]);
+
+  useEffect(() => {
+    const shortcuts = collectModuleInputShortcuts(modules, config);
+    invoke("set_game_overlay_input_shortcuts", { shortcuts }).catch((error) => {
+      invoke("report_game_overlay_frontend_error", {
+        message: `failed to register input shortcuts: ${error?.message ?? error}`,
+      }).catch(console.error);
+    });
+  }, [modules, config.module_settings, config.general?.overlay_key]);
 
   useEffect(() => {
     if (!endSummary?.expiresAt) return undefined;
@@ -1397,11 +1981,25 @@ export default function GameOverlay() {
 
   function saveConfig(nextConfig) {
     const normalized = normalizeConfig(nextConfig, modules);
+    const version = configVersionRef.current + 1;
+    configVersionRef.current = version;
     latestConfigRef.current = normalized;
     setConfig(normalized);
     invoke("set_game_overlay_config", { config: normalized })
-      .then((saved) => setConfig(normalizeConfig(saved, modules)))
+      .then((saved) => {
+        if (configVersionRef.current !== version) return;
+        const savedConfig = normalizeConfig(saved, modules);
+        latestConfigRef.current = savedConfig;
+        setConfig(savedConfig);
+      })
       .catch(console.error);
+  }
+
+  function previewConfig(nextConfig) {
+    const normalized = normalizeConfig(nextConfig, modules);
+    configVersionRef.current += 1;
+    latestConfigRef.current = normalized;
+    setConfig(normalized);
   }
 
   function startDrag(event, id) {
@@ -1431,27 +2029,39 @@ export default function GameOverlay() {
     event.preventDefault();
   }
 
-  function updateModuleSetting(moduleId, key, value) {
-    saveConfig({
-      ...config,
+  function updateModuleSetting(moduleId, key, value, { persist = true } = {}) {
+    const baseConfig = latestConfigRef.current;
+    const nextConfig = {
+      ...baseConfig,
       module_settings: {
-        ...config.module_settings,
+        ...baseConfig.module_settings,
         [moduleId]: {
-          ...(config.module_settings[moduleId] ?? {}),
+          ...(baseConfig.module_settings[moduleId] ?? {}),
           [key]: value,
         },
       },
-    });
+    };
+    if (persist) {
+      saveConfig(nextConfig);
+    } else {
+      previewConfig(nextConfig);
+    }
   }
 
-  function updateGeneralSetting(key, value) {
-    saveConfig({
-      ...config,
+  function updateGeneralSetting(key, value, { persist = true } = {}) {
+    const baseConfig = latestConfigRef.current;
+    const nextConfig = {
+      ...baseConfig,
       general: {
-        ...(config.general ?? DEFAULT_CONFIG.general),
+        ...(baseConfig.general ?? DEFAULT_CONFIG.general),
         [key]: value,
       },
-    });
+    };
+    if (persist) {
+      saveConfig(nextConfig);
+    } else {
+      previewConfig(nextConfig);
+    }
   }
 
   function resetGeneralSetting(key) {
@@ -1507,12 +2117,13 @@ export default function GameOverlay() {
       });
   }
 
-  const selectedModule = selectedModuleId === "general"
+  const selectedModule = selectedModuleId === "general" || selectedModuleId === "logs"
     ? null
     : modules.find((module) => module.id === selectedModuleId) ?? modules[0] ?? null;
   const now = Date.now();
   const lcstatsPayload = lcStatsPayload;
   const lcstatsView = createLcStatsView(lcstatsPayload?.stats);
+  const streamOverlays = streamOverlaysPayload;
   const context = {
     editMode,
     controlsOpen,
@@ -1521,11 +2132,15 @@ export default function GameOverlay() {
     lcstatsRaw: lcStatsPayload?.raw ?? null,
     lcstatsPayload,
     lcstatsAgeMs: lcStatsAt ? now - lcStatsAt : null,
+    streamOverlays,
+    streamOverlay: streamOverlays,
+    streamOverlaysAgeMs: streamOverlaysAt ? now - streamOverlaysAt : null,
     displayTimeMs: Number(config.general?.end_summary_duration_ms ?? DEFAULT_CONFIG.general.end_summary_duration_ms),
     leaderboard,
     recordChecker: leaderboard,
     endSummary,
     events: overlayEvents,
+    inputSequence,
     formatSeconds,
     escapeHtml,
     html: escapeHtml,
@@ -1535,15 +2150,17 @@ export default function GameOverlay() {
     valueAt,
     valueAtAny,
   };
+  overlayContextRef.current = context;
 
   const renderedModules = modules
     .map((module) => {
       const settings = config.module_settings[module.id] ?? module.defaultSettings;
-      const api = createModuleApi(module.id);
+      const api = createModuleApi(module.id, inputSnapshotRef, consumedInputRef, overlayContextRef);
       let visible = false;
       let html = "";
       let data = context;
       try {
+        module.tick?.({ context, settings, config, api });
         data = module.derive({ context, settings, config, api }) ?? context;
         visible = !!module.visible({ context, data, settings, config, api });
         html = String(module.render({ context, data, settings, config, api }) ?? "");
@@ -1551,6 +2168,7 @@ export default function GameOverlay() {
         visible = editMode;
         html = `<div class="overlay-title">${escapeHtml(module.name)}</div><div class="overlay-line">Module error</div>`;
         console.error(`Overlay module ${module.id} failed`, error);
+        pushOverlayLog("error", `Module ${module.id} failed`, String(error?.message ?? error));
         invoke("report_game_overlay_frontend_error", {
           message: `module ${module.id} render failed: ${error?.message ?? error}`,
         }).catch(console.error);
@@ -1584,7 +2202,12 @@ export default function GameOverlay() {
     .join("\n\n");
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden bg-transparent text-white">
+    <div
+      className={cn(
+        "relative h-screen w-screen overflow-hidden bg-transparent text-white",
+        controlsOpen ? "pointer-events-auto" : "pointer-events-none",
+      )}
+    >
       <style>{moduleCss}</style>
 
       {editMode
@@ -1653,6 +2276,19 @@ export default function GameOverlay() {
                 >
                   <span className="min-w-0 truncate">General</span>
                 </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "mb-1 flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm transition",
+                    selectedModuleId === "logs"
+                      ? "bg-[var(--theme-accent)] text-black"
+                      : "text-white/75 hover:bg-white/10 hover:text-white",
+                  )}
+                  onClick={() => setSelectedModuleId("logs")}
+                >
+                  <span className="min-w-0 truncate">Logs</span>
+                  <span className="text-[10px] opacity-60">{overlayLogs.length}</span>
+                </button>
                 {modules.map((module) => (
                   <button
                     key={module.id}
@@ -1684,8 +2320,12 @@ export default function GameOverlay() {
                 onPointerDown={startControlsDrag}
               >
                 <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold">{selectedModuleId === "general" ? "General" : selectedModule?.name ?? "No Module"}</div>
-                  <div className="truncate text-[11px] text-white/40">{selectedModuleId === "general" ? "Overlay defaults" : selectedModule?.fileName ?? ""}</div>
+                  <div className="truncate text-sm font-semibold">
+                    {selectedModuleId === "general" ? "General" : selectedModuleId === "logs" ? "Logs" : selectedModule?.name ?? "No Module"}
+                  </div>
+                  <div className="truncate text-[11px] text-white/40">
+                    {selectedModuleId === "general" ? "Overlay defaults" : selectedModuleId === "logs" ? "Overlay diagnostics" : selectedModule?.fileName ?? ""}
+                  </div>
                 </div>
                 <Button
                   variant="secondary"
@@ -1737,8 +2377,60 @@ export default function GameOverlay() {
                         min={2}
                         max={30}
                         step={1}
-                        onValueChange={([next]) => updateGeneralSetting("end_summary_duration_ms", next * 1000)}
+                        onValueChange={([next]) => updateGeneralSetting("end_summary_duration_ms", next * 1000, { persist: false })}
+                        onValueCommit={([next]) => updateGeneralSetting("end_summary_duration_ms", next * 1000)}
                       />
+                    </div>
+                  </div>
+                ) : selectedModuleId === "logs" ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium text-white/85">Overlay Logs</div>
+                        <div className="text-xs text-white/40">
+                          StreamOverlays connection and module diagnostics.
+                        </div>
+                      </div>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="h-8 rounded px-3"
+                        onClick={() => setOverlayLogs([])}
+                      >
+                        Clear
+                      </Button>
+                    </div>
+                    <div className="rounded border border-white/10 bg-black/25">
+                      {overlayLogs.length === 0 ? (
+                        <div className="px-3 py-6 text-center text-xs text-white/40">No logs yet.</div>
+                      ) : (
+                        <div className="max-h-[420px] overflow-auto">
+                          {overlayLogs.map((log) => {
+                            const color = log.level === "error"
+                              ? "text-red-200"
+                              : log.level === "warn"
+                                ? "text-yellow-100"
+                                : log.level === "success"
+                                  ? "text-emerald-100"
+                                  : "text-white/75";
+                            return (
+                              <div key={log.id} className="border-b border-white/10 px-3 py-2 last:border-b-0">
+                                <div className="flex items-center justify-between gap-3">
+                                  <span className={cn("truncate text-xs font-medium", color)}>{log.message}</span>
+                                  <span className="shrink-0 text-[10px] tabular-nums text-white/35">
+                                    {new Date(log.at).toLocaleTimeString()}
+                                  </span>
+                                </div>
+                                {log.details !== undefined && log.details !== "" ? (
+                                  <div className="mt-1 break-all font-mono text-[11px] leading-relaxed text-white/45">
+                                    {String(log.details)}
+                                  </div>
+                                ) : null}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   </div>
                 ) : selectedModule?.description ? (
@@ -1771,6 +2463,7 @@ export default function GameOverlay() {
                       module={selectedModule}
                       settings={selectedModule ? config.module_settings[selectedModule.id] ?? {} : {}}
                       onChange={(key, value) => updateModuleSetting(selectedModule.id, key, value)}
+                      onPreview={(key, value) => updateModuleSetting(selectedModule.id, key, value, { persist: false })}
                       onReset={(item) => updateModuleSetting(selectedModule.id, item.key, resetValueForSetting(item))}
                     />
                   </>

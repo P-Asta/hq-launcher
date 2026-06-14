@@ -626,9 +626,15 @@ fn default_custom_gift_boxes_net_only() -> bool {
     false
 }
 
+fn default_use_lcstats_api() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LcStatsSettings {
+    #[serde(default = "default_use_lcstats_api")]
+    pub use_lcstats_api: bool,
     pub spreadsheet_id: String,
     pub active_sheet_name: String,
     #[serde(default)]
@@ -654,6 +660,7 @@ pub struct LcStatsSettings {
 impl Default for LcStatsSettings {
     fn default() -> Self {
         Self {
+            use_lcstats_api: true,
             spreadsheet_id: String::new(),
             active_sheet_name: String::new(),
             active_sheet_id: String::new(),

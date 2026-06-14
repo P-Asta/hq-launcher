@@ -3,7 +3,9 @@ use discord_rich_presence::{
     DiscordIpc, DiscordIpcClient,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
+    collections::HashMap,
     fs,
     net::TcpStream,
     path::PathBuf,
@@ -43,24 +45,27 @@ struct ResolvedPresencePayload {
     start_timestamp: Option<i64>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct StreamOverlaysEnvelope {
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamOverlaysEnvelope {
     #[serde(rename = "type")]
-    message_type: Option<String>,
+    pub message_type: Option<String>,
     #[serde(default, rename = "showOverlay")]
-    _show_overlay: Option<bool>,
+    pub show_overlay: Option<bool>,
     #[serde(default, rename = "crewCount")]
-    crew_count: Option<i32>,
+    pub crew_count: Option<i32>,
     #[serde(default, rename = "moonName")]
-    moon_name: Option<String>,
+    pub moon_name: Option<String>,
     #[serde(default, rename = "weatherName")]
-    weather_name: Option<String>,
+    pub weather_name: Option<String>,
     #[serde(default, rename = "quotaValue")]
-    quota_value: Option<i32>,
+    pub quota_value: Option<i32>,
     #[serde(default, rename = "quotaIndex")]
-    quota_index: Option<i32>,
+    pub quota_index: Option<i32>,
     #[serde(default, rename = "lootValue")]
-    loot_value: Option<i32>,
+    pub loot_value: Option<i32>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
 }
 
 #[derive(Default)]
@@ -165,15 +170,17 @@ fn stream_overlays_ws_port() -> u16 {
         .unwrap_or(DEFAULT_STREAM_OVERLAYS_WS_PORT)
 }
 
+pub fn stream_overlays_ws_url() -> String {
+    format!("ws://127.0.0.1:{}/overlay", stream_overlays_ws_port())
+}
+
 fn connect_stream_overlays_socket() -> Option<WebSocket<MaybeTlsStream<TcpStream>>> {
-    let request = format!("ws://127.0.0.1:{}/overlay", stream_overlays_ws_port())
-        .into_client_request()
-        .ok()?;
+    let request = stream_overlays_ws_url().into_client_request().ok()?;
     let (socket, _) = tungstenite::connect(request).ok()?;
     Some(socket)
 }
 
-fn receive_stream_overlays_data() -> Option<StreamOverlaysEnvelope> {
+pub fn receive_stream_overlays_data() -> Option<StreamOverlaysEnvelope> {
     let mut socket = connect_stream_overlays_socket()?;
     match socket.get_mut() {
         MaybeTlsStream::Plain(stream) => {
@@ -194,7 +201,7 @@ fn receive_stream_overlays_data() -> Option<StreamOverlaysEnvelope> {
         match message {
             Message::Text(text) => {
                 let parsed = serde_json::from_str::<StreamOverlaysEnvelope>(&text).ok()?;
-                if parsed.message_type.as_deref() == Some("data") {
+                if is_stream_overlays_payload(&parsed) {
                     let _ = socket.close(None);
                     return Some(parsed);
                 }
@@ -202,7 +209,7 @@ fn receive_stream_overlays_data() -> Option<StreamOverlaysEnvelope> {
             Message::Binary(bytes) => {
                 let text = String::from_utf8(bytes.to_vec()).ok()?;
                 let parsed = serde_json::from_str::<StreamOverlaysEnvelope>(&text).ok()?;
-                if parsed.message_type.as_deref() == Some("data") {
+                if is_stream_overlays_payload(&parsed) {
                     let _ = socket.close(None);
                     return Some(parsed);
                 }
@@ -212,6 +219,19 @@ fn receive_stream_overlays_data() -> Option<StreamOverlaysEnvelope> {
     }
 
     None
+}
+
+fn is_stream_overlays_payload(payload: &StreamOverlaysEnvelope) -> bool {
+    if payload.message_type.as_deref() == Some("data") {
+        return true;
+    }
+    payload.show_overlay.is_some()
+        || payload.crew_count.is_some()
+        || payload.moon_name.is_some()
+        || payload.weather_name.is_some()
+        || payload.quota_value.is_some()
+        || payload.quota_index.is_some()
+        || payload.loot_value.is_some()
 }
 
 fn truncate_text(value: String) -> String {

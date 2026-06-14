@@ -331,6 +331,7 @@ const DEFAULT_CUSTOM_LCSTATS_LAYOUT = {
 };
 
 const DEFAULT_LCSTATS_SETTINGS = {
+  useLcstatsApi: true,
   spreadsheetId: "",
   activeSheetName: "",
   activeSheetId: "",
@@ -1414,6 +1415,14 @@ export default function LauncherPage({
     enabled: false,
     steam_path: "",
   });
+  const [gameOverlayConfig, setGameOverlayConfig] = useState({
+    general: {
+      enabled: true,
+      use_stream_overlays_api: false,
+      overlay_key: "Insert",
+      end_summary_duration_ms: 10000,
+    },
+  });
   const [launchOptionsEnabled, setLaunchOptionsEnabled] = useState(
     initialLaunchOptionsConfig.enabled
   );
@@ -1585,8 +1594,11 @@ export default function LauncherPage({
 
   useEffect(() => {
     let cancelled = false;
-    invoke("get_steam_overlay_config")
-      .then((cfg) => {
+    Promise.all([
+      invoke("get_steam_overlay_config"),
+      invoke("get_game_overlay_config"),
+    ])
+      .then(([cfg, overlayCfg]) => {
         if (cancelled) return;
         const resolvedPath = String(cfg?.resolved_steam_path ?? "");
         setSteamOverlayResolvedPath(resolvedPath);
@@ -1594,6 +1606,15 @@ export default function LauncherPage({
           enabled: !!cfg?.enabled,
           steam_path: String(cfg?.steam_path ?? cfg?.resolved_steam_path ?? ""),
         });
+        setGameOverlayConfig((prev) => ({
+          ...prev,
+          ...(overlayCfg ?? {}),
+          general: {
+            ...(prev.general ?? {}),
+            ...(overlayCfg?.general ?? {}),
+            enabled: overlayCfg?.general?.enabled !== false,
+          },
+        }));
       })
       .catch((error) => {
         if (cancelled) return;
@@ -3604,6 +3625,9 @@ export default function LauncherPage({
 
   function updateLcstatsSettings(patch) {
     setLcstatsSettings((prev) => ({ ...prev, ...patch }));
+    if (patch?.useLcstatsApi === false) {
+      setLcstatsTrackingEnabled(false);
+    }
     setLcstatsSaved("");
     setLcstatsError("");
   }
@@ -3632,6 +3656,7 @@ export default function LauncherPage({
       googleClientSecret: String(settings?.googleClientSecret ?? "").trim(),
       googlePickerApiKey: String(settings?.googlePickerApiKey ?? "").trim(),
       googlePickerAppId: String(settings?.googlePickerAppId ?? "").trim(),
+      useLcstatsApi: settings?.useLcstatsApi !== false,
       allowWithoutGoogle: !!settings?.allowWithoutGoogle,
     };
   }
@@ -4577,7 +4602,7 @@ export default function LauncherPage({
           <Button
             variant="secondary"
             className="h-10 w-full"
-            disabled={lcstatsTrackingBusy || !selectedLcStatsTracker}
+            disabled={lcstatsTrackingBusy || !selectedLcStatsTracker || !lcstatsSettings.useLcstatsApi}
             onClick={() => {
               toggleLcstatsAutosheetTracking().catch(console.error);
             }}
@@ -4589,7 +4614,11 @@ export default function LauncherPage({
             ) : (
               <CheckCircle2 className="h-4 w-4" />
             )}
-            {lcstatsTrackingEnabled ? "Stop Tracking" : "Track Current Game"}
+            {!lcstatsSettings.useLcstatsApi
+              ? "LCStats API Disabled"
+              : lcstatsTrackingEnabled
+                ? "Stop Tracking"
+                : "Track Current Game"}
           </Button>
         </div>
         <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-4">
@@ -4599,6 +4628,30 @@ export default function LauncherPage({
             {googleOauthError ? (
               <div className="rounded-2xl border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm text-red-200">
                 {googleOauthError}
+              </div>
+            ) : null}
+
+            <div className="flex items-center justify-between gap-4 rounded-2xl border border-panel-outline bg-white/[0.04] px-4 py-3">
+              <div>
+                <div className="text-sm font-medium text-white">
+                  Use LCStatsTracker API
+                </div>
+                <div className="mt-1 text-xs text-white/50">
+                  Lets the launcher listen to LCStatsTracker for AutoSheet and HQLC overlay data.
+                </div>
+              </div>
+              <Switch
+                checked={lcstatsSettings.useLcstatsApi !== false}
+                disabled={lcstatsBusy}
+                onCheckedChange={(checked) => {
+                  updateLcstatsSettings({ useLcstatsApi: checked });
+                }}
+              />
+            </div>
+
+            {!lcstatsSettings.useLcstatsApi ? (
+              <div className="rounded-2xl border border-yellow-300/25 bg-yellow-300/10 px-4 py-3 text-sm leading-relaxed text-yellow-100">
+                LCStatsTracker API access is disabled. The mod can still run, but this launcher will not connect to its local stats feed.
               </div>
             ) : null}
 
@@ -5674,15 +5727,35 @@ export default function LauncherPage({
     setSteamOverlayError("");
     setSteamOverlaySaved("");
     try {
-      const saved = await invoke("set_steam_overlay_config", {
-        enabled: !!steamOverlayConfig.enabled,
-        steamPath: steamOverlayConfig.steam_path.trim() || null,
-      });
+      const [saved, savedGameOverlay] = await Promise.all([
+        invoke("set_steam_overlay_config", {
+          enabled: !!steamOverlayConfig.enabled,
+          steamPath: steamOverlayConfig.steam_path.trim() || null,
+        }),
+        invoke("set_game_overlay_config", {
+          config: {
+            ...gameOverlayConfig,
+            general: {
+              ...(gameOverlayConfig.general ?? {}),
+              enabled: gameOverlayConfig.general?.enabled !== false,
+            },
+          },
+        }),
+      ]);
       setSteamOverlayResolvedPath(String(saved?.resolved_steam_path ?? ""));
       setSteamOverlayConfig({
         enabled: !!saved?.enabled,
         steam_path: String(saved?.steam_path ?? saved?.resolved_steam_path ?? ""),
       });
+      setGameOverlayConfig((prev) => ({
+        ...prev,
+        ...(savedGameOverlay ?? {}),
+        general: {
+          ...(prev.general ?? {}),
+          ...(savedGameOverlay?.general ?? {}),
+          enabled: savedGameOverlay?.general?.enabled !== false,
+        },
+      }));
       setSteamOverlaySaved("Saved");
       setSteamOverlayDialogOpen(false);
     } catch (error) {
@@ -8103,10 +8176,10 @@ export default function LauncherPage({
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="text-lg font-semibold tracking-[-0.02em]">
-                  Inject Steam Overlay
+                  Overlay Settings
                 </div>
                 <div className="mt-1 text-sm text-white/55">
-                  Toggle Steam Overlay DLL injection and optionally override the Steam install path.
+                  Toggle HQLC overlay and Steam Overlay DLL injection.
                 </div>
               </div>
               <button
@@ -8125,6 +8198,56 @@ export default function LauncherPage({
             </div>
 
             <div className="mt-6 space-y-5">
+              <div className="flex items-center justify-between gap-4 rounded-2xl border border-panel-outline bg-white/[0.04] px-4 py-3">
+                <div>
+                  <div className="text-sm font-medium text-white">
+                    Enable HQLC Overlay
+                  </div>
+                  <div className="mt-1 text-xs text-white/50">
+                    Shows the editable HQLC in-game overlay while Lethal Company is focused.
+                  </div>
+                </div>
+                <Switch
+                  checked={gameOverlayConfig.general?.enabled !== false}
+                  disabled={steamOverlaySaveBusy}
+                  onCheckedChange={(checked) => {
+                    setGameOverlayConfig((prev) => ({
+                      ...prev,
+                      general: {
+                        ...(prev.general ?? {}),
+                        enabled: checked,
+                      },
+                    }));
+                    setSteamOverlaySaved("");
+                  }}
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-4 rounded-2xl border border-panel-outline bg-white/[0.04] px-4 py-3">
+                <div>
+                  <div className="text-sm font-medium text-white">
+                    Use StreamOverlays API
+                  </div>
+                  <div className="mt-1 text-xs text-white/50">
+                    Lets HQLC overlay modules read StreamOverlays data from its local WebSocket.
+                  </div>
+                </div>
+                <Switch
+                  checked={gameOverlayConfig.general?.use_stream_overlays_api === true}
+                  disabled={steamOverlaySaveBusy}
+                  onCheckedChange={(checked) => {
+                    setGameOverlayConfig((prev) => ({
+                      ...prev,
+                      general: {
+                        ...(prev.general ?? {}),
+                        use_stream_overlays_api: checked,
+                      },
+                    }));
+                    setSteamOverlaySaved("");
+                  }}
+                />
+              </div>
+
               <div className="flex items-center justify-between gap-4 rounded-2xl border border-panel-outline bg-white/[0.04] px-4 py-3">
                 <div>
                   <div className="text-sm font-medium text-white">

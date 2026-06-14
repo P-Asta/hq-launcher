@@ -2,12 +2,13 @@ import * as React from "react";
 import * as SliderPrimitive from "@radix-ui/react-slider";
 import { cn } from "../../lib/cn";
 
-export function Slider({ className, value, onValueChange, min, max, step, disabled }) {
+export function Slider({ className, value, onValueChange, onValueCommit, min, max, step, disabled }) {
   return (
     <SliderPrimitive.Root
       className={cn("relative flex w-full touch-none select-none items-center", className)}
       value={value}
       onValueChange={onValueChange}
+      onValueCommit={onValueCommit}
       min={min}
       max={max}
       step={step}
