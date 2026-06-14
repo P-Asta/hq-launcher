@@ -269,7 +269,7 @@ fn emit_overlay_lcstats_update(app: &tauri::AppHandle, raw: String, stats: Value
         "stats": stats,
     });
 
-    let _ = app.emit_to("game-overlay", "overlay://lcstats-updated", payload);
+    let _ = app.emit("overlay://lcstats-updated", payload);
 }
 
 fn remember_latest_payload(

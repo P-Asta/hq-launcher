@@ -2962,6 +2962,7 @@ struct GameOverlayState {
     controls_open: AtomicBool,
     monitor_running: AtomicBool,
     preview_mode: AtomicBool,
+    obs_capture_enabled: AtomicBool,
     overlay_enabled: AtomicBool,
     stream_overlays_monitor_running: AtomicBool,
     window_visible: AtomicBool,
@@ -2981,6 +2982,7 @@ impl Default for GameOverlayState {
             controls_open: AtomicBool::new(false),
             monitor_running: AtomicBool::new(false),
             preview_mode: AtomicBool::new(false),
+            obs_capture_enabled: AtomicBool::new(false),
             overlay_enabled: AtomicBool::new(true),
             stream_overlays_monitor_running: AtomicBool::new(false),
             window_visible: AtomicBool::new(false),
@@ -3765,8 +3767,26 @@ fn apply_game_overlay_window_style(window: &tauri::WebviewWindow) -> Result<(), 
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+fn apply_game_overlay_selector_window_style(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as HWND;
+    let current = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+    let next = (current | WS_EX_APPWINDOW as isize) & !(WS_EX_TOOLWINDOW as isize);
+    if next != current {
+        unsafe {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(not(target_os = "windows"))]
 fn apply_game_overlay_window_style(_window: &tauri::WebviewWindow) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn apply_game_overlay_selector_window_style(_window: &tauri::WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
@@ -4000,16 +4020,14 @@ fn start_stream_overlays_monitor(app: &tauri::AppHandle) {
             match discord_presence::receive_stream_overlays_data() {
                 Some(payload) => {
                     set_game_overlay_debug(&app_handle, "stream overlays payload received");
-                    let _ = app_handle.emit_to(
-                        GAME_OVERLAY_WINDOW_LABEL,
+                    let _ = app_handle.emit(
                         "overlay://stream-overlays-updated",
                         &payload,
                     );
                 }
                 None => {
                     set_game_overlay_debug(&app_handle, "stream overlays payload unavailable");
-                    let _ = app_handle.emit_to(
-                        GAME_OVERLAY_WINDOW_LABEL,
+                    let _ = app_handle.emit(
                         "overlay://stream-overlays-log",
                         "payload unavailable",
                     );
@@ -4438,8 +4456,7 @@ fn emit_game_overlay_input_shortcut(
         state: event_state.to_string(),
         source: source.to_string(),
     };
-    let _ = app.emit_to(
-        GAME_OVERLAY_WINDOW_LABEL,
+    let _ = app.emit(
         "overlay://input-shortcut",
         payload,
     );
@@ -6746,8 +6763,7 @@ fn set_game_overlay_config(
         }
     }
     register_game_overlay_shortcut(&app);
-    let _ = app.emit_to(
-        GAME_OVERLAY_WINDOW_LABEL,
+    let _ = app.emit(
         "overlay://config-changed",
         cfg.clone(),
     );
@@ -6818,6 +6834,64 @@ fn close_game_overlay_only(
         false,
     );
     set_game_overlay_debug(&app, "overlay only closed");
+    Ok(true)
+}
+
+#[tauri::command]
+fn open_obs_overlay_window(app: tauri::AppHandle) -> Result<bool, String> {
+    app.state::<GameOverlayState>()
+        .obs_capture_enabled
+        .store(true, Ordering::Relaxed);
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = open_obs_overlay_window_inner(&app_handle) {
+            set_game_overlay_error(&app_handle, format!("OBS overlay capture window failed: {e}"));
+        }
+    });
+    set_game_overlay_debug(&app, "OBS overlay capture window requested");
+    Ok(true)
+}
+
+fn open_obs_overlay_window_inner(app: &tauri::AppHandle) -> Result<(), String> {
+    let window = ensure_game_overlay_window(app)?;
+    apply_game_overlay_selector_window_style(&window)?;
+
+    #[cfg(target_os = "windows")]
+    if let Some((_pid, rect)) = foreground_lethal_company_window() {
+        let width = (rect.right - rect.left).max(1) as u32;
+        let height = (rect.bottom - rect.top).max(1) as u32;
+        let _ = window.set_fullscreen(false);
+        let _ = window.set_size(tauri::PhysicalSize::new(width, height));
+        let _ = window.set_position(tauri::PhysicalPosition::new(rect.left, rect.top));
+    } else {
+        let _ = window.set_fullscreen(false);
+        let _ = window.set_size(tauri::PhysicalSize::new(1280, 720));
+        let _ = window.set_position(tauri::PhysicalPosition::new(96, 96));
+    }
+
+    let _ = window.set_title("HQ Overlay - OBS Capture");
+    let _ = window.set_always_on_top(false);
+    apply_game_overlay_interaction(&window, false)?;
+    window.show().map_err(|e| e.to_string())?;
+    set_game_overlay_debug(app, "game overlay selector window opened for OBS capture");
+    Ok(())
+}
+
+#[tauri::command]
+fn close_obs_overlay_window(app: tauri::AppHandle) -> Result<bool, String> {
+    let state = app.state::<GameOverlayState>();
+    state.preview_mode.store(false, Ordering::Relaxed);
+    state.controls_open.store(false, Ordering::Relaxed);
+    state.window_visible.store(false, Ordering::Relaxed);
+    if let Some(window) = app.get_webview_window(GAME_OVERLAY_WINDOW_LABEL) {
+        window.hide().map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit_to(
+        GAME_OVERLAY_WINDOW_LABEL,
+        "overlay://controls-open-changed",
+        false,
+    );
+    set_game_overlay_debug(&app, "game overlay selector hidden; OBS capture remains armed");
     Ok(true)
 }
 
@@ -6916,8 +6990,7 @@ fn show_game_overlay_end_summary(
     window.set_always_on_top(true).map_err(|e| e.to_string())?;
     force_game_overlay_topmost(&window)?;
     apply_game_overlay_interaction(&window, false)?;
-    app.emit_to(
-        GAME_OVERLAY_WINDOW_LABEL,
+    app.emit(
         "overlay://show-end-summary",
         payload,
     )
@@ -8661,6 +8734,8 @@ pub fn run() {
             toggle_game_overlay_only,
             open_game_overlay_only,
             close_game_overlay_only,
+            open_obs_overlay_window,
+            close_obs_overlay_window,
             open_game_overlay_modules_folder,
             set_game_overlay_controls_open,
             set_game_overlay_input_shortcuts,

@@ -1344,7 +1344,7 @@ function OverlayModuleView({ module, html, position, editMode, onDragStart }) {
   );
 }
 
-export default function GameOverlay() {
+export default function GameOverlay({ captureOnly = false }) {
   if (typeof window !== "undefined" && !window.__hqGameOverlayEntered) {
     window.__hqGameOverlayEntered = true;
     invoke("report_game_overlay_frontend_info", { message: "GameOverlay function entered" }).catch(console.error);
@@ -1450,7 +1450,7 @@ export default function GameOverlay() {
         setConfig(normalizeConfig(nextConfig, evaluated.length > 0 ? evaluated : FALLBACK_MODULES));
         if (debugStatus) {
           setOverlayDebug(debugStatus);
-          setControlsOpen(!!debugStatus.controlsOpen);
+          setControlsOpen(captureOnly ? false : !!debugStatus.controlsOpen);
         }
         if (latestLcStats?.stats) {
           setLcStatsPayload({
@@ -1474,11 +1474,11 @@ export default function GameOverlay() {
       window.removeEventListener("error", handleError);
       window.removeEventListener("unhandledrejection", handleRejection);
     };
-  }, []);
+  }, [captureOnly]);
 
   useEffect(() => {
     setConfig((current) => normalizeConfig(current, modules));
-  }, [modules]);
+  }, [captureOnly, modules]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -1744,6 +1744,7 @@ export default function GameOverlay() {
       unlistenControls = await listen("overlay://controls-open-changed", (event) => {
         if (disposed) return;
         const open = !!event.payload;
+        if (captureOnly) return;
         setControlsOpen(open);
         if (!open) setEditMode(false);
       });
@@ -1801,16 +1802,17 @@ export default function GameOverlay() {
       if (typeof unlistenStreamOverlaysLog === "function") unlistenStreamOverlaysLog();
       if (typeof unlistenInput === "function") unlistenInput();
     };
-  }, [modules]);
+  }, [captureOnly, modules]);
 
   useEffect(() => {
+    if (captureOnly) return undefined;
     const shortcuts = collectModuleInputShortcuts(modules, config);
     invoke("set_game_overlay_input_shortcuts", { shortcuts }).catch((error) => {
       invoke("report_game_overlay_frontend_error", {
         message: `failed to register input shortcuts: ${error?.message ?? error}`,
       }).catch(console.error);
     });
-  }, [modules, config.module_settings, config.general?.overlay_key]);
+  }, [captureOnly, modules, config.module_settings, config.general?.overlay_key]);
 
   useEffect(() => {
     if (!endSummary?.expiresAt) return undefined;
@@ -1883,6 +1885,7 @@ export default function GameOverlay() {
   }, [lcStatsPayload, config.module_settings?.leaderboard, config.module_settings?.record_checker]);
 
   useEffect(() => {
+    if (captureOnly) return undefined;
     function handleKeyDown(event) {
       if (event.key !== "Escape") return;
       if (editMode) {
@@ -1898,7 +1901,7 @@ export default function GameOverlay() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [controlsOpen, editMode]);
+  }, [captureOnly, controlsOpen, editMode]);
 
   useEffect(() => {
     function handleMove(event) {

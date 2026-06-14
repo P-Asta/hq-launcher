@@ -2,6 +2,7 @@ export function getWindowMode() {
   if (typeof window === "undefined") return "";
   const href = String(window.location.href ?? "");
   if (href.includes("window=game-overlay")) return "game-overlay";
+  if (href.includes("window=obs-overlay")) return "obs-overlay";
 
   const searchMode = new URLSearchParams(window.location.search).get("window");
   if (searchMode) return searchMode;

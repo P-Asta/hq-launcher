@@ -342,13 +342,15 @@ class OverlayErrorBoundary extends Component {
 }
 
 export default function AppRoot() {
-  const isGameOverlay = getWindowMode() === "game-overlay";
+  const windowMode = getWindowMode();
+  const isGameOverlay = windowMode === "game-overlay";
+  const isObsOverlay = windowMode === "obs-overlay";
 
-  if (isGameOverlay) {
-    invoke("report_game_overlay_frontend_info", { message: "AppRoot rendering GameOverlay" }).catch(console.error);
+  if (isGameOverlay || isObsOverlay) {
+    invoke("report_game_overlay_frontend_info", { message: `AppRoot rendering ${windowMode}` }).catch(console.error);
     return (
       <OverlayErrorBoundary>
-        <GameOverlay />
+        <GameOverlay captureOnly={isObsOverlay} />
       </OverlayErrorBoundary>
     );
   }

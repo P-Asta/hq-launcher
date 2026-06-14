@@ -1435,6 +1435,7 @@ export default function LauncherPage({
   const [newLaunchOptionEntry, setNewLaunchOptionEntry] = useState("");
   const [steamOverlayResolvedPath, setSteamOverlayResolvedPath] = useState("");
   const [steamOverlaySaveBusy, setSteamOverlaySaveBusy] = useState(false);
+  const [obsOverlayBusy, setObsOverlayBusy] = useState(false);
   const [steamOverlayError, setSteamOverlayError] = useState("");
   const [steamOverlaySaved, setSteamOverlaySaved] = useState("");
   const [deleteVersionPrompt, setDeleteVersionPrompt] = useState(
@@ -5783,6 +5784,48 @@ export default function LauncherPage({
     }
   }
 
+  function invokeWithTimeout(command, args, timeoutMs = 5000) {
+    let timeoutId = null;
+    const timeout = new Promise((_, reject) => {
+      timeoutId = window.setTimeout(() => {
+        reject(new Error(`${command} timed out`));
+      }, timeoutMs);
+    });
+    return Promise.race([invoke(command, args), timeout]).finally(() => {
+      window.clearTimeout(timeoutId);
+    });
+  }
+
+  async function openObsOverlayWindow() {
+    if (obsOverlayBusy) return;
+    setObsOverlayBusy(true);
+    setSteamOverlayError("");
+    setSteamOverlaySaved("");
+    try {
+      await invokeWithTimeout("open_obs_overlay_window");
+      setSteamOverlaySaved("OBS selector shown. Select HQ Overlay - OBS Capture in OBS, then hide the selector.");
+    } catch (error) {
+      setSteamOverlayError(error?.message ?? String(error));
+    } finally {
+      setObsOverlayBusy(false);
+    }
+  }
+
+  async function closeObsOverlayWindow() {
+    if (obsOverlayBusy) return;
+    setObsOverlayBusy(true);
+    setSteamOverlayError("");
+    setSteamOverlaySaved("");
+    try {
+      await invokeWithTimeout("close_obs_overlay_window");
+      setSteamOverlaySaved("Selector hidden. OBS capture remains armed for the game overlay.");
+    } catch (error) {
+      setSteamOverlayError(error?.message ?? String(error));
+    } finally {
+      setObsOverlayBusy(false);
+    }
+  }
+
   async function startSelectedRun(opts = {}) {
     if (launchBusy) return;
     const allowMultiple = opts?.allowMultiple === true;
@@ -8246,6 +8289,43 @@ export default function LauncherPage({
                     setSteamOverlaySaved("");
                   }}
                 />
+              </div>
+
+              <div className="rounded-2xl border border-panel-outline bg-white/[0.04] px-4 py-3">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <div className="text-sm font-medium text-white">
+                      OBS Capture Window
+                    </div>
+                    <div className="mt-1 text-xs text-white/50">
+                      Shows the real game overlay window for OBS selection. Hide it after selecting; it will return on game launch.
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Button
+                      variant="secondary"
+                      className="h-9"
+                      disabled={steamOverlaySaveBusy || obsOverlayBusy}
+                      onClick={() => {
+                        closeObsOverlayWindow().catch(console.error);
+                      }}
+                    >
+                      <X className="h-4 w-4" />
+                      Hide Selector
+                    </Button>
+                    <Button
+                      variant="default"
+                      className="h-9"
+                      disabled={steamOverlaySaveBusy || obsOverlayBusy}
+                      onClick={() => {
+                        openObsOverlayWindow().catch(console.error);
+                      }}
+                    >
+                      <Play className="h-4 w-4" />
+                      {obsOverlayBusy ? "Opening..." : "Open Selector"}
+                    </Button>
+                  </div>
+                </div>
               </div>
 
               <div className="flex items-center justify-between gap-4 rounded-2xl border border-panel-outline bg-white/[0.04] px-4 py-3">
