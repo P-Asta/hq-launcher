@@ -3929,6 +3929,25 @@ fn hide_game_overlay_window(app: &tauri::AppHandle, close_controls: bool) {
     }
 }
 
+fn close_game_overlay_for_app_exit(app: &tauri::AppHandle) {
+    let state = app.state::<GameOverlayState>();
+    state.monitor_running.store(false, Ordering::Relaxed);
+    state.stream_overlays_monitor_running.store(false, Ordering::Relaxed);
+    state.controls_open.store(false, Ordering::Relaxed);
+    state.preview_mode.store(false, Ordering::Relaxed);
+    state.obs_capture_enabled.store(false, Ordering::Relaxed);
+    state
+        .obs_capture_owned_preview
+        .store(false, Ordering::Relaxed);
+    state.window_visible.store(false, Ordering::Relaxed);
+
+    if let Some(window) = app.get_webview_window(GAME_OVERLAY_WINDOW_LABEL) {
+        let _ = apply_game_overlay_interaction(&window, false);
+        let _ = window.close();
+        set_game_overlay_debug(app, "window closed because main window is closing");
+    }
+}
+
 fn hide_game_overlay(app: &tauri::AppHandle) {
     if app
         .state::<GameOverlayState>()
@@ -4021,19 +4040,12 @@ fn start_stream_overlays_monitor(app: &tauri::AppHandle) {
 
             match discord_presence::receive_stream_overlays_data() {
                 Some(payload) => {
-                    set_game_overlay_debug(&app_handle, "stream overlays payload received");
                     let _ = app_handle.emit(
                         "overlay://stream-overlays-updated",
                         &payload,
                     );
                 }
-                None => {
-                    set_game_overlay_debug(&app_handle, "stream overlays payload unavailable");
-                    let _ = app_handle.emit(
-                        "overlay://stream-overlays-log",
-                        "payload unavailable",
-                    );
-                }
+                None => {}
             }
 
             std::thread::sleep(std::time::Duration::from_millis(900));
@@ -4321,24 +4333,33 @@ fn start_game_overlay_monitor(app: &tauri::AppHandle) {
         let controls_open = overlay_state.controls_open.load(Ordering::Relaxed);
         if active_pids.is_empty() {
             overlay_state.last_match.store(false, Ordering::Relaxed);
-            if overlay_state.preview_mode.load(Ordering::Relaxed) {
-                if controls_open {
-                    continue;
-                }
-                if let Some((target_pid, rect)) = foreground_lethal_company_window() {
-                    show_game_overlay_attached_to_rect(
-                        &app_handle,
-                        overlay_state.inner(),
-                        controls_open,
-                        target_pid,
-                        rect,
-                        "preview",
-                    );
-                    continue;
-                }
-                hide_game_overlay_window(&app_handle, false);
+            if controls_open {
                 continue;
             }
+
+            if let Some((target_pid, rect)) = foreground_lethal_company_window() {
+                let source = if overlay_state.preview_mode.load(Ordering::Relaxed) {
+                    "preview"
+                } else {
+                    "auto"
+                };
+                show_game_overlay_attached_to_rect(
+                    &app_handle,
+                    overlay_state.inner(),
+                    controls_open,
+                    target_pid,
+                    rect,
+                    source,
+                );
+                continue;
+            }
+
+            if overlay_state.obs_capture_enabled.load(Ordering::Relaxed)
+                && overlay_state.preview_mode.load(Ordering::Relaxed)
+            {
+                continue;
+            }
+
             hide_game_overlay_window(&app_handle, true);
             continue;
         }
@@ -4489,13 +4510,6 @@ fn handle_game_overlay_shortcut(app: &tauri::AppHandle, shortcut_label: &str) {
         .unwrap_or_default();
     if active_pids.is_empty() {
         let state = app.state::<GameOverlayState>();
-        if !state.preview_mode.load(Ordering::Relaxed) {
-            set_game_overlay_debug(
-                app,
-                "overlay shortcut ignored because no launched Lethal Company process is active",
-            );
-            return;
-        }
         #[cfg(target_os = "windows")]
         {
             if !state.controls_open.load(Ordering::Relaxed)
@@ -4508,6 +4522,15 @@ fn handle_game_overlay_shortcut(app: &tauri::AppHandle, shortcut_label: &str) {
                 return;
             }
         }
+        let source = if state.preview_mode.load(Ordering::Relaxed) {
+            "preview"
+        } else {
+            "auto"
+        };
+        set_game_overlay_debug(
+            app,
+            format!("{shortcut_label} accepted for {source} Lethal Company window"),
+        );
         let next_open = !state.controls_open.load(Ordering::Relaxed);
         if let Err(e) = set_game_overlay_controls_open_inner(app, state.inner(), next_open) {
             log::warn!("Failed to toggle game overlay controls: {e}");
@@ -6773,73 +6796,6 @@ fn set_game_overlay_config(
 }
 
 #[tauri::command]
-fn toggle_game_overlay_only(
-    app: tauri::AppHandle,
-    state: State<'_, GameOverlayState>,
-) -> Result<bool, String> {
-    if !state.overlay_enabled.load(Ordering::Relaxed) {
-        hide_game_overlay_window(&app, true);
-        set_game_overlay_debug(
-            &app,
-            "overlay only ignored because HQLC overlay is disabled",
-        );
-        return Ok(false);
-    }
-    if state.preview_mode.load(Ordering::Relaxed) {
-        state.preview_mode.store(false, Ordering::Relaxed);
-        state.controls_open.store(false, Ordering::Relaxed);
-        hide_game_overlay_window(&app, true);
-        let _ = app.emit_to(
-            GAME_OVERLAY_WINDOW_LABEL,
-            "overlay://controls-open-changed",
-            false,
-        );
-        set_game_overlay_debug(&app, "overlay only toggled off");
-        return Ok(false);
-    }
-
-    state.preview_mode.store(true, Ordering::Relaxed);
-    state.controls_open.store(false, Ordering::Relaxed);
-    let _ = app.emit_to(
-        GAME_OVERLAY_WINDOW_LABEL,
-        "overlay://controls-open-changed",
-        false,
-    );
-    set_game_overlay_debug(
-        &app,
-        "open overlay only requested; waiting for Lethal Company window",
-    );
-    start_game_overlay_monitor(&app);
-    Ok(true)
-}
-
-#[tauri::command]
-fn open_game_overlay_only(
-    app: tauri::AppHandle,
-    state: State<'_, GameOverlayState>,
-) -> Result<bool, String> {
-    state.preview_mode.store(false, Ordering::Relaxed);
-    toggle_game_overlay_only(app, state)
-}
-
-#[tauri::command]
-fn close_game_overlay_only(
-    app: tauri::AppHandle,
-    state: State<'_, GameOverlayState>,
-) -> Result<bool, String> {
-    state.preview_mode.store(false, Ordering::Relaxed);
-    state.controls_open.store(false, Ordering::Relaxed);
-    hide_game_overlay_window(&app, true);
-    let _ = app.emit_to(
-        GAME_OVERLAY_WINDOW_LABEL,
-        "overlay://controls-open-changed",
-        false,
-    );
-    set_game_overlay_debug(&app, "overlay only closed");
-    Ok(true)
-}
-
-#[tauri::command]
 fn open_obs_overlay_window(
     app: tauri::AppHandle,
     state: State<'_, GameOverlayState>,
@@ -8648,6 +8604,13 @@ pub fn run() {
         .manage(discord_presence::DiscordPresenceState::default())
         .manage(lcstats_autosheet::LcStatsAutosheetState::default())
         .manage(downloader::DepotLoginState::default())
+        .on_window_event(|window, event| {
+            if window.label() == "main"
+                && matches!(event, tauri::WindowEvent::CloseRequested { .. })
+            {
+                close_game_overlay_for_app_exit(window.app_handle());
+            }
+        })
         .setup(|app| {
             // File logging (AppDataDir/logs/hq-launcher.log)
             logger::init(&app.handle()).map_err(|e| tauri::Error::Setup(e.into()))?;
@@ -8780,9 +8743,6 @@ pub fn run() {
             report_game_overlay_frontend_info,
             report_game_overlay_frontend_error,
             set_game_overlay_config,
-            toggle_game_overlay_only,
-            open_game_overlay_only,
-            close_game_overlay_only,
             open_obs_overlay_window,
             close_obs_overlay_window_if_owned,
             close_obs_overlay_window,
