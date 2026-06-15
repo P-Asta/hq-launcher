@@ -14,7 +14,6 @@ import {
   Play,
   RefreshCw,
   Search,
-  Settings2,
   Trash2,
   X,
 } from "lucide-react";
@@ -1373,7 +1372,6 @@ export default function LauncherPage({
     open: false,
     mods: [],
   });
-  const [steamOverlayDialogOpen, setSteamOverlayDialogOpen] = useState(false);
   const [launchOptionsDialogOpen, setLaunchOptionsDialogOpen] = useState(false);
   const [googleOauthDialogOpen, setGoogleOauthDialogOpen] = useState(false);
   const [googleOauthBusy, setGoogleOauthBusy] = useState(false);
@@ -1411,18 +1409,6 @@ export default function LauncherPage({
   const googleOauthRequestIdRef = useRef(0);
   const [lcstatsSaved, setLcstatsSaved] = useState("");
   const [lcstatsError, setLcstatsError] = useState("");
-  const [steamOverlayConfig, setSteamOverlayConfig] = useState({
-    enabled: false,
-    steam_path: "",
-  });
-  const [gameOverlayConfig, setGameOverlayConfig] = useState({
-    general: {
-      enabled: true,
-      use_stream_overlays_api: false,
-      overlay_key: "Insert",
-      end_summary_duration_ms: 10000,
-    },
-  });
   const [launchOptionsEnabled, setLaunchOptionsEnabled] = useState(
     initialLaunchOptionsConfig.enabled
   );
@@ -1433,11 +1419,6 @@ export default function LauncherPage({
     initialLaunchOptionsConfig.commandTemplate
   );
   const [newLaunchOptionEntry, setNewLaunchOptionEntry] = useState("");
-  const [steamOverlayResolvedPath, setSteamOverlayResolvedPath] = useState("");
-  const [steamOverlaySaveBusy, setSteamOverlaySaveBusy] = useState(false);
-  const [obsOverlayBusy, setObsOverlayBusy] = useState(false);
-  const [steamOverlayError, setSteamOverlayError] = useState("");
-  const [steamOverlaySaved, setSteamOverlaySaved] = useState("");
   const [deleteVersionPrompt, setDeleteVersionPrompt] = useState(
     makeDeleteVersionPromptState()
   );
@@ -1592,40 +1573,6 @@ export default function LauncherPage({
       })
     );
   }, [launchOptionsEnabled, launchOptionsEntries, launchCommandTemplate]);
-
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([
-      invoke("get_steam_overlay_config"),
-      invoke("get_game_overlay_config"),
-    ])
-      .then(([cfg, overlayCfg]) => {
-        if (cancelled) return;
-        const resolvedPath = String(cfg?.resolved_steam_path ?? "");
-        setSteamOverlayResolvedPath(resolvedPath);
-        setSteamOverlayConfig({
-          enabled: !!cfg?.enabled,
-          steam_path: String(cfg?.steam_path ?? cfg?.resolved_steam_path ?? ""),
-        });
-        setGameOverlayConfig((prev) => ({
-          ...prev,
-          ...(overlayCfg ?? {}),
-          general: {
-            ...(prev.general ?? {}),
-            ...(overlayCfg?.general ?? {}),
-            enabled: overlayCfg?.general?.enabled !== false,
-          },
-        }));
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        setSteamOverlayError(error?.message ?? String(error));
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -5723,109 +5670,6 @@ export default function LauncherPage({
     return normalized || null;
   }
 
-  async function saveSteamOverlaySettings() {
-    setSteamOverlaySaveBusy(true);
-    setSteamOverlayError("");
-    setSteamOverlaySaved("");
-    try {
-      const [saved, savedGameOverlay] = await Promise.all([
-        invoke("set_steam_overlay_config", {
-          enabled: !!steamOverlayConfig.enabled,
-          steamPath: steamOverlayConfig.steam_path.trim() || null,
-        }),
-        invoke("set_game_overlay_config", {
-          config: {
-            ...gameOverlayConfig,
-            general: {
-              ...(gameOverlayConfig.general ?? {}),
-              enabled: gameOverlayConfig.general?.enabled !== false,
-            },
-          },
-        }),
-      ]);
-      setSteamOverlayResolvedPath(String(saved?.resolved_steam_path ?? ""));
-      setSteamOverlayConfig({
-        enabled: !!saved?.enabled,
-        steam_path: String(saved?.steam_path ?? saved?.resolved_steam_path ?? ""),
-      });
-      setGameOverlayConfig((prev) => ({
-        ...prev,
-        ...(savedGameOverlay ?? {}),
-        general: {
-          ...(prev.general ?? {}),
-          ...(savedGameOverlay?.general ?? {}),
-          enabled: savedGameOverlay?.general?.enabled !== false,
-        },
-      }));
-      setSteamOverlaySaved("Saved");
-      setSteamOverlayDialogOpen(false);
-    } catch (error) {
-      setSteamOverlayError(error?.message ?? String(error));
-    } finally {
-      setSteamOverlaySaveBusy(false);
-    }
-  }
-
-  async function browseSteamOverlayPath() {
-    if (steamOverlaySaveBusy) return;
-    setSteamOverlayError("");
-    setSteamOverlaySaved("");
-    try {
-      const picked = await invoke("pick_steam_overlay_path", {
-        initialPath: steamOverlayConfig.steam_path || steamOverlayResolvedPath || null,
-      });
-      if (!picked) return;
-      setSteamOverlayConfig((prev) => ({
-        ...prev,
-        steam_path: String(picked),
-      }));
-    } catch (error) {
-      setSteamOverlayError(error?.message ?? String(error));
-    }
-  }
-
-  function invokeWithTimeout(command, args, timeoutMs = 5000) {
-    let timeoutId = null;
-    const timeout = new Promise((_, reject) => {
-      timeoutId = window.setTimeout(() => {
-        reject(new Error(`${command} timed out`));
-      }, timeoutMs);
-    });
-    return Promise.race([invoke(command, args), timeout]).finally(() => {
-      window.clearTimeout(timeoutId);
-    });
-  }
-
-  async function openObsOverlayWindow() {
-    if (obsOverlayBusy) return;
-    setObsOverlayBusy(true);
-    setSteamOverlayError("");
-    setSteamOverlaySaved("");
-    try {
-      await invokeWithTimeout("open_obs_overlay_window");
-      setSteamOverlaySaved("OBS selector shown. Select HQ Overlay - OBS Capture in OBS, then hide the selector.");
-    } catch (error) {
-      setSteamOverlayError(error?.message ?? String(error));
-    } finally {
-      setObsOverlayBusy(false);
-    }
-  }
-
-  async function closeObsOverlayWindow() {
-    if (obsOverlayBusy) return;
-    setObsOverlayBusy(true);
-    setSteamOverlayError("");
-    setSteamOverlaySaved("");
-    try {
-      await invokeWithTimeout("close_obs_overlay_window");
-      setSteamOverlaySaved("Selector hidden. OBS capture remains armed for the game overlay.");
-    } catch (error) {
-      setSteamOverlayError(error?.message ?? String(error));
-    } finally {
-      setObsOverlayBusy(false);
-    }
-  }
-
   async function startSelectedRun(opts = {}) {
     if (launchBusy) return;
     const allowMultiple = opts?.allowMultiple === true;
@@ -6293,19 +6137,6 @@ export default function LauncherPage({
                 <div className="text-sm font-semibold text-white/80">
                   Mods
                 </div>
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1 rounded-lg border border-panel-outline bg-black/20 px-2 py-1 text-[11px] font-medium text-white/65 transition hover:bg-white/[0.07] hover:text-white"
-                  onClick={() => {
-                    setSteamOverlayDialogOpen(true);
-                    setSteamOverlayError("");
-                    setSteamOverlaySaved("");
-                  }}
-                  title="Inject Steam Overlay settings"
-                >
-                  <Settings2 className="h-3.5 w-3.5" />
-                  Overlay
-                </button>
               </div>
               <div className="text-xs text-white/40">
                 {displayedMods.length} items
@@ -6443,7 +6274,6 @@ export default function LauncherPage({
                           </div>
                         )}
                       </div>
-                      {/* <Settings2 className="mt-1 h-4 w-4 shrink-0 text-white/30 opacity-0 transition group-hover:opacity-100" /> */}
                     </div>
                   );
                 })}
@@ -8203,236 +8033,6 @@ export default function LauncherPage({
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        open={steamOverlayDialogOpen}
-        onOpenChange={(open) => {
-          if (steamOverlaySaveBusy) return;
-          setSteamOverlayDialogOpen(open);
-          if (!open) {
-            setSteamOverlayError("");
-            setSteamOverlaySaved("");
-          }
-        }}
-      >
-        <DialogContent className="w-[min(640px,92vw)] p-0">
-          <div className="rounded-3xl border border-panel-outline bg-[var(--theme-surface)] p-6 text-white">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <div className="text-lg font-semibold tracking-[-0.02em]">
-                  Overlay Settings
-                </div>
-                <div className="mt-1 text-sm text-white/55">
-                  Toggle HQLC overlay and Steam Overlay DLL injection.
-                </div>
-              </div>
-              <button
-                type="button"
-                className="rounded-xl border border-panel-outline bg-black/20 p-2 text-white/70 transition hover:bg-white/[0.07] hover:text-white"
-                onClick={() => {
-                  if (steamOverlaySaveBusy) return;
-                  setSteamOverlayDialogOpen(false);
-                  setSteamOverlayError("");
-                  setSteamOverlaySaved("");
-                }}
-                aria-label="Close steam overlay settings"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            <div className="mt-6 space-y-5">
-              <div className="flex items-center justify-between gap-4 rounded-2xl border border-panel-outline bg-white/[0.04] px-4 py-3">
-                <div>
-                  <div className="text-sm font-medium text-white">
-                    Enable HQLC Overlay
-                  </div>
-                  <div className="mt-1 text-xs text-white/50">
-                    Shows the editable HQLC in-game overlay while Lethal Company is focused.
-                  </div>
-                </div>
-                <Switch
-                  checked={gameOverlayConfig.general?.enabled !== false}
-                  disabled={steamOverlaySaveBusy}
-                  onCheckedChange={(checked) => {
-                    setGameOverlayConfig((prev) => ({
-                      ...prev,
-                      general: {
-                        ...(prev.general ?? {}),
-                        enabled: checked,
-                      },
-                    }));
-                    setSteamOverlaySaved("");
-                  }}
-                />
-              </div>
-
-              <div className="flex items-center justify-between gap-4 rounded-2xl border border-panel-outline bg-white/[0.04] px-4 py-3">
-                <div>
-                  <div className="text-sm font-medium text-white">
-                    Use StreamOverlays API
-                  </div>
-                  <div className="mt-1 text-xs text-white/50">
-                    Lets HQLC overlay modules read StreamOverlays data from its local WebSocket.
-                  </div>
-                </div>
-                <Switch
-                  checked={gameOverlayConfig.general?.use_stream_overlays_api === true}
-                  disabled={steamOverlaySaveBusy}
-                  onCheckedChange={(checked) => {
-                    setGameOverlayConfig((prev) => ({
-                      ...prev,
-                      general: {
-                        ...(prev.general ?? {}),
-                        use_stream_overlays_api: checked,
-                      },
-                    }));
-                    setSteamOverlaySaved("");
-                  }}
-                />
-              </div>
-
-              <div className="rounded-2xl border border-panel-outline bg-white/[0.04] px-4 py-3">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <div className="text-sm font-medium text-white">
-                      OBS Capture Window
-                    </div>
-                    <div className="mt-1 text-xs text-white/50">
-                      Shows the real game overlay window for OBS selection. Hide it after selecting; it will return on game launch.
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <Button
-                      variant="secondary"
-                      className="h-9"
-                      disabled={steamOverlaySaveBusy || obsOverlayBusy}
-                      onClick={() => {
-                        closeObsOverlayWindow().catch(console.error);
-                      }}
-                    >
-                      <X className="h-4 w-4" />
-                      Hide Selector
-                    </Button>
-                    <Button
-                      variant="default"
-                      className="h-9"
-                      disabled={steamOverlaySaveBusy || obsOverlayBusy}
-                      onClick={() => {
-                        openObsOverlayWindow().catch(console.error);
-                      }}
-                    >
-                      <Play className="h-4 w-4" />
-                      {obsOverlayBusy ? "Opening..." : "Open Selector"}
-                    </Button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between gap-4 rounded-2xl border border-panel-outline bg-white/[0.04] px-4 py-3">
-                <div>
-                  <div className="text-sm font-medium text-white">
-                    Enable Inject Steam Overlay
-                  </div>
-                  <div className="mt-1 text-xs text-white/50">
-                    When enabled, the launcher starts the game suspended, injects the Steam overlay DLLs, then resumes the process.
-                  </div>
-                </div>
-                <Switch
-                  checked={steamOverlayConfig.enabled}
-                  disabled={steamOverlaySaveBusy}
-                  onCheckedChange={(checked) => {
-                    setSteamOverlayConfig((prev) => ({ ...prev, enabled: checked }));
-                    setSteamOverlaySaved("");
-                  }}
-                />
-              </div>
-
-              <div>
-                <label
-                  htmlFor="steam-overlay-path"
-                  className="mb-2 block text-sm font-medium text-white/80"
-                >
-                  Steam path override
-                </label>
-                <div className="flex items-center gap-2">
-                  <Input
-                    id="steam-overlay-path"
-                    value={steamOverlayConfig.steam_path}
-                    disabled={steamOverlaySaveBusy}
-                    onChange={(event) => {
-                      setSteamOverlayConfig((prev) => ({
-                        ...prev,
-                        steam_path: event.target.value,
-                      }));
-                      setSteamOverlaySaved("");
-                    }}
-                    placeholder="Leave blank to auto-detect Steam"
-                  />
-                  <Button
-                    variant="secondary"
-                    className="h-10 shrink-0"
-                    disabled={steamOverlaySaveBusy}
-                    onClick={() => {
-                      browseSteamOverlayPath().catch(console.error);
-                    }}
-                  >
-                    Browse
-                  </Button>
-                </div>
-                <div className="mt-2 text-xs text-white/45">
-                  {steamOverlayResolvedPath ? (
-                    <>
-                      Auto-detected path:{" "}
-                      <span className="font-mono">{steamOverlayResolvedPath}</span>
-                    </>
-                  ) : (
-                    <>
-                      Example: <span className="font-mono">C:\Program Files (x86)\Steam</span>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              {steamOverlayError ? (
-                <div className="rounded-2xl border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm text-red-200">
-                  {steamOverlayError}
-                </div>
-              ) : null}
-
-              {steamOverlaySaved ? (
-                <div className="rounded-2xl border border-[color-mix(in_srgb,var(--theme-accent)_35%,transparent)] bg-[var(--theme-accent-muted)] px-4 py-3 text-sm text-[var(--theme-accent)]">
-                  {steamOverlaySaved}
-                </div>
-              ) : null}
-            </div>
-
-            <div className="mt-6 flex items-center justify-end gap-2">
-              <Button
-                variant="secondary"
-                className="h-10 min-w-[96px]"
-                disabled={steamOverlaySaveBusy}
-                onClick={() => {
-                  setSteamOverlayDialogOpen(false);
-                  setSteamOverlayError("");
-                  setSteamOverlaySaved("");
-                }}
-              >
-                Close
-              </Button>
-              <Button
-                variant="default"
-                className="h-10 min-w-[120px]"
-                disabled={steamOverlaySaveBusy}
-                onClick={() => {
-                  saveSteamOverlaySettings().catch(console.error);
-                }}
-              >
-                {steamOverlaySaveBusy ? "Saving..." : "Save"}
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

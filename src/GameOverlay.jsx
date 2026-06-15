@@ -1655,10 +1655,7 @@ export default function GameOverlay({ captureOnly = false }) {
 
       socket.addEventListener("error", () => {
         if (disposed) return;
-        pushOverlayLog("error", "StreamOverlays websocket error", url);
-        invoke("report_game_overlay_frontend_error", {
-          message: `stream overlays websocket error: ${url}`,
-        }).catch(console.error);
+        pushOverlayLog("warn", "StreamOverlays websocket unavailable", url);
       });
 
       socket.addEventListener("close", () => {

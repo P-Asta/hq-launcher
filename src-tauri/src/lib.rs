@@ -2963,6 +2963,7 @@ struct GameOverlayState {
     monitor_running: AtomicBool,
     preview_mode: AtomicBool,
     obs_capture_enabled: AtomicBool,
+    obs_capture_owned_preview: AtomicBool,
     overlay_enabled: AtomicBool,
     stream_overlays_monitor_running: AtomicBool,
     window_visible: AtomicBool,
@@ -2983,6 +2984,7 @@ impl Default for GameOverlayState {
             monitor_running: AtomicBool::new(false),
             preview_mode: AtomicBool::new(false),
             obs_capture_enabled: AtomicBool::new(false),
+            obs_capture_owned_preview: AtomicBool::new(false),
             overlay_enabled: AtomicBool::new(true),
             stream_overlays_monitor_running: AtomicBool::new(false),
             window_visible: AtomicBool::new(false),
@@ -6838,17 +6840,63 @@ fn close_game_overlay_only(
 }
 
 #[tauri::command]
-fn open_obs_overlay_window(app: tauri::AppHandle) -> Result<bool, String> {
-    app.state::<GameOverlayState>()
-        .obs_capture_enabled
-        .store(true, Ordering::Relaxed);
+fn open_obs_overlay_window(
+    app: tauri::AppHandle,
+    state: State<'_, GameOverlayState>,
+) -> Result<bool, String> {
+    if !state.overlay_enabled.load(Ordering::Relaxed) {
+        hide_game_overlay_window(&app, true);
+        set_game_overlay_debug(
+            &app,
+            "OBS selector ignored because HQLC overlay is disabled",
+        );
+        return Ok(false);
+    }
+    let owned_preview = !state.preview_mode.load(Ordering::Relaxed)
+        && !state.window_visible.load(Ordering::Relaxed);
+    state.obs_capture_enabled.store(true, Ordering::Relaxed);
+    state
+        .obs_capture_owned_preview
+        .store(owned_preview, Ordering::Relaxed);
+    state.preview_mode.store(true, Ordering::Relaxed);
+    state.controls_open.store(false, Ordering::Relaxed);
+    let _ = app.emit_to(
+        GAME_OVERLAY_WINDOW_LABEL,
+        "overlay://controls-open-changed",
+        false,
+    );
+    start_game_overlay_monitor(&app);
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = open_obs_overlay_window_inner(&app_handle) {
             set_game_overlay_error(&app_handle, format!("OBS overlay capture window failed: {e}"));
         }
     });
-    set_game_overlay_debug(&app, "OBS overlay capture window requested");
+    set_game_overlay_debug(&app, "OBS overlay capture window requested after overlay only preview");
+    Ok(true)
+}
+
+#[tauri::command]
+fn close_obs_overlay_window_if_owned(app: tauri::AppHandle) -> Result<bool, String> {
+    let state = app.state::<GameOverlayState>();
+    if !state.obs_capture_owned_preview.swap(false, Ordering::Relaxed) {
+        state.obs_capture_enabled.store(false, Ordering::Relaxed);
+        set_game_overlay_debug(&app, "settings OBS selector close skipped; overlay was already active");
+        return Ok(false);
+    }
+    state.obs_capture_enabled.store(false, Ordering::Relaxed);
+    state.preview_mode.store(false, Ordering::Relaxed);
+    state.controls_open.store(false, Ordering::Relaxed);
+    state.window_visible.store(false, Ordering::Relaxed);
+    if let Some(window) = app.get_webview_window(GAME_OVERLAY_WINDOW_LABEL) {
+        window.hide().map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit_to(
+        GAME_OVERLAY_WINDOW_LABEL,
+        "overlay://controls-open-changed",
+        false,
+    );
+    set_game_overlay_debug(&app, "settings-owned OBS selector overlay closed");
     Ok(true)
 }
 
@@ -6880,6 +6928,7 @@ fn open_obs_overlay_window_inner(app: &tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn close_obs_overlay_window(app: tauri::AppHandle) -> Result<bool, String> {
     let state = app.state::<GameOverlayState>();
+    state.obs_capture_owned_preview.store(false, Ordering::Relaxed);
     state.preview_mode.store(false, Ordering::Relaxed);
     state.controls_open.store(false, Ordering::Relaxed);
     state.window_visible.store(false, Ordering::Relaxed);
@@ -8735,6 +8784,7 @@ pub fn run() {
             open_game_overlay_only,
             close_game_overlay_only,
             open_obs_overlay_window,
+            close_obs_overlay_window_if_owned,
             close_obs_overlay_window,
             open_game_overlay_modules_folder,
             set_game_overlay_controls_open,
