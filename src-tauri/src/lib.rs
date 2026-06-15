@@ -72,6 +72,7 @@ use crate::{
 const INSTALL_COMPLETE_MARKER: &str = ".hq_install_complete";
 const DISABLEMOD_FILE_VERSION: u32 = 5;
 const GAME_OVERLAY_WINDOW_LABEL: &str = "game-overlay";
+const GAME_OVERLAY_WINDOW_TITLE: &str = "HQ Overlay - OBS Capture";
 
 fn manifest_state_has_version(app: &tauri::AppHandle, version: u32) -> bool {
     let Ok(app_data) = app.path().app_data_dir() else {
@@ -2971,10 +2972,19 @@ struct GameOverlayState {
     last_match: AtomicBool,
     show_count: AtomicU64,
     input_count: AtomicU64,
+    last_window_rect: Mutex<Option<GameOverlayWindowRect>>,
     registered_overlay_shortcut: Mutex<Option<String>>,
     registered_overlay_input_shortcuts: Mutex<HashSet<String>>,
     last_message: Mutex<String>,
     last_error: Mutex<Option<String>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct GameOverlayWindowRect {
+    left: i32,
+    top: i32,
+    width: u32,
+    height: u32,
 }
 
 impl Default for GameOverlayState {
@@ -2992,6 +3002,7 @@ impl Default for GameOverlayState {
             last_match: AtomicBool::new(false),
             show_count: AtomicU64::new(0),
             input_count: AtomicU64::new(0),
+            last_window_rect: Mutex::new(None),
             registered_overlay_shortcut: Mutex::new(None),
             registered_overlay_input_shortcuts: Mutex::new(HashSet::new()),
             last_message: Mutex::new(String::new()),
@@ -3814,7 +3825,7 @@ fn ensure_game_overlay_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWi
             format!("page load {event}: {}", payload.url()),
         );
     })
-    .title("HQ Overlay")
+    .title(GAME_OVERLAY_WINDOW_TITLE)
     .decorations(false)
     .transparent(true)
     .shadow(false)
@@ -3921,6 +3932,9 @@ fn hide_game_overlay_window(app: &tauri::AppHandle, close_controls: bool) {
         }
         let _ = window.hide();
         if state.window_visible.swap(false, Ordering::Relaxed) {
+            if let Ok(mut last_rect) = state.last_window_rect.lock() {
+                *last_rect = None;
+            }
             set_game_overlay_debug(
                 app,
                 format!("window hidden close_controls={close_controls}"),
@@ -3940,6 +3954,9 @@ fn close_game_overlay_for_app_exit(app: &tauri::AppHandle) {
         .obs_capture_owned_preview
         .store(false, Ordering::Relaxed);
     state.window_visible.store(false, Ordering::Relaxed);
+    if let Ok(mut last_rect) = state.last_window_rect.lock() {
+        *last_rect = None;
+    }
 
     if let Some(window) = app.get_webview_window(GAME_OVERLAY_WINDOW_LABEL) {
         let _ = apply_game_overlay_interaction(&window, false);
@@ -4251,15 +4268,35 @@ fn show_game_overlay_attached_to_rect(
     let width = (rect.right - rect.left).max(1) as u32;
     let height = (rect.bottom - rect.top).max(1) as u32;
     let was_visible = overlay_state.window_visible.load(Ordering::Relaxed);
+    let next_rect = GameOverlayWindowRect {
+        left: rect.left,
+        top: rect.top,
+        width,
+        height,
+    };
+    let should_update_rect = overlay_state
+        .last_window_rect
+        .lock()
+        .map(|mut last_rect| {
+            if last_rect.as_ref() == Some(&next_rect) && was_visible {
+                false
+            } else {
+                *last_rect = Some(next_rect);
+                true
+            }
+        })
+        .unwrap_or(true);
 
-    if let Err(e) = window.set_fullscreen(false) {
-        set_game_overlay_error(app, format!("{source} set_fullscreen(false) failed: {e}"));
-    }
-    if let Err(e) = window.set_position(tauri::PhysicalPosition::new(rect.left, rect.top)) {
-        set_game_overlay_error(app, format!("{source} set_position failed: {e}"));
-    }
-    if let Err(e) = window.set_size(tauri::PhysicalSize::new(width, height)) {
-        set_game_overlay_error(app, format!("{source} set_size failed: {e}"));
+    if should_update_rect {
+        if let Err(e) = window.set_fullscreen(false) {
+            set_game_overlay_error(app, format!("{source} set_fullscreen(false) failed: {e}"));
+        }
+        if let Err(e) = window.set_position(tauri::PhysicalPosition::new(rect.left, rect.top)) {
+            set_game_overlay_error(app, format!("{source} set_position failed: {e}"));
+        }
+        if let Err(e) = window.set_size(tauri::PhysicalSize::new(width, height)) {
+            set_game_overlay_error(app, format!("{source} set_size failed: {e}"));
+        }
     }
 
     if !was_visible || controls_open {
@@ -6844,6 +6881,9 @@ fn close_obs_overlay_window_if_owned(app: tauri::AppHandle) -> Result<bool, Stri
     state.preview_mode.store(false, Ordering::Relaxed);
     state.controls_open.store(false, Ordering::Relaxed);
     state.window_visible.store(false, Ordering::Relaxed);
+    if let Ok(mut last_rect) = state.last_window_rect.lock() {
+        *last_rect = None;
+    }
     if let Some(window) = app.get_webview_window(GAME_OVERLAY_WINDOW_LABEL) {
         window.hide().map_err(|e| e.to_string())?;
     }
@@ -6873,7 +6913,7 @@ fn open_obs_overlay_window_inner(app: &tauri::AppHandle) -> Result<(), String> {
         let _ = window.set_position(tauri::PhysicalPosition::new(96, 96));
     }
 
-    let _ = window.set_title("HQ Overlay - OBS Capture");
+    let _ = window.set_title(GAME_OVERLAY_WINDOW_TITLE);
     let _ = window.set_always_on_top(false);
     apply_game_overlay_interaction(&window, false)?;
     window.show().map_err(|e| e.to_string())?;
@@ -6888,6 +6928,9 @@ fn close_obs_overlay_window(app: tauri::AppHandle) -> Result<bool, String> {
     state.preview_mode.store(false, Ordering::Relaxed);
     state.controls_open.store(false, Ordering::Relaxed);
     state.window_visible.store(false, Ordering::Relaxed);
+    if let Ok(mut last_rect) = state.last_window_rect.lock() {
+        *last_rect = None;
+    }
     if let Some(window) = app.get_webview_window(GAME_OVERLAY_WINDOW_LABEL) {
         window.hide().map_err(|e| e.to_string())?;
     }

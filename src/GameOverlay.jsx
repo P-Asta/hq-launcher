@@ -1564,137 +1564,8 @@ export default function GameOverlay({ captureOnly = false }) {
       setStreamOverlaysPayload(null);
       setStreamOverlaysAt(null);
       pushOverlayLog("info", "StreamOverlays API disabled");
-      return undefined;
     }
-
-    let disposed = false;
-    let socket = null;
-    let reconnectTimer = null;
-
-    function clearReconnectTimer() {
-      if (reconnectTimer != null) {
-        window.clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-    }
-
-    function scheduleReconnect(url) {
-      if (disposed || reconnectTimer != null) return;
-      pushOverlayLog("warn", "StreamOverlays reconnect scheduled", url);
-      reconnectTimer = window.setTimeout(() => {
-        reconnectTimer = null;
-        connectStreamOverlays(url);
-      }, 1500);
-    }
-
-    async function parseStreamOverlaysMessage(data) {
-      if (typeof data === "string") {
-        return JSON.parse(data);
-      }
-      if (data instanceof ArrayBuffer) {
-        return JSON.parse(new TextDecoder().decode(data));
-      }
-      if (data instanceof Blob) {
-        return JSON.parse(await data.text());
-      }
-      return null;
-    }
-
-    function connectStreamOverlays(url) {
-      if (disposed || !url) return;
-      pushOverlayLog("info", "StreamOverlays connecting", url);
-      try {
-        socket = new WebSocket(url);
-      } catch (error) {
-        pushOverlayLog("error", "StreamOverlays connect failed", String(error?.message ?? error));
-        invoke("report_game_overlay_frontend_error", {
-          message: `stream overlays connect failed: ${error?.message ?? error}`,
-        }).catch(console.error);
-        scheduleReconnect(url);
-        return;
-      }
-
-      socket.addEventListener("open", () => {
-        if (disposed) return;
-        pushOverlayLog("success", "StreamOverlays websocket connected", url);
-        invoke("report_game_overlay_frontend_info", {
-          message: `stream overlays websocket connected: ${url}`,
-        }).catch(console.error);
-      });
-
-      socket.addEventListener("message", (event) => {
-        parseStreamOverlaysMessage(event.data)
-          .then((message) => {
-            if (disposed) return;
-            const payload = extractStreamOverlaysPayload(message);
-            if (!payload) {
-              pushOverlayLog(
-                "warn",
-                "StreamOverlays message ignored",
-                message && typeof message === "object" ? Object.keys(message).join(", ") : String(message),
-              );
-              return;
-            }
-            pushOverlayLog(
-              "success",
-              "StreamOverlays payload received",
-              Object.keys(payload).join(", "),
-            );
-            setStreamOverlaysPayload(payload);
-            setStreamOverlaysAt(Date.now());
-          })
-          .catch((error) => {
-            if (!disposed) {
-              pushOverlayLog("error", "StreamOverlays message parse failed", String(error?.message ?? error));
-              invoke("report_game_overlay_frontend_error", {
-                message: `stream overlays message parse failed: ${error?.message ?? error}`,
-              }).catch(console.error);
-            }
-          });
-      });
-
-      socket.addEventListener("error", () => {
-        if (disposed) return;
-        pushOverlayLog("warn", "StreamOverlays websocket unavailable", url);
-      });
-
-      socket.addEventListener("close", () => {
-        if (disposed) return;
-        pushOverlayLog("warn", "StreamOverlays websocket closed", url);
-        setStreamOverlaysPayload(null);
-        setStreamOverlaysAt(null);
-        scheduleReconnect(url);
-      });
-    }
-
-    invoke("get_stream_overlays_ws_url")
-      .then((url) => {
-        if (disposed) return;
-        if (!url) {
-          pushOverlayLog("warn", "StreamOverlays websocket URL unavailable");
-          setStreamOverlaysPayload(null);
-          setStreamOverlaysAt(null);
-          return;
-        }
-        pushOverlayLog("info", "StreamOverlays websocket URL resolved", url);
-        connectStreamOverlays(url);
-      })
-      .catch((error) => {
-        if (!disposed) {
-          pushOverlayLog("error", "StreamOverlays websocket URL failed", String(error?.message ?? error));
-          invoke("report_game_overlay_frontend_error", {
-            message: `stream overlays websocket url failed: ${error?.message ?? error}`,
-          }).catch(console.error);
-        }
-      });
-
-    return () => {
-      disposed = true;
-      clearReconnectTimer();
-      if (socket) {
-        socket.close();
-      }
-    };
+    return undefined;
   }, [config.general?.use_stream_overlays_api]);
 
   useEffect(() => {
@@ -1763,7 +1634,6 @@ export default function GameOverlay({ captureOnly = false }) {
         if (disposed) return;
         const payload = extractStreamOverlaysPayload(event.payload) ?? event.payload ?? null;
         if (!payload) return;
-        pushOverlayLog("success", "StreamOverlays payload received from Rust", Object.keys(payload).join(", "));
         setStreamOverlaysPayload(payload);
         setStreamOverlaysAt(Date.now());
       });
