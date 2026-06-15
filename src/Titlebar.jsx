@@ -52,6 +52,7 @@ export default function Titlebar({ installedVersions, ...props }) {
         general: {
             enabled: true,
             use_stream_overlays_api: false,
+            obs_capture_armed: false,
             overlay_key: "Insert",
             end_summary_duration_ms: 10000,
         },
@@ -390,7 +391,18 @@ export default function Titlebar({ installedVersions, ...props }) {
         setSteamOverlayError("");
         setSteamOverlaySaved("");
         try {
-            await invoke('open_obs_overlay_window');
+            const savedGameOverlay = await invoke('open_obs_overlay_window');
+            if (savedGameOverlay) {
+                setGameOverlayConfig((prev) => ({
+                    ...prev,
+                    ...savedGameOverlay,
+                    general: {
+                        ...(prev.general ?? {}),
+                        ...(savedGameOverlay.general ?? {}),
+                        enabled: savedGameOverlay.general?.enabled !== false,
+                    },
+                }));
+            }
             setSteamOverlaySaved("OBS selector requested. Select HQ Overlay - OBS Capture in OBS, then hide the selector.");
         } catch (error) {
             setSteamOverlayError(error?.message ?? String(error));

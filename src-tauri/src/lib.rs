@@ -2285,6 +2285,7 @@ struct GameOverlayConfig {
 struct GameOverlayGeneralConfig {
     enabled: bool,
     use_stream_overlays_api: bool,
+    obs_capture_armed: bool,
     overlay_key: String,
     end_summary_duration_ms: u64,
 }
@@ -2869,6 +2870,7 @@ impl Default for GameOverlayGeneralConfig {
         Self {
             enabled: true,
             use_stream_overlays_api: false,
+            obs_capture_armed: false,
             overlay_key: "Insert".to_string(),
             end_summary_duration_ms: 10_000,
         }
@@ -3396,6 +3398,19 @@ fn write_game_overlay_config(
     Ok(())
 }
 
+fn set_game_overlay_obs_capture_armed(
+    app: &tauri::AppHandle,
+    armed: bool,
+) -> Result<GameOverlayConfig, String> {
+    let mut cfg = read_game_overlay_config(app)?;
+    cfg.general.obs_capture_armed = armed;
+    let cfg = sanitize_game_overlay_config(cfg);
+    write_game_overlay_config(app, &cfg)?;
+    sync_game_overlay_runtime_state(app, &cfg);
+    let _ = app.emit("overlay://config-changed", cfg.clone());
+    Ok(cfg)
+}
+
 fn ensure_default_game_overlay_modules(app: &tauri::AppHandle) -> Result<(), String> {
     let dir = game_overlay_module_dir(app)?;
     if dir.exists() {
@@ -3555,10 +3570,14 @@ fn sanitize_game_overlay_config(mut cfg: GameOverlayConfig) -> GameOverlayConfig
     cfg
 }
 
-fn sync_game_overlay_enabled_state(app: &tauri::AppHandle, enabled: bool) {
-    app.state::<GameOverlayState>()
+fn sync_game_overlay_runtime_state(app: &tauri::AppHandle, cfg: &GameOverlayConfig) {
+    let state = app.state::<GameOverlayState>();
+    state
         .overlay_enabled
-        .store(enabled, Ordering::Relaxed);
+        .store(cfg.general.enabled, Ordering::Relaxed);
+    state
+        .obs_capture_enabled
+        .store(cfg.general.obs_capture_armed, Ordering::Relaxed);
 }
 
 fn sanitize_widget_position(position: &mut OverlayWidgetPosition) {
@@ -3805,7 +3824,7 @@ fn apply_game_overlay_selector_window_style(_window: &tauri::WebviewWindow) -> R
 
 fn ensure_game_overlay_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
     if let Some(window) = app.get_webview_window(GAME_OVERLAY_WINDOW_LABEL) {
-        apply_game_overlay_window_style(&window)?;
+        apply_game_overlay_capture_style_if_needed(app, &window)?;
         return Ok(window);
     }
 
@@ -3838,10 +3857,25 @@ fn ensure_game_overlay_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWi
     .build()
     .map_err(|e| format!("failed to create game overlay window: {e}"))?;
 
-    apply_game_overlay_window_style(&window)?;
+    apply_game_overlay_capture_style_if_needed(app, &window)?;
     apply_game_overlay_interaction(&window, false)?;
     set_game_overlay_debug(app, "window created");
     Ok(window)
+}
+
+fn apply_game_overlay_capture_style_if_needed(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+) -> Result<(), String> {
+    if app
+        .state::<GameOverlayState>()
+        .obs_capture_enabled
+        .load(Ordering::Relaxed)
+    {
+        apply_game_overlay_selector_window_style(window)
+    } else {
+        apply_game_overlay_window_style(window)
+    }
 }
 
 fn apply_game_overlay_interaction(
@@ -6744,7 +6778,7 @@ fn pick_steam_overlay_path(initial_path: Option<String>) -> Result<Option<String
 #[tauri::command]
 fn get_game_overlay_config(app: tauri::AppHandle) -> Result<GameOverlayConfig, String> {
     let cfg = read_game_overlay_config(&app)?;
-    sync_game_overlay_enabled_state(&app, cfg.general.enabled);
+    sync_game_overlay_runtime_state(&app, &cfg);
     Ok(cfg)
 }
 
@@ -6808,11 +6842,17 @@ fn report_game_overlay_frontend_error(
 #[tauri::command]
 fn set_game_overlay_config(
     app: tauri::AppHandle,
-    config: GameOverlayConfig,
+    mut config: GameOverlayConfig,
 ) -> Result<GameOverlayConfig, String> {
+    if read_game_overlay_config(&app)
+        .map(|current| current.general.obs_capture_armed)
+        .unwrap_or(false)
+    {
+        config.general.obs_capture_armed = true;
+    }
     let cfg = sanitize_game_overlay_config(config);
     write_game_overlay_config(&app, &cfg)?;
-    sync_game_overlay_enabled_state(&app, cfg.general.enabled);
+    sync_game_overlay_runtime_state(&app, &cfg);
     if !cfg.general.enabled {
         app.state::<GameOverlayState>()
             .preview_mode
@@ -6836,18 +6876,18 @@ fn set_game_overlay_config(
 fn open_obs_overlay_window(
     app: tauri::AppHandle,
     state: State<'_, GameOverlayState>,
-) -> Result<bool, String> {
+) -> Result<GameOverlayConfig, String> {
     if !state.overlay_enabled.load(Ordering::Relaxed) {
         hide_game_overlay_window(&app, true);
         set_game_overlay_debug(
             &app,
             "OBS selector ignored because HQLC overlay is disabled",
         );
-        return Ok(false);
+        return read_game_overlay_config(&app);
     }
     let owned_preview = !state.preview_mode.load(Ordering::Relaxed)
         && !state.window_visible.load(Ordering::Relaxed);
-    state.obs_capture_enabled.store(true, Ordering::Relaxed);
+    let cfg = set_game_overlay_obs_capture_armed(&app, true)?;
     state
         .obs_capture_owned_preview
         .store(owned_preview, Ordering::Relaxed);
@@ -6862,22 +6902,32 @@ fn open_obs_overlay_window(
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = open_obs_overlay_window_inner(&app_handle) {
-            set_game_overlay_error(&app_handle, format!("OBS overlay capture window failed: {e}"));
+            set_game_overlay_error(
+                &app_handle,
+                format!("OBS overlay capture window failed: {e}"),
+            );
         }
     });
-    set_game_overlay_debug(&app, "OBS overlay capture window requested after overlay only preview");
-    Ok(true)
+    set_game_overlay_debug(
+        &app,
+        "OBS overlay capture window requested after overlay only preview",
+    );
+    Ok(cfg)
 }
 
 #[tauri::command]
 fn close_obs_overlay_window_if_owned(app: tauri::AppHandle) -> Result<bool, String> {
     let state = app.state::<GameOverlayState>();
-    if !state.obs_capture_owned_preview.swap(false, Ordering::Relaxed) {
-        state.obs_capture_enabled.store(false, Ordering::Relaxed);
-        set_game_overlay_debug(&app, "settings OBS selector close skipped; overlay was already active");
+    if !state
+        .obs_capture_owned_preview
+        .swap(false, Ordering::Relaxed)
+    {
+        set_game_overlay_debug(
+            &app,
+            "settings OBS selector close skipped; overlay was already active",
+        );
         return Ok(false);
     }
-    state.obs_capture_enabled.store(false, Ordering::Relaxed);
     state.preview_mode.store(false, Ordering::Relaxed);
     state.controls_open.store(false, Ordering::Relaxed);
     state.window_visible.store(false, Ordering::Relaxed);
@@ -6924,7 +6974,9 @@ fn open_obs_overlay_window_inner(app: &tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn close_obs_overlay_window(app: tauri::AppHandle) -> Result<bool, String> {
     let state = app.state::<GameOverlayState>();
-    state.obs_capture_owned_preview.store(false, Ordering::Relaxed);
+    state
+        .obs_capture_owned_preview
+        .store(false, Ordering::Relaxed);
     state.preview_mode.store(false, Ordering::Relaxed);
     state.controls_open.store(false, Ordering::Relaxed);
     state.window_visible.store(false, Ordering::Relaxed);
@@ -6939,7 +6991,10 @@ fn close_obs_overlay_window(app: tauri::AppHandle) -> Result<bool, String> {
         "overlay://controls-open-changed",
         false,
     );
-    set_game_overlay_debug(&app, "game overlay selector hidden; OBS capture remains armed");
+    set_game_overlay_debug(
+        &app,
+        "game overlay selector hidden; OBS capture remains armed",
+    );
     Ok(true)
 }
 
@@ -8664,9 +8719,23 @@ pub fn run() {
             })?;
 
             if let Ok(cfg) = read_game_overlay_config(app.handle()) {
-                sync_game_overlay_enabled_state(app.handle(), cfg.general.enabled);
+                sync_game_overlay_runtime_state(app.handle(), &cfg);
                 if cfg.general.enabled && cfg.general.use_stream_overlays_api {
                     start_stream_overlays_monitor(app.handle());
+                }
+                if cfg.general.enabled && cfg.general.obs_capture_armed {
+                    match ensure_game_overlay_window(app.handle()) {
+                        Ok(window) => {
+                            let _ = apply_game_overlay_selector_window_style(&window);
+                            set_game_overlay_debug(
+                                app.handle(),
+                                "OBS capture window restored from saved selector state",
+                            );
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to restore OBS capture overlay window: {e}");
+                        }
+                    }
                 }
             }
             register_game_overlay_shortcut(app.handle());
