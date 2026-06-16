@@ -284,7 +284,7 @@ export function LoginDialog({ open, onOpenChange, onLoggedIn }) {
               <Input
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="Steam ID"
+                placeholder="Account Name"
                 autoComplete="username"
               />
             </div>

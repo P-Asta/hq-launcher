@@ -73,6 +73,8 @@ const INSTALL_COMPLETE_MARKER: &str = ".hq_install_complete";
 const DISABLEMOD_FILE_VERSION: u32 = 5;
 const GAME_OVERLAY_WINDOW_LABEL: &str = "game-overlay";
 const GAME_OVERLAY_WINDOW_TITLE: &str = "HQ Overlay - OBS Capture";
+const GAME_OVERLAY_OPEN_HINT_FOCUS_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+const GAME_OVERLAY_OPEN_HINT_DURATION_MS: u64 = 10_000;
 
 fn manifest_state_has_version(app: &tauri::AppHandle, version: u32) -> bool {
     let Ok(app_data) = app.path().app_data_dir() else {
@@ -2331,9 +2333,6 @@ struct GameOverlayModuleDto {
     source: String,
 }
 
-const OVERLAY_MODULE_REFERENCE: &str =
-    "/// <reference path=\"./hq-overlay-module.d.ts\" />\n// @ts-check\n\n";
-
 const DEFAULT_OVERLAY_MODULES: &[(&str, &str)] = &[
     (
         "crosshair.js",
@@ -2642,6 +2641,7 @@ register("renderOverlay", ({ context, api }) => {
 ];
 
 const OVERLAY_MODULE_TYPES_FILE_NAME: &str = "hq-overlay-module.d.ts";
+const OVERLAY_MODULE_TYPES_VERSION_FILE_NAME: &str = ".hq-overlay-module-types-version";
 const OVERLAY_MODULE_TYPES: &str = r##"type OverlaySettingSchema =
   | { key: string; label: string; type: "boolean"; default?: boolean }
   | { key: string; label: string; type: "color"; default?: string }
@@ -2964,6 +2964,7 @@ fn default_overlay_widget_positions() -> HashMap<String, OverlayWidgetPosition> 
 struct GameOverlayState {
     controls_open: AtomicBool,
     monitor_running: AtomicBool,
+    controls_suspended_for_focus_loss: AtomicBool,
     preview_mode: AtomicBool,
     obs_capture_enabled: AtomicBool,
     obs_capture_owned_preview: AtomicBool,
@@ -2975,6 +2976,8 @@ struct GameOverlayState {
     show_count: AtomicU64,
     input_count: AtomicU64,
     last_window_rect: Mutex<Option<GameOverlayWindowRect>>,
+    open_hint_focus_started: Mutex<Option<(u32, std::time::Instant)>>,
+    open_hint_shown_pids: Mutex<HashSet<u32>>,
     registered_overlay_shortcut: Mutex<Option<String>>,
     registered_overlay_input_shortcuts: Mutex<HashSet<String>>,
     last_message: Mutex<String>,
@@ -2994,6 +2997,7 @@ impl Default for GameOverlayState {
         Self {
             controls_open: AtomicBool::new(false),
             monitor_running: AtomicBool::new(false),
+            controls_suspended_for_focus_loss: AtomicBool::new(false),
             preview_mode: AtomicBool::new(false),
             obs_capture_enabled: AtomicBool::new(false),
             obs_capture_owned_preview: AtomicBool::new(false),
@@ -3005,6 +3009,8 @@ impl Default for GameOverlayState {
             show_count: AtomicU64::new(0),
             input_count: AtomicU64::new(0),
             last_window_rect: Mutex::new(None),
+            open_hint_focus_started: Mutex::new(None),
+            open_hint_shown_pids: Mutex::new(HashSet::new()),
             registered_overlay_shortcut: Mutex::new(None),
             registered_overlay_input_shortcuts: Mutex::new(HashSet::new()),
             last_message: Mutex::new(String::new()),
@@ -3032,6 +3038,13 @@ struct GameOverlayInputShortcutPayload {
     shortcut: String,
     state: String,
     source: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GameOverlayOpenHintPayload {
+    shortcut: String,
+    duration_ms: u64,
 }
 
 fn disablemod_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -3414,81 +3427,16 @@ fn set_game_overlay_obs_capture_armed(
 fn ensure_default_game_overlay_modules(app: &tauri::AppHandle) -> Result<(), String> {
     let dir = game_overlay_module_dir(app)?;
     if dir.exists() {
-        let types_path = dir.join(OVERLAY_MODULE_TYPES_FILE_NAME);
-        std::fs::write(&types_path, OVERLAY_MODULE_TYPES).map_err(|e| e.to_string())?;
-        let legacy_example_path = dir.join("00_chattriggers_api_example.js");
-        if legacy_example_path.exists() {
-            std::fs::remove_file(&legacy_example_path).map_err(|e| e.to_string())?;
-        }
-        for (file_name, source) in DEFAULT_OVERLAY_MODULES {
-            let path = dir.join(file_name);
-            if !path.exists() {
-                std::fs::write(&path, source).map_err(|e| e.to_string())?;
-                continue;
-            }
-            let current = std::fs::read_to_string(&path).unwrap_or_default();
-            if !current
-                .trim_start()
-                .starts_with("/// <reference path=\"./hq-overlay-module.d.ts\" />")
-            {
-                std::fs::write(&path, format!("{OVERLAY_MODULE_REFERENCE}{current}"))
-                    .map_err(|e| e.to_string())?;
-            }
-        }
-        for file_name in [
-            "crosshair.js",
-            "game_timer.js",
-            "image.js",
-            "leaderboard.js",
-            "real_bottom_line.js",
-            "end_summary.js",
-        ] {
-            let path = dir.join(file_name);
-            if !path.exists() {
-                continue;
-            }
-            let current = std::fs::read_to_string(&path).unwrap_or_default();
-            let should_refresh = match file_name {
-                "crosshair.js" => {
-                    current.contains("setName(\"Crosshair\")")
-                        && !current.contains("Setting.selectMenu(\"style\"")
-                }
-                "game_timer.js" => {
-                    current.contains("setName(\"Game Timer\")")
-                        && current.contains("backdrop-filter")
-                }
-                "real_bottom_line.js" => {
-                    current.contains("setName(\"Real Bottom Line\")")
-                        && current.contains("durationSeconds")
-                }
-                "leaderboard.js" => {
-                    current.contains("setName(\"Leaderboard\")")
-                        && (!current.contains("context.leaderboard")
-                            || current.contains("register(\"renderOverlay\", ({ context, api })"))
-                }
-                "end_summary.js" => {
-                    current.contains("setName(\"End Summary\")")
-                        && current.contains("durationSeconds")
-                }
-                _ => false,
-            };
-            if should_refresh {
-                if let Some((_, source)) = DEFAULT_OVERLAY_MODULES
-                    .iter()
-                    .find(|(default_file_name, _)| *default_file_name == file_name)
-                {
-                    std::fs::write(&path, source).map_err(|e| e.to_string())?;
-                }
-            }
-        }
-        let record_checker_path = dir.join("record_checker.js");
-        if record_checker_path.exists() {
-            let current = std::fs::read_to_string(&record_checker_path).unwrap_or_default();
-            if current.contains("Preview placeholder for SDC/HQ rank checks")
-                || current.contains("setName(\"Record Checker\")")
-            {
-                std::fs::remove_file(&record_checker_path).map_err(|e| e.to_string())?;
-            }
+        let app_version = app.package_info().version.to_string();
+        let types_version_path = dir.join(OVERLAY_MODULE_TYPES_VERSION_FILE_NAME);
+        let last_types_version = std::fs::read_to_string(&types_version_path).unwrap_or_default();
+        if last_types_version.trim() != app_version {
+            std::fs::write(
+                dir.join(OVERLAY_MODULE_TYPES_FILE_NAME),
+                OVERLAY_MODULE_TYPES,
+            )
+            .map_err(|e| e.to_string())?;
+            std::fs::write(&types_version_path, app_version).map_err(|e| e.to_string())?;
         }
         return Ok(());
     }
@@ -3502,6 +3450,11 @@ fn ensure_default_game_overlay_modules(app: &tauri::AppHandle) -> Result<(), Str
         let path = dir.join(file_name);
         std::fs::write(&path, source).map_err(|e| e.to_string())?;
     }
+    std::fs::write(
+        dir.join(OVERLAY_MODULE_TYPES_VERSION_FILE_NAME),
+        app.package_info().version.to_string(),
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -3899,6 +3852,9 @@ fn set_game_overlay_controls_open_inner(
     state: &GameOverlayState,
     open: bool,
 ) -> Result<bool, String> {
+    state
+        .controls_suspended_for_focus_loss
+        .store(false, Ordering::Relaxed);
     state.controls_open.store(open, Ordering::Relaxed);
     let window = ensure_game_overlay_window(app)?;
     window.show().map_err(|e| e.to_string())?;
@@ -3922,6 +3878,29 @@ fn set_game_overlay_controls_open_inner(
     });
     set_game_overlay_debug(app, format!("controls_open={open}"));
     Ok(open)
+}
+
+fn suspend_game_overlay_controls_for_focus_loss_inner(
+    app: &tauri::AppHandle,
+    state: &GameOverlayState,
+) -> Result<bool, String> {
+    if !state.controls_open.load(Ordering::Relaxed) {
+        return Ok(false);
+    }
+    state
+        .controls_suspended_for_focus_loss
+        .store(true, Ordering::Relaxed);
+    state.controls_open.store(false, Ordering::Relaxed);
+    let window = ensure_game_overlay_window(app)?;
+    apply_game_overlay_interaction(&window, false)?;
+    app.emit_to(
+        GAME_OVERLAY_WINDOW_LABEL,
+        "overlay://controls-open-changed",
+        false,
+    )
+    .map_err(|e| e.to_string())?;
+    set_game_overlay_debug(app, "controls suspended until Lethal Company is focused again");
+    Ok(true)
 }
 
 #[cfg(target_os = "windows")]
@@ -4369,6 +4348,103 @@ fn show_game_overlay_attached_to_rect(
 }
 
 #[cfg(target_os = "windows")]
+fn maybe_emit_game_overlay_open_hint(
+    app: &tauri::AppHandle,
+    overlay_state: &GameOverlayState,
+    target_pid: u32,
+    controls_open: bool,
+) {
+    if controls_open {
+        if let Ok(mut focus_started) = overlay_state.open_hint_focus_started.lock() {
+            *focus_started = None;
+        }
+        return;
+    }
+    let focus_started_at = match overlay_state.open_hint_focus_started.lock() {
+        Ok(mut focus_started) => match *focus_started {
+            Some((pid, started_at)) if pid == target_pid => started_at,
+            _ => {
+                let started_at = std::time::Instant::now();
+                *focus_started = Some((target_pid, started_at));
+                return;
+            }
+        },
+        Err(_) => return,
+    };
+    if focus_started_at.elapsed() < GAME_OVERLAY_OPEN_HINT_FOCUS_DELAY {
+        return;
+    }
+    let should_emit = overlay_state
+        .open_hint_shown_pids
+        .lock()
+        .map(|mut shown| shown.insert(target_pid))
+        .unwrap_or(false);
+    if !should_emit {
+        return;
+    }
+    let shortcut = read_game_overlay_config(app)
+        .map(|cfg| cfg.general.overlay_key)
+        .unwrap_or_else(|_| "Insert".to_string());
+    let payload = GameOverlayOpenHintPayload {
+        shortcut,
+        duration_ms: GAME_OVERLAY_OPEN_HINT_DURATION_MS,
+    };
+    let _ = app.emit_to(
+        GAME_OVERLAY_WINDOW_LABEL,
+        "overlay://open-config-hint",
+        payload.clone(),
+    );
+    let app_handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        let _ = app_handle.emit_to(
+            GAME_OVERLAY_WINDOW_LABEL,
+            "overlay://open-config-hint",
+            payload,
+        );
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn foreground_is_game_overlay_window(app: &tauri::AppHandle) -> bool {
+    let foreground_hwnd = unsafe { GetForegroundWindow() };
+    if foreground_hwnd.is_null() {
+        return false;
+    }
+    app.get_webview_window(GAME_OVERLAY_WINDOW_LABEL)
+        .and_then(|window| window.hwnd().ok())
+        .map(|hwnd| hwnd.0 as HWND == foreground_hwnd)
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "windows")]
+fn suspend_game_overlay_controls_after_focus_loss(
+    app: &tauri::AppHandle,
+    overlay_state: &GameOverlayState,
+) {
+    if let Err(e) = suspend_game_overlay_controls_for_focus_loss_inner(app, overlay_state) {
+        log::warn!("Failed to suspend game overlay controls after focus loss: {e}");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn restore_game_overlay_controls_after_focus_return(
+    app: &tauri::AppHandle,
+    overlay_state: &GameOverlayState,
+) {
+    if !overlay_state
+        .controls_suspended_for_focus_loss
+        .load(Ordering::Relaxed)
+        || overlay_state.controls_open.load(Ordering::Relaxed)
+    {
+        return;
+    }
+    if let Err(e) = set_game_overlay_controls_open_inner(app, overlay_state, true) {
+        log::warn!("Failed to restore game overlay controls after focus return: {e}");
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn start_game_overlay_monitor(app: &tauri::AppHandle) {
     let overlay_state = app.state::<GameOverlayState>();
     if overlay_state.monitor_running.swap(true, Ordering::Relaxed) {
@@ -4401,14 +4477,16 @@ fn start_game_overlay_monitor(app: &tauri::AppHandle) {
             })
             .unwrap_or_default();
 
-        let controls_open = overlay_state.controls_open.load(Ordering::Relaxed);
+        let mut controls_open = overlay_state.controls_open.load(Ordering::Relaxed);
         if active_pids.is_empty() {
             overlay_state.last_match.store(false, Ordering::Relaxed);
-            if controls_open {
-                continue;
-            }
 
             if let Some((target_pid, rect)) = foreground_lethal_company_window() {
+                restore_game_overlay_controls_after_focus_return(
+                    &app_handle,
+                    overlay_state.inner(),
+                );
+                controls_open = overlay_state.controls_open.load(Ordering::Relaxed);
                 let source = if overlay_state.preview_mode.load(Ordering::Relaxed) {
                     "preview"
                 } else {
@@ -4422,7 +4500,24 @@ fn start_game_overlay_monitor(app: &tauri::AppHandle) {
                     rect,
                     source,
                 );
+                maybe_emit_game_overlay_open_hint(
+                    &app_handle,
+                    overlay_state.inner(),
+                    target_pid,
+                    controls_open,
+                );
                 continue;
+            }
+
+            if let Ok(mut focus_started) = overlay_state.open_hint_focus_started.lock() {
+                *focus_started = None;
+            }
+
+            if controls_open && foreground_is_game_overlay_window(&app_handle) {
+                continue;
+            }
+            if controls_open {
+                suspend_game_overlay_controls_after_focus_loss(&app_handle, overlay_state.inner());
             }
 
             if overlay_state.obs_capture_enabled.load(Ordering::Relaxed)
@@ -4437,19 +4532,24 @@ fn start_game_overlay_monitor(app: &tauri::AppHandle) {
         let target_window = overlay_target_window(&active_pids);
         let Some((foreground_pid, rect)) = target_window else {
             overlay_state.last_match.store(false, Ordering::Relaxed);
-            if !controls_open {
-                hide_game_overlay_window(&app_handle, false);
+            if let Ok(mut focus_started) = overlay_state.open_hint_focus_started.lock() {
+                *focus_started = None;
             }
+            if controls_open && foreground_is_game_overlay_window(&app_handle) {
+                continue;
+            }
+            if controls_open {
+                suspend_game_overlay_controls_after_focus_loss(&app_handle, overlay_state.inner());
+            }
+            hide_game_overlay_window(&app_handle, false);
             continue;
         };
         overlay_state
             .last_foreground_pid
             .store(foreground_pid, Ordering::Relaxed);
 
-        if controls_open && foreground_pid == std::process::id() {
-            continue;
-        }
-
+        restore_game_overlay_controls_after_focus_return(&app_handle, overlay_state.inner());
+        controls_open = overlay_state.controls_open.load(Ordering::Relaxed);
         overlay_state.last_match.store(true, Ordering::Relaxed);
 
         show_game_overlay_attached_to_rect(
@@ -4459,6 +4559,12 @@ fn start_game_overlay_monitor(app: &tauri::AppHandle) {
             foreground_pid,
             rect,
             "monitor",
+        );
+        maybe_emit_game_overlay_open_hint(
+            &app_handle,
+            overlay_state.inner(),
+            foreground_pid,
+            controls_open,
         );
     });
 }
@@ -7016,6 +7122,14 @@ fn set_game_overlay_controls_open(
 }
 
 #[tauri::command]
+fn suspend_game_overlay_controls_for_focus_loss(
+    app: tauri::AppHandle,
+    state: State<'_, GameOverlayState>,
+) -> Result<bool, String> {
+    suspend_game_overlay_controls_for_focus_loss_inner(&app, &state)
+}
+
+#[tauri::command]
 fn set_game_overlay_input_shortcuts(
     app: tauri::AppHandle,
     state: State<'_, GameOverlayState>,
@@ -8860,6 +8974,7 @@ pub fn run() {
             close_obs_overlay_window,
             open_game_overlay_modules_folder,
             set_game_overlay_controls_open,
+            suspend_game_overlay_controls_for_focus_loss,
             set_game_overlay_input_shortcuts,
             show_game_overlay_end_summary,
             downloader::depot_login,

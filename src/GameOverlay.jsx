@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ImageIcon, Pencil, RefreshCw, Trash2, Upload, X } from "lucide-react";
+import { FolderOpen, ImageIcon, Keyboard, Pencil, RefreshCw, Trash2, Upload, X } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { Slider } from "./components/ui/slider";
 import { cn } from "./lib/cn";
@@ -1372,6 +1372,7 @@ export default function GameOverlay({ captureOnly = false }) {
   const [endSummary, setEndSummary] = useState(null);
   const [overlayEvents, setOverlayEvents] = useState([]);
   const [overlayLogs, setOverlayLogs] = useState([]);
+  const [openConfigHint, setOpenConfigHint] = useState(null);
   const [inputSequence, setInputSequence] = useState(0);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [snapGuides, setSnapGuides] = useState([]);
@@ -1385,6 +1386,7 @@ export default function GameOverlay({ captureOnly = false }) {
   const consumedInputRef = useRef(new Set());
   const overlayContextRef = useRef(null);
   const configVersionRef = useRef(0);
+  const openConfigHintTimeoutRef = useRef(null);
 
   function pushOverlayLog(level, message, details = undefined) {
     const entry = {
@@ -1414,6 +1416,20 @@ export default function GameOverlay({ captureOnly = false }) {
       };
       setInputSequence(inputSnapshotRef.current.sequence);
     }, 250);
+  }
+
+  function showOpenConfigHint(payload = {}) {
+    const shortcut = String(payload.shortcut ?? latestConfigRef.current?.general?.overlay_key ?? "Insert");
+    const duration = Math.max(2000, Math.min(15000, Number(payload.durationMs ?? payload.duration_ms ?? 8000)));
+    if (openConfigHintTimeoutRef.current) {
+      window.clearTimeout(openConfigHintTimeoutRef.current);
+    }
+    const id = Date.now();
+    setOpenConfigHint({ id, shortcut });
+    openConfigHintTimeoutRef.current = window.setTimeout(() => {
+      setOpenConfigHint((current) => (current?.id === id ? null : current));
+      openConfigHintTimeoutRef.current = null;
+    }, duration);
   }
 
   useEffect(() => {
@@ -1471,6 +1487,10 @@ export default function GameOverlay({ captureOnly = false }) {
         setSelectedModuleId("general");
       });
     return () => {
+      if (openConfigHintTimeoutRef.current) {
+        window.clearTimeout(openConfigHintTimeoutRef.current);
+        openConfigHintTimeoutRef.current = null;
+      }
       window.removeEventListener("error", handleError);
       window.removeEventListener("unhandledrejection", handleRejection);
     };
@@ -1542,6 +1562,11 @@ export default function GameOverlay({ captureOnly = false }) {
 
   useEffect(() => {
     if (!controlsOpen) return undefined;
+    setOpenConfigHint(null);
+    if (openConfigHintTimeoutRef.current) {
+      window.clearTimeout(openConfigHintTimeoutRef.current);
+      openConfigHintTimeoutRef.current = null;
+    }
     let disposed = false;
     async function refreshDebug() {
       try {
@@ -1576,6 +1601,7 @@ export default function GameOverlay({ captureOnly = false }) {
     let unlistenStreamOverlays = null;
     let unlistenStreamOverlaysLog = null;
     let unlistenInput = null;
+    let unlistenOpenConfigHint = null;
     let disposed = false;
 
     function pushTauriInputEvent(payload) {
@@ -1645,6 +1671,10 @@ export default function GameOverlay({ captureOnly = false }) {
         if (disposed) return;
         pushTauriInputEvent(event.payload ?? {});
       });
+      unlistenOpenConfigHint = await listen("overlay://open-config-hint", (event) => {
+        if (disposed || captureOnly || controlsOpen) return;
+        showOpenConfigHint(event.payload ?? {});
+      });
       unlistenEndSummary = await listen("overlay://show-end-summary", (event) => {
         if (disposed) return;
         const payload = event.payload ?? {};
@@ -1668,8 +1698,9 @@ export default function GameOverlay({ captureOnly = false }) {
       if (typeof unlistenStreamOverlays === "function") unlistenStreamOverlays();
       if (typeof unlistenStreamOverlaysLog === "function") unlistenStreamOverlaysLog();
       if (typeof unlistenInput === "function") unlistenInput();
+      if (typeof unlistenOpenConfigHint === "function") unlistenOpenConfigHint();
     };
-  }, [captureOnly, modules]);
+  }, [captureOnly, modules, controlsOpen]);
 
   useEffect(() => {
     if (captureOnly) return undefined;
@@ -1754,6 +1785,15 @@ export default function GameOverlay({ captureOnly = false }) {
   useEffect(() => {
     if (captureOnly) return undefined;
     function handleKeyDown(event) {
+      if (
+        controlsOpen
+        && event.altKey
+        && (event.metaKey || event.getModifierState?.("Meta"))
+        && ["ArrowLeft", "ArrowRight"].includes(event.key)
+      ) {
+        invoke("suspend_game_overlay_controls_for_focus_loss").catch(console.error);
+        return;
+      }
       if (event.key !== "Escape") return;
       if (editMode) {
         setEditMode(false);
@@ -1987,6 +2027,13 @@ export default function GameOverlay({ captureOnly = false }) {
       });
   }
 
+  function openModulesFolder() {
+    invoke("open_game_overlay_modules_folder").catch((error) => {
+      console.error(error);
+      pushOverlayLog("error", "Failed to open overlay module folder", String(error));
+    });
+  }
+
   const selectedModule = selectedModuleId === "general" || selectedModuleId === "logs"
     ? null
     : modules.find((module) => module.id === selectedModuleId) ?? modules[0] ?? null;
@@ -2108,6 +2155,21 @@ export default function GameOverlay({ captureOnly = false }) {
         <div className="pointer-events-none fixed inset-0 border-2 border-[var(--theme-accent)]/55 bg-[var(--theme-accent)]/5" />
       ) : null}
 
+      {!captureOnly && openConfigHint && !controlsOpen ? (
+        <div className="pointer-events-none fixed left-1/2 top-8 z-[2147483000] -translate-x-1/2">
+          <div className="flex max-w-[min(420px,calc(100vw-2rem))] items-center gap-3 rounded border border-white/15 bg-[#121318]/95 px-4 py-3 text-sm text-white shadow-2xl shadow-black/50 backdrop-blur">
+            <Keyboard className="h-4 w-4 shrink-0 text-[var(--theme-accent)]" />
+            <div className="min-w-0">
+              <span className="text-white/75">Press </span>
+              <span className="rounded border border-white/15 bg-white/10 px-2 py-0.5 font-mono text-xs text-white">
+                {openConfigHint.shortcut}
+              </span>
+              <span className="text-white/75"> to open overlay settings</span>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {controlsOpen ? (
         <div className="pointer-events-none fixed inset-0 bg-black/35">
           <div
@@ -2177,10 +2239,16 @@ export default function GameOverlay({ captureOnly = false }) {
                 ))}
               </div>
               <div className="border-t border-white/10 p-2">
-                <Button variant="secondary" size="sm" className="h-9 w-full justify-center rounded" onClick={reloadModules}>
-                  <RefreshCw className="h-4 w-4" />
-                  Reload
-                </Button>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button variant="secondary" size="sm" className="h-9 justify-center rounded" onClick={openModulesFolder}>
+                    <FolderOpen className="h-4 w-4" />
+                    Folder
+                  </Button>
+                  <Button variant="secondary" size="sm" className="h-9 justify-center rounded" onClick={reloadModules}>
+                    <RefreshCw className="h-4 w-4" />
+                    Reload
+                  </Button>
+                </div>
               </div>
             </div>
 
