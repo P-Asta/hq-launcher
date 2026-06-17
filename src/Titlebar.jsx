@@ -55,6 +55,7 @@ export default function Titlebar({ installedVersions, ...props }) {
             obs_capture_armed: false,
             overlay_key: "Insert",
             end_summary_duration_ms: 10000,
+            monitor_interval_ms: 1000,
         },
     });
     const [steamOverlayResolvedPath, setSteamOverlayResolvedPath] = useState("");
@@ -762,6 +763,79 @@ export default function Titlebar({ installedVersions, ...props }) {
                                                     }}
                                                     aria-label="Enable HQLC overlay"
                                                 />
+                                            </div>
+                                        </div>
+
+                                        <div className="rounded-lg border border-panel-outline p-4">
+                                            <div className="flex items-start justify-between gap-4">
+                                                <div className="min-w-0">
+                                                    <div className="text-sm font-semibold text-white">Focus Check Interval</div>
+                                                    <div className="mt-1 text-sm leading-5 text-white/55">
+                                                        How often HQLC checks whether Lethal Company is focused.
+                                                    </div>
+                                                </div>
+                                                <div className="shrink-0 text-sm font-semibold tabular-nums text-white">
+                                                    {Math.round(Number(gameOverlayConfig.general?.monitor_interval_ms ?? 1000) / 100) / 10}s
+                                                </div>
+                                            </div>
+                                            <input
+                                                type="range"
+                                                min="500"
+                                                max="5000"
+                                                step="500"
+                                                value={Number(gameOverlayConfig.general?.monitor_interval_ms ?? 1000)}
+                                                disabled={steamOverlayBusy}
+                                                onChange={(event) => {
+                                                    const nextMs = Math.max(500, Math.min(5000, Number(event.target.value) || 1000));
+                                                    const nextGameOverlayConfig = {
+                                                        ...gameOverlayConfig,
+                                                        general: {
+                                                            ...(gameOverlayConfig.general ?? {}),
+                                                            monitor_interval_ms: nextMs,
+                                                        },
+                                                    };
+                                                    setGameOverlayConfig(nextGameOverlayConfig);
+                                                    setSteamOverlaySaved("");
+                                                }}
+                                                onMouseUp={(event) => {
+                                                    const nextMs = Math.max(500, Math.min(5000, Number(event.currentTarget.value) || 1000));
+                                                    const nextGameOverlayConfig = {
+                                                        ...gameOverlayConfig,
+                                                        general: {
+                                                            ...(gameOverlayConfig.general ?? {}),
+                                                            monitor_interval_ms: nextMs,
+                                                        },
+                                                    };
+                                                    void persistOverlaySettings(steamOverlayConfig, nextGameOverlayConfig);
+                                                }}
+                                                onTouchEnd={(event) => {
+                                                    const nextMs = Math.max(500, Math.min(5000, Number(event.currentTarget.value) || 1000));
+                                                    const nextGameOverlayConfig = {
+                                                        ...gameOverlayConfig,
+                                                        general: {
+                                                            ...(gameOverlayConfig.general ?? {}),
+                                                            monitor_interval_ms: nextMs,
+                                                        },
+                                                    };
+                                                    void persistOverlaySettings(steamOverlayConfig, nextGameOverlayConfig);
+                                                }}
+                                                onBlur={(event) => {
+                                                    const nextMs = Math.max(500, Math.min(5000, Number(event.currentTarget.value) || 1000));
+                                                    const nextGameOverlayConfig = {
+                                                        ...gameOverlayConfig,
+                                                        general: {
+                                                            ...(gameOverlayConfig.general ?? {}),
+                                                            monitor_interval_ms: nextMs,
+                                                        },
+                                                    };
+                                                    void persistOverlaySettings(steamOverlayConfig, nextGameOverlayConfig);
+                                                }}
+                                                className="mt-4 h-2 w-full accent-[var(--theme-accent)]"
+                                                aria-label="Focus check interval"
+                                            />
+                                            <div className="mt-2 flex justify-between text-xs text-white/40">
+                                                <span>0.5s</span>
+                                                <span>5s</span>
                                             </div>
                                         </div>
 

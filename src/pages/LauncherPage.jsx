@@ -99,6 +99,31 @@ function modKeyLower(mod) {
   ).toLowerCase()}`;
 }
 
+function isUnityExplorerModName(name) {
+  return String(name ?? "")
+    .replace(/[^a-z0-9]/gi, "")
+    .toLowerCase()
+    .includes("unityexplorer");
+}
+
+function configPathMatchesMod(path, mod) {
+  const pathLower = String(path ?? "").toLowerCase();
+  const devLower = String(mod?.dev ?? "").toLowerCase();
+  const nameLower = String(mod?.name ?? "").toLowerCase();
+  if (
+    (devLower && pathLower.includes(devLower)) ||
+    (nameLower && pathLower.includes(nameLower))
+  ) {
+    return true;
+  }
+
+  const fileName = pathLower.split("/").pop();
+  return (
+    isUnityExplorerModName(mod?.name) &&
+    fileName === "com.sinai.unityexplorer.cfg"
+  );
+}
+
 function isPracticeRunMode(mode) {
   return String(mode ?? "").toLowerCase().includes("practice");
 }
@@ -2100,7 +2125,7 @@ export default function LauncherPage({
         const hit = chain.some((p) => {
           const lp = String(p ?? "").toLowerCase();
           if (!lp.endsWith(".cfg")) return false;
-          return (devLower && lp.includes(devLower)) || (nameLower && lp.includes(nameLower));
+          return configPathMatchesMod(p, m);
         });
         if (hit) return canonicalChainId(chain);
       }
@@ -3438,16 +3463,12 @@ export default function LauncherPage({
   }
 
   async function resolveModsForConfigPath(p) {
-    const pathLower = String(p ?? "").toLowerCase();
     const mods = modsForList;
 
     // Best-effort: narrow down candidates by substring match, then confirm by asking backend.
     const candidates = mods
       .filter((m) => {
-        const d = String(m?.dev ?? "").toLowerCase();
-        const n = String(m?.name ?? "").toLowerCase();
-        if (!d && !n) return false;
-        return (d && pathLower.includes(d)) || (n && pathLower.includes(n));
+        return configPathMatchesMod(p, m);
       })
       .slice(0, 12);
 

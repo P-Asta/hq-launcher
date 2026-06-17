@@ -19,9 +19,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
@@ -35,32 +35,34 @@ use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HWND, LPARAM, RE
 use windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Memory::{
-    VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE,
+    MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAllocEx, VirtualFreeEx,
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Threading::{
-    CreateRemoteThread, OpenProcess, OpenThread, QueryFullProcessImageNameW, ResumeThread,
-    WaitForSingleObject, INFINITE, PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE,
-    THREAD_SUSPEND_RESUME,
+    CreateRemoteThread, INFINITE, OpenProcess, OpenThread, PROCESS_CREATE_THREAD,
+    PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_OPERATION,
+    PROCESS_VM_READ, PROCESS_VM_WRITE, QueryFullProcessImageNameW, ResumeThread,
+    THREAD_SUSPEND_RESUME, WaitForSingleObject,
 };
 #[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
-    GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, SetWindowLongPtrW, SetWindowPos,
-    GWL_EXSTYLE, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_APPWINDOW,
+    EnumWindows, GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect,
+    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HWND_TOPMOST, IsWindowVisible,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowLongPtrW, SetWindowPos, WS_EX_APPWINDOW,
     WS_EX_TOOLWINDOW,
 };
 #[cfg(target_os = "windows")]
-use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY};
-#[cfg(target_os = "windows")]
 use winreg::RegKey;
+#[cfg(target_os = "windows")]
+use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY};
 
 use crate::bepinex_cfg::read_manifest;
 use crate::progress::{TaskErrorPayload, TaskProgressPayload};
@@ -70,11 +72,30 @@ use crate::{
 };
 
 const INSTALL_COMPLETE_MARKER: &str = ".hq_install_complete";
-const DISABLEMOD_FILE_VERSION: u32 = 5;
+const DISABLEMOD_FILE_VERSION: u32 = 6;
 const GAME_OVERLAY_WINDOW_LABEL: &str = "game-overlay";
 const GAME_OVERLAY_WINDOW_TITLE: &str = "HQ Overlay - OBS Capture";
 const GAME_OVERLAY_OPEN_HINT_FOCUS_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 const GAME_OVERLAY_OPEN_HINT_DURATION_MS: u64 = 10_000;
+const GAME_OVERLAY_MONITOR_INTERVAL_DEFAULT_MS: u64 = 1_000;
+const GAME_OVERLAY_MONITOR_INTERVAL_MIN_MS: u64 = 500;
+const GAME_OVERLAY_MONITOR_INTERVAL_MAX_MS: u64 = 5_000;
+#[cfg(target_os = "windows")]
+const VK_TAB_KEY: i32 = 0x09;
+#[cfg(target_os = "windows")]
+const VK_ALT_KEY: i32 = 0x12;
+#[cfg(target_os = "windows")]
+const VK_LEFT_KEY: i32 = 0x25;
+#[cfg(target_os = "windows")]
+const VK_UP_KEY: i32 = 0x26;
+#[cfg(target_os = "windows")]
+const VK_RIGHT_KEY: i32 = 0x27;
+#[cfg(target_os = "windows")]
+const VK_DOWN_KEY: i32 = 0x28;
+#[cfg(target_os = "windows")]
+const VK_LWIN_KEY: i32 = 0x5B;
+#[cfg(target_os = "windows")]
+const VK_RWIN_KEY: i32 = 0x5C;
 
 fn manifest_state_has_version(app: &tauri::AppHandle, version: u32) -> bool {
     let Ok(app_data) = app.path().app_data_dir() else {
@@ -1281,6 +1302,102 @@ pub(crate) fn ensure_reverb_trigger_fix_cfg(
     Ok(())
 }
 
+fn replace_cfg_bool_assignment(text: &str, key: &str, desired_value: bool) -> (String, bool) {
+    let mut changed = false;
+    let mut out = String::with_capacity(text.len());
+    let desired = if desired_value { "true" } else { "false" };
+
+    for seg in text.split_inclusive(['\n', '\r']) {
+        let (line, nl) = if seg.ends_with("\r\n") {
+            (seg.trim_end_matches("\r\n"), "\r\n")
+        } else if seg.ends_with('\n') {
+            (seg.trim_end_matches('\n'), "\n")
+        } else if seg.ends_with('\r') {
+            (seg.trim_end_matches('\r'), "\r")
+        } else {
+            (seg, "")
+        };
+
+        let trimmed = line.trim_start();
+        let indent_len = line.len().saturating_sub(trimmed.len());
+        let indent = &line[..indent_len];
+
+        if let Some(eq_idx) = trimmed.find('=') {
+            let (left, right_all) = trimmed.split_at(eq_idx);
+            if left.trim().eq_ignore_ascii_case(key) {
+                let right_all = right_all.trim_start_matches('=');
+                let (right, comment) = match right_all.find('#') {
+                    Some(i) => (&right_all[..i], &right_all[i..]),
+                    None => (right_all, ""),
+                };
+
+                if !right.trim().eq_ignore_ascii_case(desired) {
+                    out.push_str(indent);
+                    out.push_str(left.trim());
+                    out.push_str(" = ");
+                    out.push_str(desired);
+                    out.push_str(comment);
+                    out.push_str(nl);
+                    changed = true;
+                    continue;
+                }
+            }
+        }
+
+        out.push_str(line);
+        out.push_str(nl);
+    }
+
+    (out, changed)
+}
+
+fn ensure_unity_explorer_eventsystem_override_in_dir(
+    config_dir: &std::path::Path,
+) -> Result<bool, String> {
+    let cfg_path = config_dir.join("com.sinai.unityexplorer.cfg");
+    if !cfg_path.exists() {
+        return Ok(false);
+    }
+
+    let bytes = std::fs::read(&cfg_path).map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&bytes);
+    let (updated, changed) =
+        replace_cfg_bool_assignment(&text, "Disable EventSystem override", true);
+    if changed {
+        std::fs::write(&cfg_path, updated).map_err(|e| e.to_string())?;
+    }
+
+    Ok(changed)
+}
+
+fn migrate_disablemod_v6_unity_explorer_cfg(app: &tauri::AppHandle) -> Result<(), String> {
+    let mut config_dirs = vec![shared_config_dir(app)?];
+
+    for version in list_installed_versions(app.clone())? {
+        config_dirs.push(version_config_dir(app, version)?);
+    }
+
+    let mut seen = HashSet::new();
+    for config_dir in config_dirs {
+        let key = std::fs::canonicalize(&config_dir)
+            .unwrap_or(config_dir.clone())
+            .to_string_lossy()
+            .to_lowercase();
+        if !seen.insert(key) {
+            continue;
+        }
+
+        if let Err(e) = ensure_unity_explorer_eventsystem_override_in_dir(&config_dir) {
+            log::warn!(
+                "Failed to migrate UnityExplorer config in {}: {e}",
+                config_dir.to_string_lossy()
+            );
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct HqolDontStoreBackupEntry {
     file_name: String,
@@ -2290,6 +2407,7 @@ struct GameOverlayGeneralConfig {
     obs_capture_armed: bool,
     overlay_key: String,
     end_summary_duration_ms: u64,
+    monitor_interval_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2873,6 +2991,7 @@ impl Default for GameOverlayGeneralConfig {
             obs_capture_armed: false,
             overlay_key: "Insert".to_string(),
             end_summary_duration_ms: 10_000,
+            monitor_interval_ms: GAME_OVERLAY_MONITOR_INTERVAL_DEFAULT_MS,
         }
     }
 }
@@ -2969,6 +3088,8 @@ struct GameOverlayState {
     obs_capture_enabled: AtomicBool,
     obs_capture_owned_preview: AtomicBool,
     overlay_enabled: AtomicBool,
+    overlay_frontend_active: AtomicBool,
+    monitor_interval_ms: AtomicU64,
     stream_overlays_monitor_running: AtomicBool,
     window_visible: AtomicBool,
     last_foreground_pid: AtomicU32,
@@ -3002,6 +3123,8 @@ impl Default for GameOverlayState {
             obs_capture_enabled: AtomicBool::new(false),
             obs_capture_owned_preview: AtomicBool::new(false),
             overlay_enabled: AtomicBool::new(true),
+            overlay_frontend_active: AtomicBool::new(false),
+            monitor_interval_ms: AtomicU64::new(GAME_OVERLAY_MONITOR_INTERVAL_DEFAULT_MS),
             stream_overlays_monitor_running: AtomicBool::new(false),
             window_visible: AtomicBool::new(false),
             last_foreground_pid: AtomicU32::new(0),
@@ -3135,6 +3258,8 @@ fn read_disablemod(app: &tauri::AppHandle) -> Result<DisableModFile, String> {
         }
     };
 
+    let original_version = f.version;
+
     // Migration: v1 -> v2
     if f.version == 1 {
         f.version = 2;
@@ -3156,6 +3281,13 @@ fn read_disablemod(app: &tauri::AppHandle) -> Result<DisableModFile, String> {
     if f.version == 4 {
         f.mods
             .retain(|m| m != &normalize_mod_id("MikuOreo", "LCStatsTracker"));
+        f.version = DISABLEMOD_FILE_VERSION;
+        let _ = write_disablemod(app, &f);
+    }
+    if original_version <= 5 {
+        if let Err(e) = migrate_disablemod_v6_unity_explorer_cfg(app) {
+            log::warn!("Failed to migrate UnityExplorer config for disablemod v6: {e}");
+        }
         f.version = DISABLEMOD_FILE_VERSION;
         let _ = write_disablemod(app, &f);
     }
@@ -3492,6 +3624,10 @@ fn sanitize_game_overlay_config(mut cfg: GameOverlayConfig) -> GameOverlayConfig
     let fallback = GameOverlayConfig::default();
     cfg.general.overlay_key = sanitize_overlay_key(&cfg.general.overlay_key);
     cfg.general.end_summary_duration_ms = cfg.general.end_summary_duration_ms.clamp(2_000, 30_000);
+    cfg.general.monitor_interval_ms = cfg.general.monitor_interval_ms.clamp(
+        GAME_OVERLAY_MONITOR_INTERVAL_MIN_MS,
+        GAME_OVERLAY_MONITOR_INTERVAL_MAX_MS,
+    );
     let style = cfg.crosshair.style.trim().to_lowercase();
     cfg.crosshair.style = match style.as_str() {
         "plus" | "dot" | "circle" | "x" | "square" => style,
@@ -3531,6 +3667,9 @@ fn sync_game_overlay_runtime_state(app: &tauri::AppHandle, cfg: &GameOverlayConf
     state
         .obs_capture_enabled
         .store(cfg.general.obs_capture_armed, Ordering::Relaxed);
+    state
+        .monitor_interval_ms
+        .store(cfg.general.monitor_interval_ms, Ordering::Relaxed);
 }
 
 fn sanitize_widget_position(position: &mut OverlayWidgetPosition) {
@@ -3899,7 +4038,10 @@ fn suspend_game_overlay_controls_for_focus_loss_inner(
         false,
     )
     .map_err(|e| e.to_string())?;
-    set_game_overlay_debug(app, "controls suspended until Lethal Company is focused again");
+    set_game_overlay_debug(
+        app,
+        "controls suspended until Lethal Company is focused again",
+    );
     Ok(true)
 }
 
@@ -3944,6 +4086,7 @@ fn hide_game_overlay_window(app: &tauri::AppHandle, close_controls: bool) {
             );
         }
         let _ = window.hide();
+        set_game_overlay_frontend_active(app, false);
         if state.window_visible.swap(false, Ordering::Relaxed) {
             if let Ok(mut last_rect) = state.last_window_rect.lock() {
                 *last_rect = None;
@@ -3959,13 +4102,16 @@ fn hide_game_overlay_window(app: &tauri::AppHandle, close_controls: bool) {
 fn close_game_overlay_for_app_exit(app: &tauri::AppHandle) {
     let state = app.state::<GameOverlayState>();
     state.monitor_running.store(false, Ordering::Relaxed);
-    state.stream_overlays_monitor_running.store(false, Ordering::Relaxed);
+    state
+        .stream_overlays_monitor_running
+        .store(false, Ordering::Relaxed);
     state.controls_open.store(false, Ordering::Relaxed);
     state.preview_mode.store(false, Ordering::Relaxed);
     state.obs_capture_enabled.store(false, Ordering::Relaxed);
     state
         .obs_capture_owned_preview
         .store(false, Ordering::Relaxed);
+    state.overlay_frontend_active.store(false, Ordering::Relaxed);
     state.window_visible.store(false, Ordering::Relaxed);
     if let Ok(mut last_rect) = state.last_window_rect.lock() {
         *last_rect = None;
@@ -4070,10 +4216,7 @@ fn start_stream_overlays_monitor(app: &tauri::AppHandle) {
 
             match discord_presence::receive_stream_overlays_data() {
                 Some(payload) => {
-                    let _ = app_handle.emit(
-                        "overlay://stream-overlays-updated",
-                        &payload,
-                    );
+                    let _ = app_handle.emit("overlay://stream-overlays-updated", &payload);
                 }
                 None => {}
             }
@@ -4329,6 +4472,7 @@ fn show_game_overlay_attached_to_rect(
     }
 
     overlay_state.window_visible.store(true, Ordering::Relaxed);
+    set_game_overlay_frontend_active(app, true);
     overlay_state
         .last_foreground_pid
         .store(target_pid, Ordering::Relaxed);
@@ -4444,6 +4588,54 @@ fn restore_game_overlay_controls_after_focus_return(
     }
 }
 
+fn set_game_overlay_frontend_active(app: &tauri::AppHandle, active: bool) {
+    let overlay_state = app.state::<GameOverlayState>();
+    if overlay_state
+        .overlay_frontend_active
+        .swap(active, Ordering::Relaxed)
+        == active
+    {
+        return;
+    }
+    let _ = app.emit_to(GAME_OVERLAY_WINDOW_LABEL, "overlay://active-changed", active);
+    set_game_overlay_debug(app, format!("frontend_active={active}"));
+}
+
+fn deactivate_game_overlay_frontend_after_focus_loss(
+    app: &tauri::AppHandle,
+    overlay_state: &GameOverlayState,
+    close_controls: bool,
+) {
+    if close_controls || overlay_state.controls_open.load(Ordering::Relaxed) {
+        overlay_state.controls_open.store(false, Ordering::Relaxed);
+        if let Some(window) = app.get_webview_window(GAME_OVERLAY_WINDOW_LABEL) {
+            let _ = apply_game_overlay_interaction(&window, false);
+        }
+        let _ = app.emit_to(
+            GAME_OVERLAY_WINDOW_LABEL,
+            "overlay://controls-open-changed",
+            false,
+        );
+    }
+    set_game_overlay_frontend_active(app, false);
+}
+
+#[cfg(target_os = "windows")]
+fn game_overlay_should_ignore_window_management_shortcut() -> bool {
+    fn key_down(vkey: i32) -> bool {
+        unsafe { GetAsyncKeyState(vkey) < 0 }
+    }
+
+    let alt_tab = key_down(VK_ALT_KEY) && key_down(VK_TAB_KEY);
+    let win_arrow = (key_down(VK_LWIN_KEY) || key_down(VK_RWIN_KEY))
+        && (key_down(VK_LEFT_KEY)
+            || key_down(VK_RIGHT_KEY)
+            || key_down(VK_UP_KEY)
+            || key_down(VK_DOWN_KEY));
+
+    alt_tab || win_arrow
+}
+
 #[cfg(target_os = "windows")]
 fn start_game_overlay_monitor(app: &tauri::AppHandle) {
     let overlay_state = app.state::<GameOverlayState>();
@@ -4453,119 +4645,146 @@ fn start_game_overlay_monitor(app: &tauri::AppHandle) {
     set_game_overlay_debug(app, "monitor started");
 
     let app_handle = app.clone();
-    std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_millis(80));
+    std::thread::spawn(move || {
+        loop {
+            let interval_ms = app_handle
+                .state::<GameOverlayState>()
+                .monitor_interval_ms
+                .load(Ordering::Relaxed)
+                .clamp(
+                    GAME_OVERLAY_MONITOR_INTERVAL_MIN_MS,
+                    GAME_OVERLAY_MONITOR_INTERVAL_MAX_MS,
+                );
+            std::thread::sleep(std::time::Duration::from_millis(interval_ms));
 
-        let overlay_state = app_handle.state::<GameOverlayState>();
-        if !overlay_state.monitor_running.load(Ordering::Relaxed) {
-            break;
-        }
-        if !overlay_state.overlay_enabled.load(Ordering::Relaxed) {
-            hide_game_overlay_window(&app_handle, true);
-            continue;
-        }
+            let overlay_state = app_handle.state::<GameOverlayState>();
+            if !overlay_state.monitor_running.load(Ordering::Relaxed) {
+                break;
+            }
+            if game_overlay_should_ignore_window_management_shortcut() {
+                continue;
+            }
+            if !overlay_state.overlay_enabled.load(Ordering::Relaxed) {
+                hide_game_overlay_window(&app_handle, true);
+                continue;
+            }
 
-        let active_pids: HashSet<u32> = app_handle
-            .state::<GameState>()
-            .active
-            .lock()
-            .map(|active_games| {
-                active_games
-                    .iter()
-                    .map(|active| active.child.id())
-                    .collect()
-            })
-            .unwrap_or_default();
+            let active_pids: HashSet<u32> = app_handle
+                .state::<GameState>()
+                .active
+                .lock()
+                .map(|active_games| {
+                    active_games
+                        .iter()
+                        .map(|active| active.child.id())
+                        .collect()
+                })
+                .unwrap_or_default();
 
-        let mut controls_open = overlay_state.controls_open.load(Ordering::Relaxed);
-        if active_pids.is_empty() {
-            overlay_state.last_match.store(false, Ordering::Relaxed);
+            let mut controls_open = overlay_state.controls_open.load(Ordering::Relaxed);
+            if active_pids.is_empty() {
+                overlay_state.last_match.store(false, Ordering::Relaxed);
 
-            if let Some((target_pid, rect)) = foreground_lethal_company_window() {
-                restore_game_overlay_controls_after_focus_return(
+                if let Some((target_pid, rect)) = foreground_lethal_company_window() {
+                    restore_game_overlay_controls_after_focus_return(
+                        &app_handle,
+                        overlay_state.inner(),
+                    );
+                    controls_open = overlay_state.controls_open.load(Ordering::Relaxed);
+                    let source = if overlay_state.preview_mode.load(Ordering::Relaxed) {
+                        "preview"
+                    } else {
+                        "auto"
+                    };
+                    show_game_overlay_attached_to_rect(
+                        &app_handle,
+                        overlay_state.inner(),
+                        controls_open,
+                        target_pid,
+                        rect,
+                        source,
+                    );
+                    maybe_emit_game_overlay_open_hint(
+                        &app_handle,
+                        overlay_state.inner(),
+                        target_pid,
+                        controls_open,
+                    );
+                    continue;
+                }
+
+                if let Ok(mut focus_started) = overlay_state.open_hint_focus_started.lock() {
+                    *focus_started = None;
+                }
+
+                if controls_open && foreground_is_game_overlay_window(&app_handle) {
+                    continue;
+                }
+                if controls_open {
+                    suspend_game_overlay_controls_after_focus_loss(
+                        &app_handle,
+                        overlay_state.inner(),
+                    );
+                }
+
+                if overlay_state.obs_capture_enabled.load(Ordering::Relaxed)
+                    && overlay_state.preview_mode.load(Ordering::Relaxed)
+                {
+                    continue;
+                }
+
+                deactivate_game_overlay_frontend_after_focus_loss(
                     &app_handle,
                     overlay_state.inner(),
+                    true,
                 );
-                controls_open = overlay_state.controls_open.load(Ordering::Relaxed);
-                let source = if overlay_state.preview_mode.load(Ordering::Relaxed) {
-                    "preview"
-                } else {
-                    "auto"
-                };
-                show_game_overlay_attached_to_rect(
+                continue;
+            }
+            let target_window = overlay_target_window(&active_pids);
+            let Some((foreground_pid, rect)) = target_window else {
+                overlay_state.last_match.store(false, Ordering::Relaxed);
+                if let Ok(mut focus_started) = overlay_state.open_hint_focus_started.lock() {
+                    *focus_started = None;
+                }
+                if controls_open && foreground_is_game_overlay_window(&app_handle) {
+                    continue;
+                }
+                if controls_open {
+                    suspend_game_overlay_controls_after_focus_loss(
+                        &app_handle,
+                        overlay_state.inner(),
+                    );
+                }
+                deactivate_game_overlay_frontend_after_focus_loss(
                     &app_handle,
                     overlay_state.inner(),
-                    controls_open,
-                    target_pid,
-                    rect,
-                    source,
-                );
-                maybe_emit_game_overlay_open_hint(
-                    &app_handle,
-                    overlay_state.inner(),
-                    target_pid,
-                    controls_open,
+                    false,
                 );
                 continue;
-            }
+            };
+            overlay_state
+                .last_foreground_pid
+                .store(foreground_pid, Ordering::Relaxed);
 
-            if let Ok(mut focus_started) = overlay_state.open_hint_focus_started.lock() {
-                *focus_started = None;
-            }
+            restore_game_overlay_controls_after_focus_return(&app_handle, overlay_state.inner());
+            controls_open = overlay_state.controls_open.load(Ordering::Relaxed);
+            overlay_state.last_match.store(true, Ordering::Relaxed);
 
-            if controls_open && foreground_is_game_overlay_window(&app_handle) {
-                continue;
-            }
-            if controls_open {
-                suspend_game_overlay_controls_after_focus_loss(&app_handle, overlay_state.inner());
-            }
-
-            if overlay_state.obs_capture_enabled.load(Ordering::Relaxed)
-                && overlay_state.preview_mode.load(Ordering::Relaxed)
-            {
-                continue;
-            }
-
-            hide_game_overlay_window(&app_handle, true);
-            continue;
+            show_game_overlay_attached_to_rect(
+                &app_handle,
+                overlay_state.inner(),
+                controls_open,
+                foreground_pid,
+                rect,
+                "monitor",
+            );
+            maybe_emit_game_overlay_open_hint(
+                &app_handle,
+                overlay_state.inner(),
+                foreground_pid,
+                controls_open,
+            );
         }
-        let target_window = overlay_target_window(&active_pids);
-        let Some((foreground_pid, rect)) = target_window else {
-            overlay_state.last_match.store(false, Ordering::Relaxed);
-            if let Ok(mut focus_started) = overlay_state.open_hint_focus_started.lock() {
-                *focus_started = None;
-            }
-            if controls_open && foreground_is_game_overlay_window(&app_handle) {
-                continue;
-            }
-            if controls_open {
-                suspend_game_overlay_controls_after_focus_loss(&app_handle, overlay_state.inner());
-            }
-            hide_game_overlay_window(&app_handle, false);
-            continue;
-        };
-        overlay_state
-            .last_foreground_pid
-            .store(foreground_pid, Ordering::Relaxed);
-
-        restore_game_overlay_controls_after_focus_return(&app_handle, overlay_state.inner());
-        controls_open = overlay_state.controls_open.load(Ordering::Relaxed);
-        overlay_state.last_match.store(true, Ordering::Relaxed);
-
-        show_game_overlay_attached_to_rect(
-            &app_handle,
-            overlay_state.inner(),
-            controls_open,
-            foreground_pid,
-            rect,
-            "monitor",
-        );
-        maybe_emit_game_overlay_open_hint(
-            &app_handle,
-            overlay_state.inner(),
-            foreground_pid,
-            controls_open,
-        );
     });
 }
 
@@ -4656,10 +4875,7 @@ fn emit_game_overlay_input_shortcut(
         state: event_state.to_string(),
         source: source.to_string(),
     };
-    let _ = app.emit(
-        "overlay://input-shortcut",
-        payload,
-    );
+    let _ = app.emit("overlay://input-shortcut", payload);
 }
 
 fn handle_game_overlay_shortcut(app: &tauri::AppHandle, shortcut_label: &str) {
@@ -4727,7 +4943,9 @@ fn handle_game_overlay_shortcut(app: &tauri::AppHandle, shortcut_label: &str) {
                 .unwrap_or_else(|| "no foreground window".to_string());
             set_game_overlay_error(
                 app,
-                format!("{shortcut_label} pressed but no Lethal Company window was found ({foreground})"),
+                format!(
+                    "{shortcut_label} pressed but no Lethal Company window was found ({foreground})"
+                ),
             );
             return;
         };
@@ -6971,10 +7189,7 @@ fn set_game_overlay_config(
         }
     }
     register_game_overlay_shortcut(&app);
-    let _ = app.emit(
-        "overlay://config-changed",
-        cfg.clone(),
-    );
+    let _ = app.emit("overlay://config-changed", cfg.clone());
     Ok(cfg)
 }
 
@@ -7207,11 +7422,8 @@ fn show_game_overlay_end_summary(
     window.set_always_on_top(true).map_err(|e| e.to_string())?;
     force_game_overlay_topmost(&window)?;
     apply_game_overlay_interaction(&window, false)?;
-    app.emit(
-        "overlay://show-end-summary",
-        payload,
-    )
-    .map_err(|e| e.to_string())?;
+    app.emit("overlay://show-end-summary", payload)
+        .map_err(|e| e.to_string())?;
     Ok(true)
 }
 
@@ -8337,6 +8549,27 @@ fn unlink_config_for_version(
     installer::unlink_config_for_version(&app, version)
 }
 
+fn is_unity_explorer_mod_name(name: &str) -> bool {
+    let normalized: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect();
+    normalized.contains("unityexplorer")
+}
+
+fn config_path_matches_mod(path: &str, dev: &str, name: &str) -> bool {
+    let lp = path.to_lowercase();
+    let d = dev.to_lowercase();
+    let n = name.to_lowercase();
+    if (!d.is_empty() && lp.contains(&d)) || (!n.is_empty() && lp.contains(&n)) {
+        return true;
+    }
+
+    let file_name = lp.rsplit('/').next().unwrap_or(&lp);
+    is_unity_explorer_mod_name(name) && file_name == "com.sinai.unityexplorer.cfg"
+}
+
 #[tauri::command]
 fn list_config_files_for_mod(
     app: tauri::AppHandle,
@@ -8344,14 +8577,9 @@ fn list_config_files_for_mod(
     name: String,
 ) -> Result<Vec<String>, String> {
     let all = list_config_files(app)?;
-    let d = dev.to_lowercase();
-    let n = name.to_lowercase();
     Ok(all
         .into_iter()
-        .filter(|p| {
-            let lp = p.to_lowercase();
-            lp.contains(&d) || lp.contains(&n)
-        })
+        .filter(|p| config_path_matches_mod(p, &dev, &name))
         .collect())
 }
 
@@ -8363,14 +8591,9 @@ fn list_config_files_for_mod_for_version(
     name: String,
 ) -> Result<Vec<String>, String> {
     let all = list_config_files_for_version_impl(&app, version)?;
-    let d = dev.to_lowercase();
-    let n = name.to_lowercase();
     Ok(all
         .into_iter()
-        .filter(|p| {
-            let lp = p.to_lowercase();
-            lp.contains(&d) || lp.contains(&n)
-        })
+        .filter(|p| config_path_matches_mod(p, &dev, &name))
         .collect())
 }
 

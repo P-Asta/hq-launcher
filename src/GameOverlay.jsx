@@ -1354,6 +1354,7 @@ export default function GameOverlay({ captureOnly = false }) {
   const loadedModules = useMemo(() => rawModules.map(evaluateModule).filter(Boolean), [rawModules]);
   const modules = loadedModules.length > 0 ? loadedModules : FALLBACK_MODULES;
   const [config, setConfig] = useState(DEFAULT_CONFIG);
+  const [overlayActive, setOverlayActive] = useState(true);
   const [controlsOpen, setControlsOpen] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [selectedModuleId, setSelectedModuleId] = useState("general");
@@ -1602,6 +1603,7 @@ export default function GameOverlay({ captureOnly = false }) {
     let unlistenStreamOverlaysLog = null;
     let unlistenInput = null;
     let unlistenOpenConfigHint = null;
+    let unlistenActive = null;
     let disposed = false;
 
     function pushTauriInputEvent(payload) {
@@ -1641,6 +1643,18 @@ export default function GameOverlay({ captureOnly = false }) {
         if (captureOnly) return;
         setControlsOpen(open);
         if (!open) setEditMode(false);
+      });
+      unlistenActive = await listen("overlay://active-changed", (event) => {
+        if (disposed) return;
+        const active = !!event.payload;
+        setOverlayActive(active);
+        if (!active) {
+          setControlsOpen(false);
+          setEditMode(false);
+          setOpenConfigHint(null);
+          inputSnapshotRef.current = createInputSnapshot();
+          setInputSequence((current) => current + 1);
+        }
       });
       unlistenConfig = await listen("overlay://config-changed", (event) => {
         if (!disposed) setConfig(normalizeConfig(event.payload, modules));
@@ -1699,6 +1713,7 @@ export default function GameOverlay({ captureOnly = false }) {
       if (typeof unlistenStreamOverlaysLog === "function") unlistenStreamOverlaysLog();
       if (typeof unlistenInput === "function") unlistenInput();
       if (typeof unlistenOpenConfigHint === "function") unlistenOpenConfigHint();
+      if (typeof unlistenActive === "function") unlistenActive();
     };
   }, [captureOnly, modules, controlsOpen]);
 
@@ -1785,15 +1800,6 @@ export default function GameOverlay({ captureOnly = false }) {
   useEffect(() => {
     if (captureOnly) return undefined;
     function handleKeyDown(event) {
-      if (
-        controlsOpen
-        && event.altKey
-        && (event.metaKey || event.getModifierState?.("Meta"))
-        && ["ArrowLeft", "ArrowRight"].includes(event.key)
-      ) {
-        invoke("suspend_game_overlay_controls_for_focus_loss").catch(console.error);
-        return;
-      }
       if (event.key !== "Escape") return;
       if (editMode) {
         setEditMode(false);
@@ -2122,12 +2128,12 @@ export default function GameOverlay({ captureOnly = false }) {
     <div
       className={cn(
         "relative h-screen w-screen overflow-hidden bg-transparent text-white",
-        controlsOpen ? "pointer-events-auto" : "pointer-events-none",
+        overlayActive && controlsOpen ? "pointer-events-auto" : "pointer-events-none",
       )}
     >
       <style>{moduleCss}</style>
 
-      {editMode
+      {overlayActive && editMode
         ? snapGuides.map((guide, index) => (
             <div
               key={`${guide.axis}-${guide.value}-${index}`}
@@ -2140,22 +2146,24 @@ export default function GameOverlay({ captureOnly = false }) {
           ))
         : null}
 
-      {renderedModules.map(({ module, html }) => (
-        <OverlayModuleView
-          key={module.id}
-          module={module}
-          html={html}
-          position={normalizePosition(config.widgets[module.id], module.defaultPosition)}
-          editMode={editMode}
-          onDragStart={startDrag}
-        />
-      ))}
+      {overlayActive
+        ? renderedModules.map(({ module, html }) => (
+            <OverlayModuleView
+              key={module.id}
+              module={module}
+              html={html}
+              position={normalizePosition(config.widgets[module.id], module.defaultPosition)}
+              editMode={editMode}
+              onDragStart={startDrag}
+            />
+          ))
+        : null}
 
-      {editMode ? (
+      {overlayActive && editMode ? (
         <div className="pointer-events-none fixed inset-0 border-2 border-[var(--theme-accent)]/55 bg-[var(--theme-accent)]/5" />
       ) : null}
 
-      {!captureOnly && openConfigHint && !controlsOpen ? (
+      {overlayActive && !captureOnly && openConfigHint && !controlsOpen ? (
         <div className="pointer-events-none fixed left-1/2 top-8 z-[2147483000] -translate-x-1/2">
           <div className="flex max-w-[min(420px,calc(100vw-2rem))] items-center gap-3 rounded border border-white/15 bg-[#121318]/95 px-4 py-3 text-sm text-white shadow-2xl shadow-black/50 backdrop-blur">
             <Keyboard className="h-4 w-4 shrink-0 text-[var(--theme-accent)]" />
@@ -2170,7 +2178,7 @@ export default function GameOverlay({ captureOnly = false }) {
         </div>
       ) : null}
 
-      {controlsOpen ? (
+      {overlayActive && controlsOpen ? (
         <div className="pointer-events-none fixed inset-0 bg-black/35">
           <div
             data-overlay-controls
