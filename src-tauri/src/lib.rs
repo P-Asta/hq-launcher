@@ -3957,6 +3957,21 @@ fn ensure_game_overlay_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWi
     Ok(window)
 }
 
+#[cfg(not(target_os = "windows"))]
+fn request_game_overlay_ui_task<F>(app: &tauri::AppHandle, label: &'static str, task: F)
+where
+    F: FnOnce(&tauri::AppHandle) -> Result<(), String> + Send + 'static,
+{
+    let app_handle = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || {
+        if let Err(e) = task(&app_handle) {
+            set_game_overlay_error(&app_handle, format!("{label} failed: {e}"));
+        }
+    }) {
+        set_game_overlay_error(app, format!("{label} main-thread dispatch failed: {e}"));
+    }
+}
+
 fn apply_game_overlay_capture_style_if_needed(
     app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
@@ -3993,6 +4008,35 @@ fn set_game_overlay_controls_open_inner(
     state: &GameOverlayState,
     open: bool,
 ) -> Result<bool, String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        state
+            .controls_suspended_for_focus_loss
+            .store(false, Ordering::Relaxed);
+        state.controls_open.store(open, Ordering::Relaxed);
+        request_game_overlay_ui_task(app, "set overlay controls", move |app| {
+            let state = app.state::<GameOverlayState>();
+            let window = ensure_game_overlay_window(app)?;
+            window.show().map_err(|e| e.to_string())?;
+            window.set_always_on_top(true).map_err(|e| e.to_string())?;
+            force_game_overlay_topmost(&window)?;
+            apply_game_overlay_interaction(&window, open)?;
+            app.emit_to(
+                GAME_OVERLAY_WINDOW_LABEL,
+                "overlay://controls-open-changed",
+                open,
+            )
+            .map_err(|e| e.to_string())?;
+            state.window_visible.store(true, Ordering::Relaxed);
+            set_game_overlay_frontend_active(app, true);
+            set_game_overlay_debug(app, format!("controls_open={open}"));
+            Ok(())
+        });
+        return Ok(open);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
     state
         .controls_suspended_for_focus_loss
         .store(false, Ordering::Relaxed);
@@ -4019,6 +4063,7 @@ fn set_game_overlay_controls_open_inner(
     });
     set_game_overlay_debug(app, format!("controls_open={open}"));
     Ok(open)
+    }
 }
 
 fn suspend_game_overlay_controls_for_focus_loss_inner(
@@ -4032,6 +4077,29 @@ fn suspend_game_overlay_controls_for_focus_loss_inner(
         .controls_suspended_for_focus_loss
         .store(true, Ordering::Relaxed);
     state.controls_open.store(false, Ordering::Relaxed);
+    #[cfg(not(target_os = "windows"))]
+    {
+        request_game_overlay_ui_task(app, "suspend overlay controls", move |app| {
+            if let Some(window) = app.get_webview_window(GAME_OVERLAY_WINDOW_LABEL) {
+                apply_game_overlay_interaction(&window, false)?;
+            }
+            app.emit_to(
+                GAME_OVERLAY_WINDOW_LABEL,
+                "overlay://controls-open-changed",
+                false,
+            )
+            .map_err(|e| e.to_string())?;
+            set_game_overlay_debug(
+                app,
+                "controls suspended until Lethal Company is focused again",
+            );
+            Ok(())
+        });
+        return Ok(true);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
     let window = ensure_game_overlay_window(app)?;
     apply_game_overlay_interaction(&window, false)?;
     app.emit_to(
@@ -4045,6 +4113,7 @@ fn suspend_game_overlay_controls_for_focus_loss_inner(
         "controls suspended until Lethal Company is focused again",
     );
     Ok(true)
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -4801,17 +4870,23 @@ fn start_game_overlay_monitor(app: &tauri::AppHandle) {
         .overlay_enabled
         .load(Ordering::Relaxed)
     {
-        hide_game_overlay_window(app, true);
+        request_game_overlay_ui_task(app, "hide overlay window", |app| {
+            hide_game_overlay_window(app, true);
+            Ok(())
+        });
         return;
     }
-    match ensure_game_overlay_window(app) {
-        Ok(window) => {
-            let _ = window.set_fullscreen(true);
-            let _ = window.set_always_on_top(true);
-            let _ = window.show();
-        }
-        Err(e) => log::warn!("{e}"),
-    }
+    request_game_overlay_ui_task(app, "show overlay window", |app| {
+        let window = ensure_game_overlay_window(app)?;
+        window.set_fullscreen(true).map_err(|e| e.to_string())?;
+        window.set_always_on_top(true).map_err(|e| e.to_string())?;
+        window.show().map_err(|e| e.to_string())?;
+        app.state::<GameOverlayState>()
+            .window_visible
+            .store(true, Ordering::Relaxed);
+        set_game_overlay_frontend_active(app, true);
+        Ok(())
+    });
 }
 
 fn show_game_overlay(app: &tauri::AppHandle) {
@@ -4820,14 +4895,30 @@ fn show_game_overlay(app: &tauri::AppHandle) {
         .overlay_enabled
         .load(Ordering::Relaxed)
     {
+        #[cfg(not(target_os = "windows"))]
+        request_game_overlay_ui_task(app, "hide overlay window", |app| {
+            hide_game_overlay_window(app, true);
+            Ok(())
+        });
+
+        #[cfg(target_os = "windows")]
         hide_game_overlay_window(app, true);
         return;
     }
+    #[cfg(not(target_os = "windows"))]
+    {
+        start_game_overlay_monitor(app);
+        return;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
     if let Err(e) = ensure_game_overlay_window(app) {
         log::warn!("{e}");
         return;
     }
     start_game_overlay_monitor(app);
+    }
 }
 
 fn should_emit_game_overlay_input(app: &tauri::AppHandle) -> bool {
@@ -7235,6 +7326,12 @@ fn open_obs_overlay_window(
     );
     start_game_overlay_monitor(&app);
     let app_handle = app.clone();
+    #[cfg(not(target_os = "windows"))]
+    request_game_overlay_ui_task(&app_handle, "open OBS overlay window", move |app| {
+        open_obs_overlay_window_inner(app)
+    });
+
+    #[cfg(target_os = "windows")]
     tauri::async_runtime::spawn(async move {
         if let Err(e) = open_obs_overlay_window_inner(&app_handle) {
             set_game_overlay_error(
@@ -7440,6 +7537,27 @@ fn show_game_overlay_end_summary(
                 .end_summary_duration_ms,
         );
     }
+    #[cfg(not(target_os = "windows"))]
+    {
+        request_game_overlay_ui_task(&app, "show overlay end summary", move |app| {
+            let window = ensure_game_overlay_window(app)?;
+            window.show().map_err(|e| e.to_string())?;
+            window.set_always_on_top(true).map_err(|e| e.to_string())?;
+            force_game_overlay_topmost(&window)?;
+            apply_game_overlay_interaction(&window, false)?;
+            app.state::<GameOverlayState>()
+                .window_visible
+                .store(true, Ordering::Relaxed);
+            set_game_overlay_frontend_active(app, true);
+            app.emit("overlay://show-end-summary", payload)
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        });
+        return Ok(true);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
     let window = ensure_game_overlay_window(&app)?;
     window.show().map_err(|e| e.to_string())?;
     window.set_always_on_top(true).map_err(|e| e.to_string())?;
@@ -7448,6 +7566,7 @@ fn show_game_overlay_end_summary(
     app.emit("overlay://show-end-summary", payload)
         .map_err(|e| e.to_string())?;
     Ok(true)
+    }
 }
 
 #[tauri::command]
