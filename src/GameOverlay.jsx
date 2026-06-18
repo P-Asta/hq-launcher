@@ -1063,13 +1063,37 @@ function ResetButton({ onClick }) {
 
 function ImageSettingInput({ value, onChange, onReset }) {
   const fileInputRef = useRef(null);
+  const fileDialogActiveRef = useRef(false);
   const hasImage = typeof value === "string" && value.startsWith("data:image/");
 
+  useEffect(() => {
+    return () => {
+      if (fileDialogActiveRef.current) {
+        invoke("set_game_overlay_file_dialog_active", { active: false }).catch(console.error);
+      }
+    };
+  }, []);
+
+  function setFileDialogActive(active) {
+    fileDialogActiveRef.current = active;
+    invoke("set_game_overlay_file_dialog_active", { active }).catch(console.error);
+  }
+
   function pickImage() {
+    setFileDialogActive(true);
+    const clearAfterFocus = () => {
+      window.setTimeout(() => {
+        if (fileDialogActiveRef.current) {
+          setFileDialogActive(false);
+        }
+      }, 250);
+    };
+    window.addEventListener("focus", clearAfterFocus, { once: true });
     fileInputRef.current?.click();
   }
 
   function handleFileChange(event) {
+    setFileDialogActive(false);
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file || !file.type.startsWith("image/")) return;
