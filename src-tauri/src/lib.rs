@@ -3987,6 +3987,7 @@ fn apply_game_overlay_capture_style_if_needed(
     }
 }
 
+#[cfg(target_os = "windows")]
 fn apply_game_overlay_interaction(
     window: &tauri::WebviewWindow,
     controls_open: bool,
@@ -3994,6 +3995,20 @@ fn apply_game_overlay_interaction(
     window
         .set_ignore_cursor_events(!controls_open)
         .map_err(|e| e.to_string())?;
+    window
+        .set_focusable(controls_open)
+        .map_err(|e| e.to_string())?;
+    if controls_open {
+        let _ = window.set_focus();
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn apply_game_overlay_interaction(
+    window: &tauri::WebviewWindow,
+    controls_open: bool,
+) -> Result<(), String> {
     window
         .set_focusable(controls_open)
         .map_err(|e| e.to_string())?;
@@ -4170,6 +4185,17 @@ fn hide_game_overlay_window(app: &tauri::AppHandle, close_controls: bool) {
     }
 }
 
+fn request_hide_game_overlay_window(app: &tauri::AppHandle, close_controls: bool) {
+    #[cfg(not(target_os = "windows"))]
+    request_game_overlay_ui_task(app, "hide overlay window", move |app| {
+        hide_game_overlay_window(app, close_controls);
+        Ok(())
+    });
+
+    #[cfg(target_os = "windows")]
+    hide_game_overlay_window(app, close_controls);
+}
+
 fn close_game_overlay_for_app_exit(app: &tauri::AppHandle) {
     let state = app.state::<GameOverlayState>();
     state.monitor_running.store(false, Ordering::Relaxed);
@@ -4214,7 +4240,7 @@ fn hide_game_overlay(app: &tauri::AppHandle) {
         );
         return;
     }
-    hide_game_overlay_window(app, true);
+    request_hide_game_overlay_window(app, true);
 }
 
 fn set_game_overlay_debug(app: &tauri::AppHandle, message: impl Into<String>) {
@@ -4870,10 +4896,7 @@ fn start_game_overlay_monitor(app: &tauri::AppHandle) {
         .overlay_enabled
         .load(Ordering::Relaxed)
     {
-        request_game_overlay_ui_task(app, "hide overlay window", |app| {
-            hide_game_overlay_window(app, true);
-            Ok(())
-        });
+        request_hide_game_overlay_window(app, true);
         return;
     }
     request_game_overlay_ui_task(app, "show overlay window", |app| {
@@ -4895,14 +4918,7 @@ fn show_game_overlay(app: &tauri::AppHandle) {
         .overlay_enabled
         .load(Ordering::Relaxed)
     {
-        #[cfg(not(target_os = "windows"))]
-        request_game_overlay_ui_task(app, "hide overlay window", |app| {
-            hide_game_overlay_window(app, true);
-            Ok(())
-        });
-
-        #[cfg(target_os = "windows")]
-        hide_game_overlay_window(app, true);
+        request_hide_game_overlay_window(app, true);
         return;
     }
     #[cfg(not(target_os = "windows"))]
@@ -6640,6 +6656,30 @@ fn linux_overlay_preload_value(steam_path: &std::path::Path) -> Option<String> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn sanitize_linux_host_process_env(command: &mut std::process::Command) {
+    for key in [
+        "APPDIR",
+        "APPIMAGE",
+        "ARGV0",
+        "GIO_MODULE_DIR",
+        "GTK_PATH",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "PYTHONPLATLIBDIR",
+        "PYTHONSAFEPATH",
+        "QT_PLUGIN_PATH",
+        "QT_QPA_PLATFORM_PLUGIN_PATH",
+    ] {
+        command.env_remove(key);
+    }
+    if let Some(original_ld_library_path) = std::env::var_os("APPIMAGE_ORIGINAL_LD_LIBRARY_PATH") {
+        command.env("LD_LIBRARY_PATH", original_ld_library_path);
+    } else {
+        command.env_remove("LD_LIBRARY_PATH");
+    }
+}
+
 fn resolve_game_launch_paths(
     app: &tauri::AppHandle,
     version: u32,
@@ -7081,6 +7121,7 @@ fn spawn_game_process(
             build_wrapped_launch_command(launch_command_template, &default_program, &default_args)?;
         let mut cmd = std::process::Command::new(program);
         cmd.args(args);
+        sanitize_linux_host_process_env(&mut cmd);
         cmd.env("STEAM_COMPAT_DATA_PATH", &compat_pre_path);
         cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_path);
         cmd.env("WINEDLLOVERRIDES", "winhttp=n,b");
@@ -7101,8 +7142,6 @@ fn spawn_game_process(
                 );
             }
         }
-        cmd.env_remove("PYTHONPATH");
-        cmd.env_remove("PYTHONHOME");
         cmd
     };
 
@@ -7286,7 +7325,7 @@ fn set_game_overlay_config(
         app.state::<GameOverlayState>()
             .preview_mode
             .store(false, Ordering::Relaxed);
-        hide_game_overlay_window(&app, true);
+        request_hide_game_overlay_window(&app, true);
     } else {
         start_game_overlay_monitor(&app);
         if cfg.general.use_stream_overlays_api {
@@ -7304,7 +7343,7 @@ fn open_obs_overlay_window(
     state: State<'_, GameOverlayState>,
 ) -> Result<GameOverlayConfig, String> {
     if !state.overlay_enabled.load(Ordering::Relaxed) {
-        hide_game_overlay_window(&app, true);
+        request_hide_game_overlay_window(&app, true);
         set_game_overlay_debug(
             &app,
             "OBS selector ignored because HQLC overlay is disabled",
@@ -7366,9 +7405,7 @@ fn close_obs_overlay_window_if_owned(app: tauri::AppHandle) -> Result<bool, Stri
     if let Ok(mut last_rect) = state.last_window_rect.lock() {
         *last_rect = None;
     }
-    if let Some(window) = app.get_webview_window(GAME_OVERLAY_WINDOW_LABEL) {
-        window.hide().map_err(|e| e.to_string())?;
-    }
+    request_hide_game_overlay_window(&app, true);
     let _ = app.emit_to(
         GAME_OVERLAY_WINDOW_LABEL,
         "overlay://controls-open-changed",
@@ -7415,9 +7452,7 @@ fn close_obs_overlay_window(app: tauri::AppHandle) -> Result<bool, String> {
     if let Ok(mut last_rect) = state.last_window_rect.lock() {
         *last_rect = None;
     }
-    if let Some(window) = app.get_webview_window(GAME_OVERLAY_WINDOW_LABEL) {
-        window.hide().map_err(|e| e.to_string())?;
-    }
+    request_hide_game_overlay_window(&app, true);
     let _ = app.emit_to(
         GAME_OVERLAY_WINDOW_LABEL,
         "overlay://controls-open-changed",
@@ -9218,6 +9253,7 @@ pub fn run() {
                 }
             }
             register_game_overlay_shortcut(app.handle());
+            #[cfg(target_os = "windows")]
             start_game_overlay_monitor(app.handle());
 
             // Startup housekeeping (best-effort, won't block UI):
