@@ -505,6 +505,25 @@ function snapOverlayPosition(rawPosition, id, _widgets, enabled = true, metrics 
 
   let bestX = null;
   let bestY = null;
+  const considerX = (candidate) => {
+    if (candidate.distance <= thresholdPx && (!bestX || candidate.distance < bestX.distance)) {
+      bestX = candidate;
+    }
+  };
+  const considerY = (candidate) => {
+    if (candidate.distance <= thresholdPx && (!bestY || candidate.distance < bestY.distance)) {
+      bestY = candidate;
+    }
+  };
+
+  [
+    { x: 0, guide: 0, distance: Math.abs(current.left) },
+    { x: viewportWidth - current.width, guide: viewportWidth, distance: Math.abs(current.right - viewportWidth) },
+  ].forEach(considerX);
+  [
+    { y: 0, guide: 0, distance: Math.abs(current.top) },
+    { y: viewportHeight - current.height, guide: viewportHeight, distance: Math.abs(current.bottom - viewportHeight) },
+  ].forEach(considerY);
 
   for (const other of otherRects) {
     if (!other || other.id === id) continue;
@@ -514,26 +533,22 @@ function snapOverlayPosition(rawPosition, id, _widgets, enabled = true, metrics 
 
     if (verticalOverlap) {
       const candidates = [
+        { x: other.left, guide: other.left, distance: Math.abs(current.left - other.left) },
         { x: other.left - current.width, guide: other.left, distance: Math.abs(current.right - other.left) },
+        { x: other.right - current.width, guide: other.right, distance: Math.abs(current.right - other.right) },
         { x: other.right, guide: other.right, distance: Math.abs(current.left - other.right) },
       ];
-      for (const candidate of candidates) {
-        if (candidate.distance <= thresholdPx && (!bestX || candidate.distance < bestX.distance)) {
-          bestX = candidate;
-        }
-      }
+      candidates.forEach(considerX);
     }
 
     if (horizontalOverlap) {
       const candidates = [
+        { y: other.top, guide: other.top, distance: Math.abs(current.top - other.top) },
         { y: other.top - current.height, guide: other.top, distance: Math.abs(current.bottom - other.top) },
+        { y: other.bottom - current.height, guide: other.bottom, distance: Math.abs(current.bottom - other.bottom) },
         { y: other.bottom, guide: other.bottom, distance: Math.abs(current.top - other.bottom) },
       ];
-      for (const candidate of candidates) {
-        if (candidate.distance <= thresholdPx && (!bestY || candidate.distance < bestY.distance)) {
-          bestY = candidate;
-        }
-      }
+      candidates.forEach(considerY);
     }
   }
 

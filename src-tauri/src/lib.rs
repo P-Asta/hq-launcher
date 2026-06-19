@@ -3923,7 +3923,7 @@ fn ensure_game_overlay_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWi
     }
 
     let page_load_app = app.clone();
-    let window = tauri::WebviewWindowBuilder::new(
+    let mut builder = tauri::WebviewWindowBuilder::new(
         app,
         GAME_OVERLAY_WINDOW_LABEL,
         tauri::WebviewUrl::App("index.html#window=game-overlay".into()),
@@ -3942,12 +3942,29 @@ fn ensure_game_overlay_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWi
     .decorations(false)
     .transparent(true)
     .shadow(false)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .fullscreen(true)
     .focused(false)
-    .focusable(false)
-    .visible(false)
+    .visible(false);
+
+    #[cfg(target_os = "windows")]
+    {
+        builder = builder
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .fullscreen(true)
+            .focusable(false);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        builder = builder
+            .always_on_top(false)
+            .skip_taskbar(false)
+            .fullscreen(false)
+            .focusable(true)
+            .inner_size(960.0, 540.0);
+    }
+
+    let window = builder
     .build()
     .map_err(|e| format!("failed to create game overlay window: {e}"))?;
 
@@ -4009,9 +4026,6 @@ fn apply_game_overlay_interaction(
     window: &tauri::WebviewWindow,
     controls_open: bool,
 ) -> Result<(), String> {
-    window
-        .set_focusable(controls_open)
-        .map_err(|e| e.to_string())?;
     if controls_open {
         let _ = window.set_focus();
     }
@@ -4033,8 +4047,6 @@ fn set_game_overlay_controls_open_inner(
             let state = app.state::<GameOverlayState>();
             let window = ensure_game_overlay_window(app)?;
             window.show().map_err(|e| e.to_string())?;
-            window.set_always_on_top(true).map_err(|e| e.to_string())?;
-            force_game_overlay_topmost(&window)?;
             apply_game_overlay_interaction(&window, open)?;
             app.emit_to(
                 GAME_OVERLAY_WINDOW_LABEL,
@@ -4901,8 +4913,6 @@ fn start_game_overlay_monitor(app: &tauri::AppHandle) {
     }
     request_game_overlay_ui_task(app, "show overlay window", |app| {
         let window = ensure_game_overlay_window(app)?;
-        window.set_fullscreen(true).map_err(|e| e.to_string())?;
-        window.set_always_on_top(true).map_err(|e| e.to_string())?;
         window.show().map_err(|e| e.to_string())?;
         app.state::<GameOverlayState>()
             .window_visible
@@ -7577,8 +7587,6 @@ fn show_game_overlay_end_summary(
         request_game_overlay_ui_task(&app, "show overlay end summary", move |app| {
             let window = ensure_game_overlay_window(app)?;
             window.show().map_err(|e| e.to_string())?;
-            window.set_always_on_top(true).map_err(|e| e.to_string())?;
-            force_game_overlay_topmost(&window)?;
             apply_game_overlay_interaction(&window, false)?;
             app.state::<GameOverlayState>()
                 .window_visible
