@@ -807,6 +807,23 @@ function getInitialRunMode() {
   return RUN_MODE_VALUES.includes(savedRunMode) ? savedRunMode : "hq";
 }
 
+function saveSelectedRunMode(mode) {
+  if (typeof window === "undefined") return;
+  if (RUN_MODE_VALUES.includes(mode)) {
+    localStorage.setItem("selectedRunMode", mode);
+    invoke("set_selected_run_mode", { runMode: mode }).catch(() => {});
+  }
+}
+
+function saveSelectedVersion(version) {
+  if (typeof window === "undefined") return;
+  const numeric = Number(version);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    localStorage.setItem("selectedVersion", String(numeric));
+    invoke("set_selected_version", { version: numeric }).catch(() => {});
+  }
+}
+
 function normalizeLaunchOptionsEntries(entries) {
   if (!Array.isArray(entries)) return [];
   return entries
@@ -1492,6 +1509,8 @@ export default function LauncherPage({
   const [runningGames, setRunningGames] = useState([]);
   const [runningGameStopBusyId, setRunningGameStopBusyId] = useState(null);
   const [runMode, setRunMode] = useState(getInitialRunMode); // hq | practice | brutal | brutal_smhq | brutal_practice | wesley | wesley_practice | smhq
+  const [didLoadPersistedRunMode, setDidLoadPersistedRunMode] = useState(false);
+  const [hasPersistedRunMode, setHasPersistedRunMode] = useState(false);
   const [launchBusy, setLaunchBusy] = useState(false);
   const [modPanelWidthPercent, setModPanelWidthPercent] = useState(() => {
     if (typeof window === "undefined") return DEFAULT_MOD_PANEL_WIDTH;
@@ -1532,6 +1551,7 @@ export default function LauncherPage({
   const presetTaskRef = useRef(null);
   const runModeRef = useRef(runMode);
   const selectedVersionRef = useRef(selectedVersion);
+  const userSelectedRunModeRef = useRef(false);
   const modContextMenuRef = useRef(null);
   const versionContextMenuRef = useRef(null);
   const launchContextMenuRef = useRef(null);
@@ -1566,6 +1586,27 @@ export default function LauncherPage({
       setLaunchBusy(false);
     }
   }, [gameStatus.running]);
+
+  useEffect(() => {
+    let cancelled = false;
+    invoke("get_selected_run_mode")
+      .then((savedRunMode) => {
+        if (cancelled) return;
+        if (!userSelectedRunModeRef.current && RUN_MODE_VALUES.includes(savedRunMode)) {
+          setHasPersistedRunMode(true);
+          setRunMode(savedRunMode);
+          localStorage.setItem("selectedRunMode", savedRunMode);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setDidLoadPersistedRunMode(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (lcstatsSettings.layout !== "Custom Layout") {
@@ -2340,8 +2381,13 @@ export default function LauncherPage({
     let cancelled = false;
 
     (async () => {
+      const persistedVersion = await invoke("get_selected_version").catch(() => null);
       const saved = localStorage.getItem("selectedVersion");
-      const savedNum = saved == null ? null : Number(saved);
+      const savedNum = Number.isFinite(Number(persistedVersion))
+        ? Number(persistedVersion)
+        : saved == null
+        ? null
+        : Number(saved);
 
       const manifestPromise = invoke("get_manifest");
       const practiceModsPromise = invoke("get_practice_mod_list");
@@ -5569,6 +5615,7 @@ export default function LauncherPage({
           if (prev && prev.key === key) {
             // Revert run category + version together (whichever changed).
             setRunMode(prev.prevRunMode);
+            saveSelectedRunMode(prev.prevRunMode);
             setSelectedVersion(prev.prevVersion);
             if (isInstalled(prev.prevVersion)) {
               invoke("apply_disabled_mods", { version: prev.prevVersion }).catch(() => {});
@@ -5809,20 +5856,23 @@ export default function LauncherPage({
     selectedVersion,
   ]);
 
-  // Save selectedVersion to localStorage
+  // Save selectedVersion to localStorage and app config.
   useEffect(() => {
-    if (selectedVersion != null) {
-      localStorage.setItem("selectedVersion", String(selectedVersion));
-    }
+    saveSelectedVersion(selectedVersion);
   }, [selectedVersion]);
 
   useEffect(() => {
-    if (runMode) {
-      localStorage.setItem("selectedRunMode", runMode);
+    if (
+      didFinishBootstrap &&
+      didLoadPersistedRunMode &&
+      (hasPersistedRunMode || userSelectedRunModeRef.current)
+    ) {
+      saveSelectedRunMode(runMode);
     }
-  }, [runMode]);
+  }, [didFinishBootstrap, didLoadPersistedRunMode, hasPersistedRunMode, runMode]);
 
   async function handleRunModeSelect(nextRunMode) {
+    userSelectedRunModeRef.current = true;
     const prevRun = runMode;
     const prevVer = selectedVersion;
     const range = getPresetVersionRange(manifest, nextRunMode);
@@ -5833,6 +5883,7 @@ export default function LauncherPage({
         shouldResetFreeMoonsOnRunModeChange(nextRunMode));
 
     setRunMode(nextRunMode);
+    saveSelectedRunMode(nextRunMode);
     if (shouldResetFreeMoonsMod) {
       await resetFreeMoonsMod(effectiveV);
     }

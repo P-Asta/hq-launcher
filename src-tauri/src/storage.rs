@@ -6,6 +6,8 @@ use tauri::Manager;
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct StorageConfig {
     game_storage_dir: Option<PathBuf>,
+    selected_run_mode: Option<String>,
+    selected_version: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -109,6 +111,7 @@ pub fn set_game_storage_dir(
     app: &tauri::AppHandle,
     custom_dir: Option<PathBuf>,
 ) -> Result<GameStorageSettings, String> {
+    let mut config = read_config(app)?;
     let normalized_custom = match custom_dir {
         Some(path) => {
             let path = normalize_existing_or_creatable_dir(path)?;
@@ -116,13 +119,31 @@ pub fn set_game_storage_dir(
         }
         None => None,
     };
-    write_config(
-        app,
-        &StorageConfig {
-            game_storage_dir: normalized_custom,
-        },
-    )?;
+    config.game_storage_dir = normalized_custom;
+    write_config(app, &config)?;
     game_storage_settings(app)
+}
+
+pub fn selected_run_mode(app: &tauri::AppHandle) -> Result<Option<String>, String> {
+    Ok(read_config(app)?.selected_run_mode)
+}
+
+pub fn set_selected_run_mode(app: &tauri::AppHandle, run_mode: String) -> Result<String, String> {
+    let mut config = read_config(app)?;
+    config.selected_run_mode = Some(run_mode.clone());
+    write_config(app, &config)?;
+    Ok(run_mode)
+}
+
+pub fn selected_version(app: &tauri::AppHandle) -> Result<Option<u32>, String> {
+    Ok(read_config(app)?.selected_version)
+}
+
+pub fn set_selected_version(app: &tauri::AppHandle, version: u32) -> Result<u32, String> {
+    let mut config = read_config(app)?;
+    config.selected_version = Some(version);
+    write_config(app, &config)?;
+    Ok(version)
 }
 
 fn dir_has_any_entries(path: &Path) -> bool {

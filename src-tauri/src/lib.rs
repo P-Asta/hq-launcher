@@ -3965,8 +3965,8 @@ fn ensure_game_overlay_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWi
     }
 
     let window = builder
-    .build()
-    .map_err(|e| format!("failed to create game overlay window: {e}"))?;
+        .build()
+        .map_err(|e| format!("failed to create game overlay window: {e}"))?;
 
     apply_game_overlay_capture_style_if_needed(app, &window)?;
     apply_game_overlay_interaction(&window, false)?;
@@ -4064,32 +4064,32 @@ fn set_game_overlay_controls_open_inner(
 
     #[cfg(target_os = "windows")]
     {
-    state
-        .controls_suspended_for_focus_loss
-        .store(false, Ordering::Relaxed);
-    state.controls_open.store(open, Ordering::Relaxed);
-    let window = ensure_game_overlay_window(app)?;
-    window.show().map_err(|e| e.to_string())?;
-    window.set_always_on_top(true).map_err(|e| e.to_string())?;
-    force_game_overlay_topmost(&window)?;
-    apply_game_overlay_interaction(&window, open)?;
-    app.emit_to(
-        GAME_OVERLAY_WINDOW_LABEL,
-        "overlay://controls-open-changed",
-        open,
-    )
-    .map_err(|e| e.to_string())?;
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        let _ = app_handle.emit_to(
+        state
+            .controls_suspended_for_focus_loss
+            .store(false, Ordering::Relaxed);
+        state.controls_open.store(open, Ordering::Relaxed);
+        let window = ensure_game_overlay_window(app)?;
+        window.show().map_err(|e| e.to_string())?;
+        window.set_always_on_top(true).map_err(|e| e.to_string())?;
+        force_game_overlay_topmost(&window)?;
+        apply_game_overlay_interaction(&window, open)?;
+        app.emit_to(
             GAME_OVERLAY_WINDOW_LABEL,
             "overlay://controls-open-changed",
             open,
-        );
-    });
-    set_game_overlay_debug(app, format!("controls_open={open}"));
-    Ok(open)
+        )
+        .map_err(|e| e.to_string())?;
+        let app_handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let _ = app_handle.emit_to(
+                GAME_OVERLAY_WINDOW_LABEL,
+                "overlay://controls-open-changed",
+                open,
+            );
+        });
+        set_game_overlay_debug(app, format!("controls_open={open}"));
+        Ok(open)
     }
 }
 
@@ -4127,19 +4127,19 @@ fn suspend_game_overlay_controls_for_focus_loss_inner(
 
     #[cfg(target_os = "windows")]
     {
-    let window = ensure_game_overlay_window(app)?;
-    apply_game_overlay_interaction(&window, false)?;
-    app.emit_to(
-        GAME_OVERLAY_WINDOW_LABEL,
-        "overlay://controls-open-changed",
-        false,
-    )
-    .map_err(|e| e.to_string())?;
-    set_game_overlay_debug(
-        app,
-        "controls suspended until Lethal Company is focused again",
-    );
-    Ok(true)
+        let window = ensure_game_overlay_window(app)?;
+        apply_game_overlay_interaction(&window, false)?;
+        app.emit_to(
+            GAME_OVERLAY_WINDOW_LABEL,
+            "overlay://controls-open-changed",
+            false,
+        )
+        .map_err(|e| e.to_string())?;
+        set_game_overlay_debug(
+            app,
+            "controls suspended until Lethal Company is focused again",
+        );
+        Ok(true)
     }
 }
 
@@ -4939,11 +4939,11 @@ fn show_game_overlay(app: &tauri::AppHandle) {
 
     #[cfg(target_os = "windows")]
     {
-    if let Err(e) = ensure_game_overlay_window(app) {
-        log::warn!("{e}");
-        return;
-    }
-    start_game_overlay_monitor(app);
+        if let Err(e) = ensure_game_overlay_window(app) {
+            log::warn!("{e}");
+            return;
+        }
+        start_game_overlay_monitor(app);
     }
 }
 
@@ -5862,6 +5862,50 @@ fn get_game_storage_settings(
     app: tauri::AppHandle,
 ) -> Result<storage::GameStorageSettings, String> {
     storage::game_storage_settings(&app)
+}
+
+#[tauri::command]
+fn get_selected_run_mode(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    storage::selected_run_mode(&app)
+}
+
+#[tauri::command]
+fn set_selected_run_mode(app: tauri::AppHandle, run_mode: String) -> Result<String, String> {
+    let normalized = run_mode.trim().to_lowercase();
+    if !matches!(
+        normalized.as_str(),
+        "hq" | "smhq"
+            | "c_moons"
+            | "c_moons_smhq"
+            | "c_moons_eclipsed"
+            | "c_moons_practice"
+            | "practice"
+            | "eclipsed_hq"
+            | "brutal"
+            | "brutal_smhq"
+            | "brutal_eclipsed"
+            | "brutal_practice"
+            | "wesley"
+            | "wesley_smhq"
+            | "wesley_eclipsed"
+            | "wesley_practice"
+    ) {
+        return Err(format!("invalid run mode: {run_mode}"));
+    }
+    storage::set_selected_run_mode(&app, normalized)
+}
+
+#[tauri::command]
+fn get_selected_version(app: tauri::AppHandle) -> Result<Option<u32>, String> {
+    storage::selected_version(&app)
+}
+
+#[tauri::command]
+fn set_selected_version(app: tauri::AppHandle, version: u32) -> Result<u32, String> {
+    if version == 0 {
+        return Err("invalid selected version: 0".to_string());
+    }
+    storage::set_selected_version(&app, version)
 }
 
 fn same_storage_path(a: &std::path::Path, b: &std::path::Path) -> bool {
@@ -7601,14 +7645,14 @@ fn show_game_overlay_end_summary(
 
     #[cfg(target_os = "windows")]
     {
-    let window = ensure_game_overlay_window(&app)?;
-    window.show().map_err(|e| e.to_string())?;
-    window.set_always_on_top(true).map_err(|e| e.to_string())?;
-    force_game_overlay_topmost(&window)?;
-    apply_game_overlay_interaction(&window, false)?;
-    app.emit("overlay://show-end-summary", payload)
-        .map_err(|e| e.to_string())?;
-    Ok(true)
+        let window = ensure_game_overlay_window(&app)?;
+        window.show().map_err(|e| e.to_string())?;
+        window.set_always_on_top(true).map_err(|e| e.to_string())?;
+        force_game_overlay_topmost(&window)?;
+        apply_game_overlay_interaction(&window, false)?;
+        app.emit("overlay://show-end-summary", payload)
+            .map_err(|e| e.to_string())?;
+        Ok(true)
     }
 }
 
@@ -9401,6 +9445,10 @@ pub fn run() {
             get_release_channel,
             set_release_channel,
             get_game_storage_settings,
+            get_selected_run_mode,
+            set_selected_run_mode,
+            get_selected_version,
+            set_selected_version,
             pick_game_storage_dir,
             set_game_storage_dir,
             installer::install_proton_ge,

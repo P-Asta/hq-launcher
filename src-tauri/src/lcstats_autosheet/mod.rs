@@ -5,6 +5,9 @@ mod stats;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::VecDeque;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -13,6 +16,8 @@ use tauri::Emitter;
 const LCSTATS_SSE_URL: &str = "http://localhost:2145/";
 const LCSTATS_RETRY_DELAY: Duration = Duration::from_secs(3);
 const LCSTATS_WRITE_TIMEOUT: Duration = Duration::from_secs(45);
+const RECENT_WRITTEN_PAYLOAD_LIMIT: usize = 64;
+const LCSTATS_WRITE_TIMEOUT_ERROR: &str = "Timed out writing LCStatsTracker stats to Google Sheets";
 
 #[derive(Clone, Default)]
 pub struct LcStatsAutosheetState {
@@ -21,6 +26,7 @@ pub struct LcStatsAutosheetState {
     next_request_id: Arc<AtomicU64>,
     pending_stats: Arc<Mutex<Vec<PendingStatsEntry>>>,
     latest_payload: Arc<Mutex<Option<LatestLcStatsPayload>>>,
+    recent_written_payloads: Arc<Mutex<VecDeque<u64>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,7 +210,7 @@ async fn run_listener(app: tauri::AppHandle, state: LcStatsAutosheetState) -> Re
             summary.moon_name()
         );
         remember_latest_payload(&state, payload.clone(), stats.clone())?;
-        emit_overlay_lcstats_update(&app, payload, stats.clone());
+        emit_overlay_lcstats_update(&app, payload.clone(), stats.clone());
         let settings = match crate::google_oauth::get_settings(app.clone()) {
             Ok(settings) => settings,
             Err(e) => {
@@ -235,6 +241,13 @@ async fn run_listener(app: tauri::AppHandle, state: LcStatsAutosheetState) -> Re
             log::debug!("Failed to flush pending LCStatsTracker AutoSheet writes: {e}");
         }
 
+        if !mark_payload_for_write(&state, &payload)? {
+            log::info!(
+                "LCStatsTracker AutoSheet request {request_id} input ignored: duplicate payload"
+            );
+            continue;
+        }
+
         match write_stats_with_timeout(app.clone(), &client, &settings, &stats).await {
             Ok(()) => {
                 log::info!(
@@ -244,17 +257,25 @@ async fn run_listener(app: tauri::AppHandle, state: LcStatsAutosheetState) -> Re
                 );
             }
             Err(e) => {
-                log::error!(
-                    "LCStatsTracker AutoSheet request {request_id} input error: failed to write Google Sheets; queued for retry: {e}"
-                );
-                if let Err(queue_error) =
-                    enqueue_pending_stats(&state, request_id, settings, stats, e.clone())
-                {
+                if is_write_timeout_error(&e) {
                     log::error!(
-                        "LCStatsTracker AutoSheet request {request_id} input error: failed to keep in memory retry queue: {queue_error}"
+                        "LCStatsTracker AutoSheet request {request_id} input error: failed to confirm Google Sheets write before timeout; not queued for retry to avoid duplicate rows: {e}"
                     );
                 } else {
-                    log::info!("LCStatsTracker AutoSheet request {request_id} queued for retry");
+                    log::error!(
+                        "LCStatsTracker AutoSheet request {request_id} input error: failed to write Google Sheets; queued for retry: {e}"
+                    );
+                    if let Err(queue_error) =
+                        enqueue_pending_stats(&state, request_id, settings, stats, e.clone())
+                    {
+                        log::error!(
+                            "LCStatsTracker AutoSheet request {request_id} input error: failed to keep in memory retry queue: {queue_error}"
+                        );
+                    } else {
+                        log::info!(
+                            "LCStatsTracker AutoSheet request {request_id} queued for retry"
+                        );
+                    }
                 }
             }
         }
@@ -302,8 +323,37 @@ async fn write_stats_with_timeout(
     .await
     {
         Ok(result) => result,
-        Err(_) => Err("Timed out writing LCStatsTracker stats to Google Sheets".to_string()),
+        Err(_) => Err(LCSTATS_WRITE_TIMEOUT_ERROR.to_string()),
     }
+}
+
+fn mark_payload_for_write(
+    state: &LcStatsAutosheetState,
+    raw_payload: &str,
+) -> Result<bool, String> {
+    let fingerprint = payload_fingerprint(raw_payload);
+    let mut recent = state
+        .recent_written_payloads
+        .lock()
+        .map_err(|e| format!("LCStatsTracker duplicate payload lock failed: {e}"))?;
+    if recent.contains(&fingerprint) {
+        return Ok(false);
+    }
+    recent.push_back(fingerprint);
+    while recent.len() > RECENT_WRITTEN_PAYLOAD_LIMIT {
+        recent.pop_front();
+    }
+    Ok(true)
+}
+
+fn payload_fingerprint(raw_payload: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    raw_payload.trim().hash(&mut hasher);
+    hasher.finish()
+}
+
+fn is_write_timeout_error(error: &str) -> bool {
+    error == LCSTATS_WRITE_TIMEOUT_ERROR
 }
 
 async fn flush_pending_stats(
@@ -521,5 +571,23 @@ mod tests {
         let payload = first_sse_payload("  {\"quota\":130}\n");
 
         assert_eq!(payload.as_deref(), Some("{\"quota\":130}"));
+    }
+
+    #[test]
+    fn duplicate_payloads_are_marked_only_once() {
+        let state = LcStatsAutosheetState::default();
+
+        assert_eq!(
+            mark_payload_for_write(&state, " {\"quota\":130}\n").unwrap(),
+            true
+        );
+        assert_eq!(
+            mark_payload_for_write(&state, "{\"quota\":130}").unwrap(),
+            false
+        );
+        assert_eq!(
+            mark_payload_for_write(&state, "{\"quota\":160}").unwrap(),
+            true
+        );
     }
 }
