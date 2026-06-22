@@ -26,7 +26,13 @@ import {
 
 const SHOW_THEME_SETTINGS = true;
 const SHOW_DEV_SETTINGS = import.meta.env.DEV;
+const EVENTS_ENABLED_STORAGE_KEY = "launcherEventsEnabled";
 
+function loadEventsEnabled() {
+    if (typeof window === "undefined") return true;
+    const stored = localStorage.getItem(EVENTS_ENABLED_STORAGE_KEY);
+    return stored == null ? true : stored === "true";
+}
 
 export default function Titlebar({ installedVersions, ...props }) {
     const [isMaximized, setIsMaximized] = useState(false);
@@ -44,6 +50,7 @@ export default function Titlebar({ installedVersions, ...props }) {
     const [themeHue, setThemeHue] = useState(() => loadStoredThemeHue());
     const [themeBrightness, setThemeBrightness] = useState(() => loadStoredThemeBrightness());
     const [themeMode, setThemeMode] = useState(() => loadStoredThemeMode());
+    const [eventsEnabled, setEventsEnabled] = useState(() => loadEventsEnabled());
     const [steamOverlayConfig, setSteamOverlayConfig] = useState({
         enabled: false,
         steam_path: "",
@@ -109,6 +116,14 @@ export default function Titlebar({ installedVersions, ...props }) {
         appWindow.close();
     };
 
+    function setLauncherEventsEnabled(enabled) {
+        const nextEnabled = !!enabled;
+        setEventsEnabled(nextEnabled);
+        localStorage.setItem(EVENTS_ENABLED_STORAGE_KEY, nextEnabled ? "true" : "false");
+        invoke('set_events_enabled', { enabled: nextEnabled }).catch(() => {});
+        emit('ui://events-enabled-changed', { enabled: nextEnabled }).catch(() => {});
+    }
+
     async function refreshReleaseChannel() {
         try {
             const channel = await invoke('get_release_channel');
@@ -124,6 +139,18 @@ export default function Titlebar({ installedVersions, ...props }) {
         refreshReleaseChannel();
         refreshGameStorage();
         refreshOverlaySettings();
+        invoke('get_events_enabled')
+            .then((enabled) => {
+                const stored = localStorage.getItem(EVENTS_ENABLED_STORAGE_KEY);
+                const nextEnabled = stored == null ? !!enabled : stored === "true";
+                setEventsEnabled(nextEnabled);
+                localStorage.setItem(EVENTS_ENABLED_STORAGE_KEY, nextEnabled ? "true" : "false");
+                if (nextEnabled !== !!enabled) {
+                    invoke('set_events_enabled', { enabled: nextEnabled }).catch(() => {});
+                }
+                emit('ui://events-enabled-changed', { enabled: nextEnabled }).catch(() => {});
+            })
+            .catch(() => {});
     }, []);
 
     async function refreshOverlaySettings() {
@@ -638,6 +665,28 @@ export default function Titlebar({ installedVersions, ...props }) {
                                             <div className="text-base font-semibold text-white">Release Channel</div>
                                             <div className="mt-1 text-sm text-white/50">
                                                 Choose which launcher updates and remote manifest this app follows.
+                                            </div>
+                                        </div>
+
+                                        <div className="rounded-lg border border-panel-outline p-4">
+                                            <div className="flex items-start justify-between gap-4">
+                                                <div className="flex min-w-0 gap-3">
+                                                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-white/10 bg-black/20 text-white/75">
+                                                        <Play size={18} />
+                                                    </div>
+                                                    <div className="min-w-0">
+                                                        <div className="text-sm font-semibold text-white">Events</div>
+                                                        <div className="mt-1 text-sm leading-5 text-white/55">
+                                                            Show active launcher events and event presets.
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <Switch
+                                                    checked={eventsEnabled}
+                                                    onCheckedChange={setLauncherEventsEnabled}
+                                                    aria-label="Show launcher events"
+                                                />
                                             </div>
                                         </div>
 

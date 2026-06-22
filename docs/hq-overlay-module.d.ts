@@ -4,6 +4,7 @@ type OverlaySettingSchema =
   | { key: string; label: string; type: "number"; min?: number; max?: number; step?: number; default?: number }
   | { key: string; label: string; type: "range"; min: number; max: number; step?: number; default?: number }
   | { key: string; label: string; type: "text" | "textarea" | "key" | "image"; default?: string }
+  | { key: string; label: string; type: "images"; default?: string[] }
   | { key: string; label: string; type: "select"; options: Array<{ label: string; value: string }>; default?: string };
 
 /** Shortcut strings captured by key buttons, for example "Insert", "Ctrl+Shift+K", or "Ctrl+Shift+*". */
@@ -168,6 +169,12 @@ type OverlayModuleApi = {
   getStreamOverlay(): OverlayStreamOverlays | null;
 };
 
+type OverlayRenderItem = {
+  id?: string;
+  html: string | number | null | undefined;
+  defaultPosition?: { x: number; y: number };
+};
+
 declare const Setting: {
   toggle(key: string, label: string, defaultValue?: boolean): OverlaySettingSchema;
   color(key: string, label: string, defaultValue?: string): OverlaySettingSchema;
@@ -176,6 +183,7 @@ declare const Setting: {
   text(key: string, label: string, defaultValue?: string): OverlaySettingSchema;
   textarea(key: string, label: string, defaultValue?: string): OverlaySettingSchema;
   image(key: string, label: string, defaultValue?: string): OverlaySettingSchema;
+  images(key: string, label: string, defaultValue?: string[]): OverlaySettingSchema;
   key(key: string, label: string, defaultValue?: OverlayShortcutString): OverlaySettingSchema;
   hotkey(key: string, label: string, defaultValue?: OverlayShortcutString): OverlaySettingSchema;
   select(key: string, label: string, options: Array<{ label: string; value: string }>, defaultValue?: string): OverlaySettingSchema;
@@ -187,7 +195,7 @@ declare function register(type: "defaults" | "metadata", payload: Record<string,
 declare function register(type: "css", payload: string): unknown;
 declare function register(type: "visible", payload: (args: OverlayHandlerArgs) => boolean | void): unknown;
 declare function register<TData = any>(type: "derive", payload: (args: OverlayHandlerArgs) => TData): unknown;
-declare function register<TData = any>(type: "renderOverlay", payload: (args: OverlayHandlerArgs<TData>) => string | number | null | undefined): unknown;
+declare function register<TData = any>(type: "renderOverlay", payload: (args: OverlayHandlerArgs<TData>) => string | number | null | undefined | OverlayRenderItem[]): unknown;
 declare function register<TData = any>(type: "tick" | "lcstats", payload: (args: OverlayHandlerArgs<TData>) => unknown): unknown;
 declare function register(type: OverlayRegisterType, payload: any): unknown;
 

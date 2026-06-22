@@ -54,6 +54,13 @@ impl ReleaseChannel {
         }
     }
 
+    pub fn events_url(self) -> &'static str {
+        match self {
+            Self::Stable => "https://f.asta.rs/hq-launcher/events.json",
+            Self::Beta => "https://f.asta.rs/hq-launcher/beta/events.json",
+        }
+    }
+
     pub fn updater_url(self) -> &'static str {
         match self {
             Self::Stable => {

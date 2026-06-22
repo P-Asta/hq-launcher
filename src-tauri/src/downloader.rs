@@ -2,7 +2,7 @@ use expectrl::{ControlCode, Regex, Session};
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -139,6 +139,8 @@ pub struct LoginCredentials {
 pub struct LoginState {
     pub is_logged_in: bool,
     pub username: Option<String>,
+    #[serde(default)]
+    pub steam_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -301,13 +303,17 @@ impl DepotDownloader {
     /// 저장된 로그인 상태 확인
     pub fn get_login_state(&self) -> LoginState {
         if let Ok(content) = std::fs::read_to_string(self.login_state_path()) {
-            if let Ok(state) = serde_json::from_str::<LoginState>(&content) {
+            if let Ok(mut state) = serde_json::from_str::<LoginState>(&content) {
+                if state.steam_id.as_deref().is_none_or(|id| id.trim().is_empty()) {
+                    state.steam_id = read_saved_steam_id(&self.config_dir);
+                }
                 return state;
             }
         }
         LoginState {
             is_logged_in: false,
             username: None,
+            steam_id: read_saved_steam_id(&self.config_dir),
         }
     }
 
@@ -561,6 +567,7 @@ impl DepotDownloader {
         let state = LoginState {
             is_logged_in: true,
             username: Some(credentials.username),
+            steam_id: read_saved_steam_id(&self.config_dir),
         };
         self.save_login_state(&state)?;
         self.emit_event(DepotDownloaderEvent::LoginSuccess);
@@ -772,6 +779,7 @@ impl DepotDownloader {
         let state = LoginState {
             is_logged_in: true,
             username: Some(credentials.username),
+            steam_id: read_saved_steam_id(&self.config_dir),
         };
         self.save_login_state(&state)?;
         log::info!(
@@ -1105,6 +1113,7 @@ impl DepotDownloader {
         let state = LoginState {
             is_logged_in: false,
             username: None,
+            steam_id: None,
         };
         self.save_login_state(&state)?;
 
@@ -1192,16 +1201,60 @@ fn depot_login_state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(depot_config_dir(app)?.join("login_state.json"))
 }
 
+fn first_steam_id_like(text: &str) -> Option<String> {
+    text.split(|c: char| !c.is_ascii_digit())
+        .find(|part| part.len() == 17 && part.starts_with("7656"))
+        .map(|part| part.to_string())
+}
+
+fn read_saved_steam_id(config_dir: &Path) -> Option<String> {
+    for rel in ["login_state.json", "config.vdf", ".DepotDownloader"] {
+        let path = config_dir.join(rel);
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        if let Some(id) = first_steam_id_like(&text) {
+            return Some(id);
+        }
+    }
+
+    for rel in ["_login_cache", "0"] {
+        let dir = config_dir.join(rel);
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            if let Some(id) = first_steam_id_like(&text) {
+                return Some(id);
+            }
+        }
+    }
+
+    None
+}
+
 fn read_saved_login_state(app: &tauri::AppHandle) -> Result<LoginState, String> {
     let path = depot_login_state_path(app)?;
+    let config_dir = depot_config_dir(app)?;
     if let Ok(content) = std::fs::read_to_string(path) {
-        if let Ok(state) = serde_json::from_str::<LoginState>(&content) {
+        if let Ok(mut state) = serde_json::from_str::<LoginState>(&content) {
+            if state.steam_id.as_deref().is_none_or(|id| id.trim().is_empty()) {
+                state.steam_id = read_saved_steam_id(&config_dir);
+            }
             return Ok(state);
         }
     }
     Ok(LoginState {
         is_logged_in: false,
         username: None,
+        steam_id: read_saved_steam_id(&config_dir),
     })
 }
 
@@ -1555,6 +1608,7 @@ pub fn depot_logout(app: tauri::AppHandle) -> Result<(), String> {
         &LoginState {
             is_logged_in: false,
             username: None,
+            steam_id: None,
         },
     )?;
 

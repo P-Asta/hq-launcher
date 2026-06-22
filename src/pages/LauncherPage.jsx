@@ -8,12 +8,15 @@ import {
   ChevronDown,
   Download,
   FolderOpen,
+  Globe2,
   Info,
   LogOut,
   LoaderCircle,
+  MessageCircle,
   Play,
   RefreshCw,
   Search,
+  Timer,
   Trash2,
   X,
 } from "lucide-react";
@@ -801,6 +804,8 @@ const RUN_MODE_VALUES = [
 ];
 
 const DISCORD_DOWNLOAD_URL = "https://asta.rs/hq-launcher/";
+const EVENTS_ENABLED_STORAGE_KEY = "launcherEventsEnabled";
+const SELECTED_EVENT_STORAGE_KEY = "selectedEventId";
 
 function getInitialRunMode() {
   const savedRunMode = localStorage.getItem("selectedRunMode");
@@ -813,6 +818,129 @@ function saveSelectedRunMode(mode) {
     localStorage.setItem("selectedRunMode", mode);
     invoke("set_selected_run_mode", { runMode: mode }).catch(() => {});
   }
+}
+
+function normalizeEventPreset(value) {
+  const text = String(value ?? "hq").trim().toLowerCase();
+  return RUN_MODE_VALUES.includes(text) ? text : "hq";
+}
+
+function getInitialSelectedEventId() {
+  if (typeof window === "undefined") return "";
+  return localStorage.getItem(SELECTED_EVENT_STORAGE_KEY) ?? "";
+}
+
+function saveSelectedEventId(eventId) {
+  if (typeof window === "undefined") return;
+  const normalized = String(eventId ?? "").trim();
+  if (normalized) {
+    localStorage.setItem(SELECTED_EVENT_STORAGE_KEY, normalized);
+  } else {
+    localStorage.removeItem(SELECTED_EVENT_STORAGE_KEY);
+  }
+}
+
+function getInitialEventsEnabled() {
+  if (typeof window === "undefined") return true;
+  const stored = localStorage.getItem(EVENTS_ENABLED_STORAGE_KEY);
+  return stored == null ? true : stored === "true";
+}
+
+function saveEventsEnabled(enabled) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(EVENTS_ENABLED_STORAGE_KEY, enabled ? "true" : "false");
+  invoke("set_events_enabled", { enabled: !!enabled }).catch(() => {});
+}
+
+function parseUtcEventTime(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatEventTimeRemaining(event, nowMs = Date.now()) {
+  const endsAt = parseUtcEventTime(event?.ends_at);
+  if (endsAt === null) return "";
+
+  const remainingMs = endsAt - nowMs;
+  if (remainingMs <= 0) return "Ending now";
+
+  if (remainingMs < 86_400_000) {
+    const totalSeconds = Math.ceil(remainingMs / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    const secondText = String(seconds).padStart(2, "0");
+    if (hours > 0) return `Ends in ${hours}h ${minutes}m ${secondText}s`;
+    return `Ends in ${minutes}m ${secondText}s`;
+  }
+
+  const totalMinutes = Math.ceil(remainingMs / 60_000);
+  if (totalMinutes <= 1) return "Ends soon";
+
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+
+  if (days > 0) {
+    return `Ends in ${days}d${hours > 0 ? ` ${hours}h` : ""}`;
+  }
+  if (hours > 0) {
+    return `Ends in ${hours}h${minutes > 0 ? ` ${minutes}m` : ""}`;
+  }
+  return `Ends in ${minutes}m`;
+}
+
+function isEventActive(event, nowMs = Date.now(), testerAllowed = false) {
+  const startsAt = parseUtcEventTime(event?.starts_at);
+  if (!testerAllowed && startsAt !== null && nowMs < startsAt) return false;
+
+  const endsAt = parseUtcEventTime(event?.ends_at);
+  if (endsAt === null) return true;
+  return nowMs <= endsAt;
+}
+
+function normalizeSteamId(value) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  return digits.length === 17 && digits.startsWith("7656") ? digits : "";
+}
+
+function eventAllowsTester(event, loginState) {
+  const testerValues = Array.isArray(event?.testers) ? event.testers : [];
+  const testerSteamIds = testerValues.map(normalizeSteamId).filter(Boolean);
+  const testerNames = testerValues
+    .filter((value) => !normalizeSteamId(value))
+    .map((value) => String(value ?? "").trim().toLowerCase())
+    .filter(Boolean);
+  if (testerSteamIds.length === 0 && testerNames.length === 0) return true;
+
+  const steamId = normalizeSteamId(loginState?.steam_id ?? loginState?.steamId);
+  const username = String(loginState?.username ?? "").trim().toLowerCase();
+  return (
+    (!!steamId && testerSteamIds.includes(steamId)) ||
+    (!!username && testerNames.includes(username))
+  );
+}
+
+function eventAllowsVersion(event, version) {
+  const versions = Array.isArray(event?.versions)
+    ? event.versions.map((v) => Number(v)).filter((v) => Number.isFinite(v))
+    : [];
+  if (versions.length === 0) return true;
+  return versions.includes(Number(version));
+}
+
+function clampVersionToEvent(version, event, fallbackVersions = []) {
+  if (!event || eventAllowsVersion(event, version)) return Number(version);
+  const allowed = Array.isArray(event.versions)
+    ? event.versions.map((v) => Number(v)).filter((v) => Number.isFinite(v))
+    : [];
+  if (allowed.length === 0) return Number(version);
+  const installedAllowed = allowed
+    .filter((v) => fallbackVersions.includes(v))
+    .sort((a, b) => b - a);
+  return installedAllowed[0] ?? allowed.sort((a, b) => b - a)[0];
 }
 
 function saveSelectedVersion(version) {
@@ -1377,6 +1505,13 @@ export default function LauncherPage({
     mods: [],
     manifests: {},
   });
+  const [eventsManifest, setEventsManifest] = useState({
+    version: 0,
+    events: [],
+  });
+  const [eventsEnabled, setEventsEnabled] = useState(getInitialEventsEnabled);
+  const [eventClock, setEventClock] = useState(() => Date.now());
+  const [selectedEventId, setSelectedEventId] = useState(getInitialSelectedEventId);
   const [practiceMods, setPracticeMods] = useState([]);
 
   const [query, setQuery] = useState("");
@@ -1550,6 +1685,7 @@ export default function LauncherPage({
   const practiceTaskRef = useRef(null);
   const presetTaskRef = useRef(null);
   const runModeRef = useRef(runMode);
+  const selectedEventIdRef = useRef(selectedEventId);
   const selectedVersionRef = useRef(selectedVersion);
   const userSelectedRunModeRef = useRef(false);
   const modContextMenuRef = useRef(null);
@@ -1578,6 +1714,9 @@ export default function LauncherPage({
   useEffect(() => {
     runModeRef.current = runMode;
   }, [runMode]);
+  useEffect(() => {
+    selectedEventIdRef.current = selectedEventId;
+  }, [selectedEventId]);
   useEffect(() => {
     selectedVersionRef.current = selectedVersion;
   }, [selectedVersion]);
@@ -1733,6 +1872,47 @@ export default function LauncherPage({
 
     return () => {
       if (typeof unlisten === "function") unlisten();
+    };
+  }, []);
+
+  useEffect(() => {
+    let unlisten = null;
+    (async () => {
+      unlisten = await listen("ui://events-enabled-changed", (event) => {
+        const enabled = !!event.payload?.enabled;
+        setEventsEnabled(enabled);
+        saveEventsEnabled(enabled);
+        setEventClock(Date.now());
+      });
+    })();
+
+    return () => {
+      if (typeof unlisten === "function") unlisten();
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    invoke("get_events_enabled")
+      .then((enabled) => {
+        if (cancelled) return;
+        const stored =
+          typeof window !== "undefined"
+            ? localStorage.getItem(EVENTS_ENABLED_STORAGE_KEY)
+            : null;
+        const nextEnabled = stored == null ? !!enabled : stored === "true";
+        setEventsEnabled(nextEnabled);
+        if (typeof window !== "undefined") {
+          localStorage.setItem(EVENTS_ENABLED_STORAGE_KEY, nextEnabled ? "true" : "false");
+        }
+        if (nextEnabled !== !!enabled) {
+          invoke("set_events_enabled", { enabled: nextEnabled }).catch(() => {});
+        }
+        setEventClock(Date.now());
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -1903,6 +2083,101 @@ export default function LauncherPage({
     return (v) => s.has(v);
   }, [installedVersions]);
 
+  const activeEvents = useMemo(() => {
+    if (!eventsEnabled) return [];
+    const events = Array.isArray(eventsManifest?.events) ? eventsManifest.events : [];
+    return events.filter((event) => {
+      if (!event?.id || !event?.name) return false;
+      const testerAllowed = eventAllowsTester(event, loginState);
+      return testerAllowed && isEventActive(event, eventClock, testerAllowed);
+    });
+  }, [eventClock, eventsEnabled, eventsManifest, loginState]);
+
+  const selectedEvent = useMemo(() => {
+    if (!selectedEventId) return null;
+    return (
+      activeEvents.find(
+        (event) =>
+          String(event.id).toLowerCase() === String(selectedEventId).toLowerCase()
+      ) ?? null
+    );
+  }, [activeEvents, selectedEventId]);
+
+  const selectedEventRunMode = useMemo(
+    () => normalizeEventPreset(selectedEvent?.preset),
+    [selectedEvent]
+  );
+  const selectedEventTimeRemaining = useMemo(
+    () => formatEventTimeRemaining(selectedEvent, eventClock),
+    [eventClock, selectedEvent]
+  );
+
+  useEffect(() => {
+    const endsAt = parseUtcEventTime(selectedEvent?.ends_at);
+    const remainingMs = endsAt === null ? null : endsAt - Date.now();
+    const intervalMs =
+      remainingMs !== null && remainingMs > 0 && remainingMs < 86_400_000
+        ? 1000
+        : 60_000;
+    const timer = window.setInterval(() => setEventClock(Date.now()), intervalMs);
+    return () => window.clearInterval(timer);
+  }, [selectedEvent?.ends_at]);
+
+  const selectedEventMods = useMemo(() => {
+    if (!selectedEvent) return [];
+    return (Array.isArray(selectedEvent.mods) ? selectedEvent.mods : []).filter(
+      (mod) =>
+        mod?.enabled !== false &&
+        !isUiHiddenMod(mod) &&
+        isModCompatibleWithVersion(mod, selectedVersion)
+    );
+  }, [selectedEvent, selectedVersion]);
+
+  const eventForcedModKeys = useMemo(
+    () => new Set(selectedEventMods.map((mod) => modKeyLower(mod))),
+    [selectedEventMods]
+  );
+
+  useEffect(() => {
+    if (!didFinishBootstrap || !selectedEventId) return;
+    if (selectedEvent) return;
+
+    const version = Number(selectedVersion);
+    setSelectedEventId("");
+    saveSelectedEventId("");
+    if (Number.isFinite(version)) {
+      invoke("clear_selected_event", { version })
+        .then(() => invoke("get_disabled_mods"))
+        .then((dm) => setDisabledMods(Array.isArray(dm) ? dm : []))
+        .catch((e) => console.error(e));
+    }
+  }, [didFinishBootstrap, selectedEvent, selectedEventId, selectedVersion]);
+
+  useEffect(() => {
+    if (!didFinishBootstrap) return;
+    const version = Number(selectedVersion);
+    if (!Number.isFinite(version)) return;
+
+    invoke("reconcile_selected_event", {
+      version,
+      eventId: selectedEvent?.id ?? null,
+    })
+      .then((cleared) => {
+        if (!cleared) return;
+        return invoke("get_disabled_mods").then((dm) =>
+          setDisabledMods(Array.isArray(dm) ? dm : [])
+        );
+      })
+      .catch((e) => console.error(e));
+  }, [didFinishBootstrap, selectedEvent, selectedVersion]);
+
+  useEffect(() => {
+    if (!didFinishBootstrap || !selectedEvent) return;
+    if (runMode === selectedEventRunMode) return;
+    setRunMode(selectedEventRunMode);
+    saveSelectedRunMode(selectedEventRunMode);
+  }, [didFinishBootstrap, runMode, selectedEvent, selectedEventRunMode]);
+
   const installedModVersions = useMemo(() => {
     const v = Number(selectedVersion);
     if (!Number.isFinite(v)) return {};
@@ -2057,12 +2332,18 @@ export default function LauncherPage({
     );
     const merged = [
       ...(isPracticeRunMode(runMode) ? practiceReferenceMods : []),
+      ...selectedEventMods,
       ...smhqReferenceMods,
       ...eclipsedReferenceMods,
       ...eclipsedHqOptionalMods,
       ...regularMods,
     ];
-    if (!isPracticeRunMode(runMode) && !isSmhqRunMode(runMode) && !isEclipsedRunMode(runMode)) {
+    if (
+      !selectedEvent &&
+      !isPracticeRunMode(runMode) &&
+      !isSmhqRunMode(runMode) &&
+      !isEclipsedRunMode(runMode)
+    ) {
       return regularMods;
     }
 
@@ -2079,6 +2360,8 @@ export default function LauncherPage({
     manifest.mods,
     practiceReferenceMods,
     runMode,
+    selectedEvent,
+    selectedEventMods,
     selectedVersion,
     smhqReferenceMods,
   ]);
@@ -2390,6 +2673,7 @@ export default function LauncherPage({
         : Number(saved);
 
       const manifestPromise = invoke("get_manifest");
+      const eventsPromise = invoke("get_events").catch(() => ({ version: 0, events: [] }));
       const practiceModsPromise = invoke("get_practice_mod_list");
       setBootstrapStatus("Checking installed versions...");
 
@@ -2462,6 +2746,18 @@ export default function LauncherPage({
           if (remoteV.length > 0) return remoteV[remoteV.length - 1];
           return Number.isFinite(prevNum) ? prevNum : null;
         });
+
+        try {
+          setBootstrapStatus("Fetching remote events...");
+          const ev = await eventsPromise;
+          if (!cancelled) {
+            setEventsManifest(
+              ev && typeof ev === "object" ? ev : { version: 0, events: [] }
+            );
+          }
+        } catch (e) {
+          console.error(e);
+        }
       } catch (e) {
         console.error(e);
       } finally {
@@ -2493,11 +2789,17 @@ export default function LauncherPage({
     (async () => {
       unlisten = await listen("release-channel://changed", async () => {
         try {
-          const mf = await invoke("get_manifest");
+          const [mf, ev] = await Promise.all([
+            invoke("get_manifest"),
+            invoke("get_events").catch(() => ({ version: 0, events: [] })),
+          ]);
           if (disposed) return;
 
           setManifest(
             mf ?? { version: null, mods: [], manifests: {}, preset_tag_constraints: {} }
+          );
+          setEventsManifest(
+            ev && typeof ev === "object" ? ev : { version: 0, events: [] }
           );
           setSelectedMod(null);
           setManifestUpdateInfo(null);
@@ -2654,13 +2956,15 @@ export default function LauncherPage({
     if (preparedUpdateContext !== contextKey) return;
     if (lastAutoCheckedContextRef.current === contextKey) return;
     lastAutoCheckedContextRef.current = contextKey;
-    checkModUpdates(version, { runMode });
+    checkModUpdates(version, { runMode: selectedEvent ? selectedEventRunMode : runMode });
   }, [
     didFinishBootstrap,
     installedVersions,
     isInstalled,
     preparedUpdateContext,
     runMode,
+    selectedEvent,
+    selectedEventRunMode,
     selectedVersion,
   ]);
 
@@ -3212,7 +3516,10 @@ export default function LauncherPage({
       // If user already selected a preset run mode, prepare its mods right after download.
       // This keeps "Start Run" fast and avoids doing installs at launch time.
       try {
-        await prepareRunMode(runMode, v, { assumeInstalled: true });
+        await prepareRunMode(selectedEvent ? selectedEventRunMode : runMode, v, {
+          assumeInstalled: true,
+          eventId: selectedEvent?.id,
+        });
       } catch {}
     } catch (e) {
       if (
@@ -5063,8 +5370,8 @@ export default function LauncherPage({
   }
 
   const selectedRunModeRange = useMemo(
-    () => getPresetVersionRange(manifest, runMode),
-    [manifest, runMode]
+    () => getPresetVersionRange(manifest, selectedEvent ? selectedEventRunMode : runMode),
+    [manifest, runMode, selectedEvent, selectedEventRunMode]
   );
 
   const versionOptions = useMemo(() => {
@@ -5072,6 +5379,12 @@ export default function LauncherPage({
     set.add(selectedVersion);
     if (selectedRunModeRange?.low != null) set.add(selectedRunModeRange.low);
     if (selectedRunModeRange?.high != null) set.add(selectedRunModeRange.high);
+    if (selectedEvent && Array.isArray(selectedEvent.versions)) {
+      selectedEvent.versions
+        .map((v) => Number(v))
+        .filter((v) => Number.isFinite(v))
+        .forEach((v) => set.add(v));
+    }
     // show versions provided by remote manifest (version -> download_manifest)
     const remoteV =
       manifest?.manifests && typeof manifest.manifests === "object"
@@ -5082,15 +5395,26 @@ export default function LauncherPage({
     remoteV.forEach((v) => set.add(v));
     let list = Array.from(set).sort((a, b) => b - a);
     list = list.filter((v) => isVersionWithinRange(v, selectedRunModeRange));
+    if (selectedEvent) {
+      list = list.filter((v) => eventAllowsVersion(selectedEvent, v));
+    }
     return list;
-  }, [installedVersions, selectedVersion, manifest, selectedRunModeRange]);
+  }, [installedVersions, selectedVersion, manifest, selectedRunModeRange, selectedEvent]);
 
-  // If the selected version is outside the allowed range for this run mode, bump it back in range.
+  // If the selected version is outside the allowed range, bump it back in range.
   useEffect(() => {
     if (!Number.isFinite(Number(selectedVersion))) return;
-    if (isVersionWithinRange(selectedVersion, selectedRunModeRange)) return;
+    if (
+      isVersionWithinRange(selectedVersion, selectedRunModeRange) &&
+      (!selectedEvent || eventAllowsVersion(selectedEvent, selectedVersion))
+    ) {
+      return;
+    }
 
-    const nextV = clampVersionToRange(selectedVersion, selectedRunModeRange);
+    const rangeClamped = clampVersionToRange(selectedVersion, selectedRunModeRange);
+    const nextV = selectedEvent
+      ? clampVersionToEvent(rangeClamped, selectedEvent, installedVersions)
+      : rangeClamped;
     const shouldRunSideEffects = didFinishBootstrap;
     setSelectedVersion(nextV);
     if (!shouldRunSideEffects) return;
@@ -5098,13 +5422,22 @@ export default function LauncherPage({
       invoke("apply_disabled_mods", { version: nextV })
         .catch(() => {})
         .finally(() => {
-          // After bumping the version, also prepare the selected run mode now.
-          prepareRunMode(runMode, nextV).catch(() => {});
+          prepareRunMode(selectedEvent ? selectedEventRunMode : runMode, nextV, {
+            eventId: selectedEvent?.id,
+          }).catch(() => {});
         });
     } else {
       openDownloadPrompt(nextV);
     }
-  }, [didFinishBootstrap, selectedRunModeRange, selectedVersion, installedVersions, runMode]);
+  }, [
+    didFinishBootstrap,
+    selectedRunModeRange,
+    selectedVersion,
+    installedVersions,
+    runMode,
+    selectedEvent,
+    selectedEventRunMode,
+  ]);
 
   const selectedInstalled = isInstalled(selectedVersion);
   const selectedVersionLabel = Number.isFinite(Number(selectedVersion))
@@ -5447,6 +5780,13 @@ export default function LauncherPage({
     );
   }, [RUN_OPTIONS, runMode]);
 
+  const selectedLaunchLabel = selectedEvent?.name
+    ? selectedEvent.name
+    : selectedRunOption?.buttonLabel ?? selectedRunOption?.label ?? "Start Run";
+  const selectedLaunchTitle = selectedEvent?.name
+    ? `${selectedEvent.name} (${selectedRunOption?.label ?? "HQ Run"})`
+    : selectedRunOption?.title ?? "";
+
   const discordRunLabel = useMemo(() => {
     const value = selectedRunOption?.value;
     if (!value) return "High Quota Run";
@@ -5546,7 +5886,10 @@ export default function LauncherPage({
       RUN_OPTIONS.find((o) => o.value === "hq") ??
       RUN_OPTIONS[0];
 
-    const key = `${nextRunMode}:${nextVersion}`;
+    const eventId = String(opts?.eventId ?? "").trim();
+    const key = eventId
+      ? `event:${eventId}:${nextRunMode}:${nextVersion}`
+      : `${nextRunMode}:${nextVersion}`;
     latestPrepareKeyRef.current = key;
     if (
       typeof opts?.prevRunMode === "string" ||
@@ -5570,11 +5913,18 @@ export default function LauncherPage({
     setPracticeCancelBusy(false);
 
     try {
-      await invoke("prepare_preset", {
-        version: nextVersion,
-        preset: opt?.preset ?? "hq",
-        practice: !!opt?.practice,
-      });
+      if (eventId) {
+        await invoke("prepare_event", {
+          version: nextVersion,
+          eventId,
+        });
+      } else {
+        await invoke("prepare_preset", {
+          version: nextVersion,
+          preset: opt?.preset ?? "hq",
+          practice: !!opt?.practice,
+        });
+      }
 
       // Ignore stale completions.
       if (latestPrepareKeyRef.current !== key) return;
@@ -5589,6 +5939,11 @@ export default function LauncherPage({
             )
             .map((m) => modKeyLower(m))
         : [];
+      if (eventId) {
+        for (const mod of selectedEventMods) {
+          expectedPracticeKeys.push(modKeyLower(mod));
+        }
+      }
 
       await refreshInstalledModVersions(nextVersion, {
         retries: opt?.practice ? 8 : 0,
@@ -5761,8 +6116,16 @@ export default function LauncherPage({
     setLaunchBusy(true);
     try {
       const launchRequest = getLaunchRequestForRunMode(nextRunMode, nextVersion);
+      const eventLaunchArgs =
+        selectedEvent &&
+        (launchRequest.command === "launch_game_preset" ||
+          launchRequest.command === "launch_game") &&
+        nextRunMode === selectedEventRunMode
+          ? { eventId: selectedEvent.id }
+          : {};
       const pid = await invoke(launchRequest.command, {
         ...launchRequest.args,
+        ...eventLaunchArgs,
         launchOptions: getActiveLaunchOptions(),
         launchCommandTemplate: getActiveLaunchCommandTemplate(),
         allowMultiple,
@@ -5800,7 +6163,9 @@ export default function LauncherPage({
     if (!isInstalled(version)) return;
 
     didAutoPrepareInitialRef.current = true;
-    prepareRunMode(runMode, version).catch((e) => {
+    prepareRunMode(selectedEvent ? selectedEventRunMode : runMode, version, {
+      eventId: selectedEvent?.id,
+    }).catch((e) => {
       console.error(e);
       didAutoPrepareInitialRef.current = false;
     });
@@ -5810,6 +6175,8 @@ export default function LauncherPage({
     isInstalled,
     selectedRunModeRange,
     runMode,
+    selectedEvent,
+    selectedEventRunMode,
     selectedVersion,
   ]);
 
@@ -5875,6 +6242,7 @@ export default function LauncherPage({
     userSelectedRunModeRef.current = true;
     const prevRun = runMode;
     const prevVer = selectedVersion;
+    const previousEventId = selectedEventId;
     const range = getPresetVersionRange(manifest, nextRunMode);
     const effectiveV = clampVersionToRange(selectedVersion, range);
     const shouldResetFreeMoonsMod =
@@ -5882,6 +6250,19 @@ export default function LauncherPage({
       (shouldResetFreeMoonsOnRunModeChange(prevRun) ||
         shouldResetFreeMoonsOnRunModeChange(nextRunMode));
 
+    if (previousEventId) {
+      setSelectedEventId("");
+      saveSelectedEventId("");
+      if (Number.isFinite(Number(selectedVersion))) {
+        try {
+          await invoke("clear_selected_event", { version: Number(selectedVersion) });
+          const dm = await invoke("get_disabled_mods");
+          setDisabledMods(Array.isArray(dm) ? dm : []);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    }
     setRunMode(nextRunMode);
     saveSelectedRunMode(nextRunMode);
     if (shouldResetFreeMoonsMod) {
@@ -5904,10 +6285,44 @@ export default function LauncherPage({
     });
   }
 
+  async function handleEventSelect(event) {
+    if (!event) return;
+    userSelectedRunModeRef.current = true;
+    const prevRun = runMode;
+    const prevVer = selectedVersion;
+    const nextRunMode = normalizeEventPreset(event.preset);
+    const range = getPresetVersionRange(manifest, nextRunMode);
+    const rangeClamped = clampVersionToRange(selectedVersion, range);
+    const effectiveV = clampVersionToEvent(rangeClamped, event, installedVersions);
+
+    setSelectedEventId(event.id);
+    saveSelectedEventId(event.id);
+    setRunMode(nextRunMode);
+    saveSelectedRunMode(nextRunMode);
+
+    if (effectiveV !== selectedVersion) {
+      setSelectedVersion(effectiveV);
+      if (!isInstalled(effectiveV)) {
+        openDownloadPrompt(effectiveV);
+        return;
+      }
+      try {
+        await invoke("apply_disabled_mods", { version: effectiveV });
+      } catch {}
+    }
+
+    await prepareRunMode(nextRunMode, effectiveV, {
+      prevRunMode: prevRun,
+      prevVersion: prevVer,
+      eventId: event.id,
+    });
+  }
+
   const showBootstrapSkeleton = !didFinishBootstrap;
+  const activeRunModeForActions = selectedEvent ? selectedEventRunMode : runMode;
   const checkUpdateMatchesSelectedRun =
     Number(checkUpdateTask.version) === Number(selectedVersion) &&
-    checkUpdateTask.run_mode === runMode;
+    checkUpdateTask.run_mode === activeRunModeForActions;
   const selectedRunUpdatableMods = checkUpdateMatchesSelectedRun
     ? Array.isArray(checkUpdateTask.updatable_mods)
       ? checkUpdateTask.updatable_mods
@@ -5941,7 +6356,7 @@ export default function LauncherPage({
           ) : (
             <div
               className="flex h-11 overflow-hidden rounded-xl border border-black/10 bg-white text-black shadow-sm"
-              title={selectedRunOption?.title ?? ""}
+              title={selectedLaunchTitle}
             >
               <button
                 type="button"
@@ -5950,7 +6365,7 @@ export default function LauncherPage({
                 onContextMenu={openLaunchContextMenu}
                 onClick={() =>
                   startSelectedRun({
-                    runMode,
+                    runMode: selectedEvent ? selectedEventRunMode : runMode,
                     version: selectedVersion,
                   })
                 }
@@ -5960,9 +6375,7 @@ export default function LauncherPage({
                 ) : (
                   <Play className="h-4 w-4" />
                 )}
-                {selectedRunOption?.buttonLabel ??
-                  selectedRunOption?.label ??
-                  "Start Run"}
+                {selectedLaunchLabel}
               </button>
 
               <DropdownMenu.Root modal={false}>
@@ -6010,6 +6423,93 @@ export default function LauncherPage({
                         </DropdownMenu.Item>
                       ),
                     )}
+                  </ScrollableDropdownContent>
+                </DropdownMenu.Portal>
+              </DropdownMenu.Root>
+            </div>
+          )}
+
+          {activeEvents.length > 0 && (
+            <div className="w-fit">
+              <DropdownMenu.Root modal={false}>
+                <DropdownMenu.Trigger asChild>
+                  <button
+                    type="button"
+                    className={cn(
+                      "flex h-11 items-center gap-2 rounded-xl border border-panel-outline bg-[var(--theme-surface)] pl-3 pr-2.5 text-[14px] font-medium tracking-[-0.012em] text-white outline-none transition-colors duration-150 hover:bg-white/[0.07] focus:ring-2 focus:ring-panel-outline data-[state=open]:bg-white/[0.08]",
+                      selectedEvent ? "border-[var(--theme-accent)]/60" : ""
+                    )}
+                    aria-label="Select event"
+                  >
+                    <span className="max-w-[180px] truncate">
+                      {selectedEvent?.name ?? "Events"}
+                    </span>
+                    <ChevronDown className="h-4 w-4 text-white/45" />
+                  </button>
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Portal>
+                  <ScrollableDropdownContent
+                    sideOffset={8}
+                    align="start"
+                    className="z-50 min-w-64 rounded-[18px] border border-panel-outline bg-[var(--theme-surface)] p-1 shadow-2xl shadow-black/45"
+                    scrollAreaClassName="max-h-72"
+                  >
+                    {selectedEvent && (
+                      <>
+                        <DropdownMenu.Item
+                          onSelect={() => {
+                            const version = Number(selectedVersion);
+                            setSelectedEventId("");
+                            saveSelectedEventId("");
+                            if (Number.isFinite(version)) {
+                              invoke("clear_selected_event", { version })
+                                .then(() => invoke("get_disabled_mods"))
+                                .then((dm) => setDisabledMods(Array.isArray(dm) ? dm : []))
+                                .catch((e) => console.error(e));
+                            }
+                          }}
+                          className="flex cursor-pointer select-none items-center gap-2 rounded-xl px-3 py-2 text-[14px] font-medium tracking-[-0.012em] text-white/70 outline-none transition focus:bg-white/10"
+                        >
+                          <span className="inline-flex w-5 items-center justify-center" />
+                          <span>Clear event</span>
+                        </DropdownMenu.Item>
+                        <DropdownMenu.Separator className="mx-2 my-1 h-px bg-white/20" />
+                      </>
+                    )}
+                    {activeEvents.map((event) => {
+                      const active =
+                        selectedEvent &&
+                        String(selectedEvent.id).toLowerCase() ===
+                          String(event.id).toLowerCase();
+                      const versionText =
+                        Array.isArray(event.versions) && event.versions.length > 0
+                          ? event.versions.map((v) => `v${v}`).join(", ")
+                          : "all versions";
+                      return (
+                        <DropdownMenu.Item
+                          key={event.id}
+                          onSelect={() => {
+                            handleEventSelect(event).catch(console.error);
+                          }}
+                          className={cn(
+                            "flex cursor-pointer select-none items-center gap-2 rounded-xl px-3 py-2 text-[14px] font-medium tracking-[-0.012em] text-white/85 outline-none transition focus:bg-white/10",
+                            active ? "bg-white/10" : ""
+                          )}
+                        >
+                          <span className="inline-flex w-5 items-center justify-center">
+                            {active ? (
+                              <Check className="h-4 w-4 text-[var(--theme-accent)]" />
+                            ) : null}
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate">{event.name}</span>
+                            <span className="block truncate text-xs text-white/40">
+                              {versionText}
+                            </span>
+                          </span>
+                        </DropdownMenu.Item>
+                      );
+                    })}
                   </ScrollableDropdownContent>
                 </DropdownMenu.Portal>
               </DropdownMenu.Root>
@@ -6068,9 +6568,10 @@ export default function LauncherPage({
                             try {
                               await invoke("apply_disabled_mods", { version: nextV });
                             } catch {}
-                            await prepareRunMode(runMode, nextV, {
+                            await prepareRunMode(selectedEvent ? selectedEventRunMode : runMode, nextV, {
                               prevRunMode: prevRun,
                               prevVersion: prevVer,
+                              eventId: selectedEvent?.id,
                             });
                           } else {
                             openDownloadPrompt(nextV);
@@ -6145,7 +6646,9 @@ export default function LauncherPage({
               // Don't re-check if we already have results for this version.
               // If it's currently checking, just open the modal to show progress.
               if (!alreadyChecked && !isChecking) {
-                checkModUpdates(selectedVersion, { runMode });
+                checkModUpdates(selectedVersion, {
+                  runMode: selectedEvent ? selectedEventRunMode : runMode,
+                });
               }
               setCheckUpdatePrompt({ open: true, mods: filteredMods });
             }}
@@ -6175,6 +6678,98 @@ export default function LauncherPage({
             </Button>
           </div>}
         </div>
+
+        {selectedEvent && (
+          <div className="flex min-h-[76px] items-center gap-3 rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-3">
+            {selectedEvent.image ? (
+              <div className="h-14 w-24 shrink-0 overflow-hidden rounded-xl border border-white/10 bg-black/30">
+                <img
+                  src={selectedEvent.image}
+                  alt=""
+                  className="h-full w-full object-cover"
+                  draggable={false}
+                />
+              </div>
+            ) : null}
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-2">
+                <div className="min-w-0 truncate text-sm font-semibold text-white">
+                  {selectedEvent.name}
+                </div>
+                {selectedEventTimeRemaining ? (
+                  <div className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] font-medium text-white/65">
+                    <Timer className="h-3 w-3" />
+                    {selectedEventTimeRemaining}
+                  </div>
+                ) : null}
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-white/45">
+                <span>{selectedRunOption?.label ?? "HQ Run"}</span>
+                <span>/</span>
+                <span>
+                  {Array.isArray(selectedEvent.versions) &&
+                  selectedEvent.versions.length > 0
+                    ? selectedEvent.versions.map((v) => `v${v}`).join(", ")
+                    : "all versions"}
+                </span>
+                {selectedEventMods.length > 0 ? (
+                  <>
+                    <span>/</span>
+                    <span>{selectedEventMods.length} event mods</span>
+                  </>
+                ) : null}
+              </div>
+              <div className="hidden">
+                <span>{selectedRunOption?.label ?? "HQ Run"}</span>
+                <span>•</span>
+                <span>
+                  {Array.isArray(selectedEvent.versions) &&
+                  selectedEvent.versions.length > 0
+                    ? selectedEvent.versions.map((v) => `v${v}`).join(", ")
+                    : "all versions"}
+                </span>
+                {selectedEventMods.length > 0 ? (
+                  <>
+                    <span>•</span>
+                    <span>{selectedEventMods.length} event mods</span>
+                  </>
+                ) : null}
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {selectedEvent.links?.discord ? (
+                <Button
+                  variant="secondary"
+                  className="h-9 w-9 bg-black/20 p-0 hover:bg-white/[0.07]"
+                  onClick={() =>
+                    invoke("open_external_url", {
+                      url: selectedEvent.links.discord,
+                    }).catch(console.error)
+                  }
+                  title="Discord"
+                  aria-label="Open Discord"
+                >
+                  <MessageCircle className="h-4 w-4" />
+                </Button>
+              ) : null}
+              {selectedEvent.links?.website ? (
+                <Button
+                  variant="secondary"
+                  className="h-9 w-9 bg-black/20 p-0 hover:bg-white/[0.07]"
+                  onClick={() =>
+                    invoke("open_external_url", {
+                      url: selectedEvent.links.website,
+                    }).catch(console.error)
+                  }
+                  title="Website"
+                  aria-label="Open website"
+                >
+                  <Globe2 className="h-4 w-4" />
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        )}
 
         {/* Main grid */}
         <div
@@ -6233,9 +6828,11 @@ export default function LauncherPage({
                     isSmhqRunMode(runMode) && smhqForcedModKeys.has(keyLower);
                   const eclipsedEnableLocked =
                     isEclipsedRunMode(runMode) && eclipsedForcedModKeys.has(keyLower);
+                  const eventEnableLocked = eventForcedModKeys.has(keyLower);
                   const enabled =
                     smhqEnableLocked ||
                     eclipsedEnableLocked ||
+                    eventEnableLocked ||
                     (!disabledSet.has(keyLower) && !practiceLockedModKeys.has(keyLower));
                   const installedVer = installedModVersions[keyLower];
                   const busy = modToggleBusyKeys.has(keyLower);
@@ -6301,6 +6898,11 @@ export default function LauncherPage({
                               Eclipsed
                             </div>
                           ) : null}
+                          {eventEnableLocked ? (
+                            <div className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[11px] font-medium text-emerald-200">
+                              Event
+                            </div>
+                          ) : null}
                           {needsGoogleOauth ? (
                             <div className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[11px] font-medium text-amber-200">
                               Google
@@ -6337,7 +6939,8 @@ export default function LauncherPage({
                                 busy ||
                                 practiceEnableLocked ||
                                 smhqEnableLocked ||
-                                eclipsedEnableLocked
+                                eclipsedEnableLocked ||
+                                eventEnableLocked
                               }
                               onCheckedChange={(v) =>
                                 toggleModEnabledForMod(m, !!v)
@@ -6979,7 +7582,7 @@ export default function LauncherPage({
             onClick={() => {
               closeLaunchContextMenu();
               startSelectedRun({
-                runMode,
+                runMode: selectedEvent ? selectedEventRunMode : runMode,
                 version: selectedVersion,
                 allowMultiple: true,
               });

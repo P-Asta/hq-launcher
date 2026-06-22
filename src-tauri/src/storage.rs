@@ -8,6 +8,8 @@ struct StorageConfig {
     game_storage_dir: Option<PathBuf>,
     selected_run_mode: Option<String>,
     selected_version: Option<u32>,
+    #[serde(default)]
+    events_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -144,6 +146,17 @@ pub fn set_selected_version(app: &tauri::AppHandle, version: u32) -> Result<u32,
     config.selected_version = Some(version);
     write_config(app, &config)?;
     Ok(version)
+}
+
+pub fn events_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
+    Ok(read_config(app)?.events_enabled.unwrap_or(true))
+}
+
+pub fn set_events_enabled(app: &tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    let mut config = read_config(app)?;
+    config.events_enabled = Some(enabled);
+    write_config(app, &config)?;
+    Ok(enabled)
 }
 
 fn dir_has_any_entries(path: &Path) -> bool {

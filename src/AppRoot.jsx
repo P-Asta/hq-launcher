@@ -145,6 +145,7 @@ function LauncherRoot() {
     status: "loading", // loading | ready
     is_logged_in: false,
     username: null,
+    steam_id: null,
   });
   const [bootstrapError, setBootstrapError] = useState("");
   const [loginOpen, setLoginOpen] = useState(false);
@@ -174,6 +175,7 @@ function LauncherRoot() {
         status: "ready",
         is_logged_in: !!s?.is_logged_in,
         username: s?.username ?? null,
+        steam_id: s?.steam_id ?? null,
       });
       setBootstrapError("");
     } catch (e) {
@@ -181,6 +183,7 @@ function LauncherRoot() {
         status: "ready",
         is_logged_in: false,
         username: null,
+        steam_id: null,
       });
       setBootstrapError(e?.message ?? String(e));
     }
@@ -291,6 +294,7 @@ function LauncherRoot() {
               status: "ready",
               is_logged_in: !!s?.is_logged_in,
               username: s?.username ?? null,
+              steam_id: s?.steam_id ?? null,
             });
             closeLoginDialog(true);
           }}

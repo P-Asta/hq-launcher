@@ -24,6 +24,7 @@ export default function App() {
     status: "loading", // loading | ready
     is_logged_in: false,
     username: null,
+    steam_id: null,
   });
   const [bootstrapError, setBootstrapError] = useState("");
 
@@ -34,6 +35,7 @@ export default function App() {
         status: "ready",
         is_logged_in: !!s?.is_logged_in,
         username: s?.username ?? null,
+        steam_id: s?.steam_id ?? null,
       });
       setBootstrapError("");
     } catch (e) {
@@ -41,6 +43,7 @@ export default function App() {
         status: "ready",
         is_logged_in: false,
         username: null,
+        steam_id: null,
       });
       setBootstrapError(e?.message ?? String(e));
     }
@@ -85,6 +88,7 @@ export default function App() {
               status: "ready",
               is_logged_in: !!s?.is_logged_in,
               username: s?.username ?? null,
+              steam_id: s?.steam_id ?? null,
             })
           }
         />

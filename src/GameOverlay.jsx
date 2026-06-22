@@ -572,6 +572,10 @@ function safeClassName(value) {
     .replace(/^-|-$/g, "");
 }
 
+function safeOverlayId(value) {
+  return safeClassName(value) || "overlay";
+}
+
 function normalizeInputKeyName(value) {
   const text = String(value ?? "").trim();
   if (!text) return "";
@@ -723,6 +727,8 @@ function defaultSettingsFromSchema(items) {
       settings[item.key] = item.options?.[0]?.value ?? "";
     } else if (item.type === "number") {
       settings[item.key] = item.default ?? item.min ?? 0;
+    } else if (item.type === "images") {
+      settings[item.key] = [];
     } else if (item.type === "key" || item.type === "image") {
       settings[item.key] = "";
     } else {
@@ -733,26 +739,8 @@ function defaultSettingsFromSchema(items) {
 }
 
 function createCtRuntime(raw) {
-  const id = String(raw.id || raw.file_name?.replace(/\.js$/i, "") || "").trim();
-  const meta = {
-    id,
-    fileName: raw.file_name || `${id}.js`,
-    name: id,
-    description: "",
-    locked: false,
-    defaultPosition: { x: 50, y: 50 },
-    settings: [],
-    defaultSettings: {},
-    css: "",
-    wrapperClass: "",
-  };
-  const handlers = {
-    visible: [],
-    derive: [],
-    renderOverlay: [],
-    tick: [],
-    lcstats: [],
-  };
+  const id = safeOverlayId(raw.id || raw.file_name?.replace(/\.js$/i, "") || "");
+  const fileName = raw.file_name || `${id}.js`;
 
   const Setting = {
     toggle: (key, label, defaultValue = false) => ({ key, label, type: "boolean", default: defaultValue }),
@@ -769,6 +757,7 @@ function createCtRuntime(raw) {
     text: (key, label, defaultValue = "") => ({ key, label, type: "text", default: defaultValue }),
     textarea: (key, label, defaultValue = "") => ({ key, label, type: "textarea", default: defaultValue }),
     image: (key, label, defaultValue = "") => ({ key, label, type: "image", default: defaultValue }),
+    images: (key, label, defaultValue = []) => ({ key, label, type: "images", default: defaultValue }),
     key: (key, label, defaultValue = "") => ({ key, label, type: "key", default: defaultValue }),
     number: (key, label, defaultValue = 0, min = undefined, max = undefined, step = 1) => ({
       key,
@@ -790,69 +779,94 @@ function createCtRuntime(raw) {
   Setting.selectMenu = Setting.select;
   Setting.hotkey = Setting.key;
 
-  function register(type, payload) {
-    if (type === "metadata" && payload && typeof payload === "object") {
-      if (payload.name) meta.name = String(payload.name);
-      if (payload.description) meta.description = String(payload.description);
-      if (payload.locked !== undefined) meta.locked = !!payload.locked;
-      if (payload.defaultPosition) meta.defaultPosition = normalizePosition(payload.defaultPosition);
-      if (payload.wrapperClass) meta.wrapperClass = String(payload.wrapperClass);
-      return api;
+  function createInstance(instanceId, displayId = instanceId) {
+    const meta = {
+      id: instanceId,
+      fileName,
+      name: displayId,
+      description: "",
+      locked: false,
+      defaultPosition: { x: 50, y: 50 },
+      settings: [],
+      defaultSettings: {},
+      css: "",
+      wrapperClass: "",
+    };
+    const handlers = {
+      visible: [],
+      derive: [],
+      renderOverlay: [],
+      tick: [],
+      lcstats: [],
+    };
+
+    function register(type, payload) {
+      if (type === "metadata" && payload && typeof payload === "object") {
+        if (payload.name) meta.name = String(payload.name);
+        if (payload.description) meta.description = String(payload.description);
+        if (payload.locked !== undefined) meta.locked = !!payload.locked;
+        if (payload.defaultPosition) meta.defaultPosition = normalizePosition(payload.defaultPosition);
+        if (payload.wrapperClass) meta.wrapperClass = String(payload.wrapperClass);
+        return api;
+      }
+      if (type === "settings") {
+        meta.settings = normalizeSettingsSchema(payload);
+        meta.defaultSettings = {
+          ...meta.defaultSettings,
+          ...defaultSettingsFromSchema(meta.settings),
+        };
+        return api;
+      }
+      if (type === "defaults" && payload && typeof payload === "object") {
+        meta.defaultSettings = { ...meta.defaultSettings, ...payload };
+        return api;
+      }
+      if (type === "css") {
+        meta.css += `${meta.css ? "\n" : ""}${String(payload ?? "")}`;
+        return api;
+      }
+      if (handlers[type] && typeof payload === "function") {
+        handlers[type].push(payload);
+        return api;
+      }
+      throw new Error(`Unknown overlay register type: ${type}`);
     }
-    if (type === "settings") {
-      meta.settings = normalizeSettingsSchema(payload);
-      meta.defaultSettings = {
-        ...meta.defaultSettings,
-        ...defaultSettingsFromSchema(meta.settings),
-      };
-      return api;
-    }
-    if (type === "defaults" && payload && typeof payload === "object") {
-      meta.defaultSettings = { ...meta.defaultSettings, ...payload };
-      return api;
-    }
-    if (type === "css") {
-      meta.css += `${meta.css ? "\n" : ""}${String(payload ?? "")}`;
-      return api;
-    }
-    if (handlers[type] && typeof payload === "function") {
-      handlers[type].push(payload);
-      return api;
-    }
-    throw new Error(`Unknown overlay register type: ${type}`);
+
+    const api = {
+      register,
+      Setting,
+      setName: (name) => {
+        meta.name = String(name);
+        return api;
+      },
+      setDescription: (description) => {
+        meta.description = String(description);
+        return api;
+      },
+      setLocked: (locked = true) => {
+        meta.locked = !!locked;
+        return api;
+      },
+      setDefaultPosition: (position) => {
+        meta.defaultPosition = normalizePosition(position);
+        return api;
+      },
+      setDefaultSettings: (settings) => {
+        meta.defaultSettings = { ...meta.defaultSettings, ...(settings ?? {}) };
+        return api;
+      },
+      setWrapperClass: (wrapperClass) => {
+        meta.wrapperClass = String(wrapperClass ?? "");
+        return api;
+      },
+      setCss: (css) => register("css", css),
+    };
+
+    return { id: instanceId, meta, handlers, api };
   }
 
-  const api = {
-    register,
-    Setting,
-    setName: (name) => {
-      meta.name = String(name);
-      return api;
-    },
-    setDescription: (description) => {
-      meta.description = String(description);
-      return api;
-    },
-    setLocked: (locked = true) => {
-      meta.locked = !!locked;
-      return api;
-    },
-    setDefaultPosition: (position) => {
-      meta.defaultPosition = normalizePosition(position);
-      return api;
-    },
-    setDefaultSettings: (settings) => {
-      meta.defaultSettings = { ...meta.defaultSettings, ...(settings ?? {}) };
-      return api;
-    },
-    setWrapperClass: (wrapperClass) => {
-      meta.wrapperClass = String(wrapperClass ?? "");
-      return api;
-    },
-    setCss: (css) => register("css", css),
-  };
-
-  return { id, meta, handlers, api };
+  const instance = createInstance(id, id);
+  return { id, instance, api: instance.api, Setting };
 }
 
 function evaluateModule(raw) {
@@ -896,48 +910,56 @@ function evaluateModule(raw) {
       valueAtAny,
       intish,
     );
-    const hasRegisteredHandlers =
-      runtime.handlers.visible.length > 0 ||
-      runtime.handlers.derive.length > 0 ||
-      runtime.handlers.renderOverlay.length > 0 ||
-      runtime.meta.settings.length > 0 ||
-      runtime.meta.css.trim();
-    if (!hasRegisteredHandlers) return null;
+    return [runtime.instance]
+      .map((instance) => {
+        const hasRegisteredHandlers =
+          instance.handlers.visible.length > 0 ||
+          instance.handlers.derive.length > 0 ||
+          instance.handlers.renderOverlay.length > 0 ||
+          instance.meta.settings.length > 0 ||
+          instance.meta.css.trim();
+        if (!hasRegisteredHandlers) return null;
 
-    const settings = normalizeSettingsSchema(runtime.meta.settings);
-    return {
-      id: runtime.meta.id,
-      fileName: runtime.meta.fileName,
-      name: runtime.meta.name,
-      description: runtime.meta.description,
-      locked: runtime.meta.locked,
-      defaultPosition: normalizePosition(runtime.meta.defaultPosition),
-      defaultSettings: {
-        ...defaultSettingsFromSchema(settings),
-        ...runtime.meta.defaultSettings,
-      },
-      settings,
-      css: runtime.meta.css,
-      wrapperClass: runtime.meta.wrapperClass,
-      visible: (ctx) => runtime.handlers.visible.every((handler) => handler(ctx) !== false),
-      derive: (ctx) => {
-        let data = ctx.context;
-        for (const handler of runtime.handlers.derive) {
-          const next = handler({ ...ctx, data });
-          if (next !== undefined) data = next;
-        }
-        return data;
-      },
-      tick: (ctx) => {
-        for (const handler of runtime.handlers.tick) {
-          handler(ctx);
-        }
-      },
-      render: (ctx) => runtime.handlers.renderOverlay.map((handler) => handler(ctx)).join(""),
-    };
+        const settings = normalizeSettingsSchema(instance.meta.settings);
+        return {
+          id: instance.meta.id,
+          fileName: instance.meta.fileName,
+          name: instance.meta.name,
+          description: instance.meta.description,
+          locked: instance.meta.locked,
+          defaultPosition: normalizePosition(instance.meta.defaultPosition),
+          defaultSettings: {
+            ...defaultSettingsFromSchema(settings),
+            ...instance.meta.defaultSettings,
+          },
+          settings,
+          css: instance.meta.css,
+          wrapperClass: instance.meta.wrapperClass,
+          visible: (ctx) => instance.handlers.visible.every((handler) => handler(ctx) !== false),
+          derive: (ctx) => {
+            let data = ctx.context;
+            for (const handler of instance.handlers.derive) {
+              const next = handler({ ...ctx, data });
+              if (next !== undefined) data = next;
+            }
+            return data;
+          },
+          tick: (ctx) => {
+            for (const handler of instance.handlers.tick) {
+              handler(ctx);
+            }
+          },
+          render: (ctx) => {
+            const rendered = instance.handlers.renderOverlay.map((handler) => handler(ctx));
+            if (rendered.length === 1 && Array.isArray(rendered[0])) return rendered[0];
+            return rendered.flatMap((item) => (Array.isArray(item) ? item : [item])).join("");
+          },
+        };
+      })
+      .filter(Boolean);
   } catch (error) {
     console.error(`Failed to load overlay module ${raw.file_name ?? raw.id}`, error);
-    return null;
+    return [];
   }
 }
 
@@ -974,6 +996,7 @@ function settingValue(settings, item) {
   if (item.type === "color") return "#ffffff";
   if (item.type === "select") return item.options?.[0]?.value ?? "";
   if (item.type === "number") return item.min ?? 0;
+  if (item.type === "images") return [];
   if (item.type === "key" || item.type === "image") return "";
   return item.min ?? "";
 }
@@ -984,6 +1007,7 @@ function resetValueForSetting(item) {
   if (item.type === "color") return "#ffffff";
   if (item.type === "select") return item.options?.[0]?.value ?? "";
   if (item.type === "number") return item.min ?? 0;
+  if (item.type === "images") return [];
   if (item.type === "key" || item.type === "image") return "";
   return item.min ?? "";
 }
@@ -1154,6 +1178,103 @@ function ImageSettingInput({ value, onChange, onReset }) {
           </Button>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function ImagesSettingInput({ value, onChange, onReset }) {
+  const fileInputRef = useRef(null);
+  const fileDialogActiveRef = useRef(false);
+  const images = Array.isArray(value) ? value.filter((item) => typeof item === "string" && item.startsWith("data:image/")) : [];
+
+  useEffect(() => {
+    return () => {
+      if (fileDialogActiveRef.current) {
+        invoke("set_game_overlay_file_dialog_active", { active: false }).catch(console.error);
+      }
+    };
+  }, []);
+
+  function setFileDialogActive(active) {
+    fileDialogActiveRef.current = active;
+    invoke("set_game_overlay_file_dialog_active", { active }).catch(console.error);
+  }
+
+  function pickImages() {
+    setFileDialogActive(true);
+    const clearAfterFocus = () => {
+      window.setTimeout(() => {
+        if (fileDialogActiveRef.current) {
+          setFileDialogActive(false);
+        }
+      }, 250);
+    };
+    window.addEventListener("focus", clearAfterFocus, { once: true });
+    fileInputRef.current?.click();
+  }
+
+  function handleFileChange(event) {
+    setFileDialogActive(false);
+    const files = Array.from(event.target.files ?? []).filter((file) => file.type.startsWith("image/"));
+    event.target.value = "";
+    if (files.length === 0) return;
+
+    Promise.all(
+      files.map(
+        (file) =>
+          new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
+            reader.onerror = () => resolve(null);
+            reader.readAsDataURL(file);
+          }),
+      ),
+    ).then((nextImages) => {
+      onChange([...images, ...nextImages.filter(Boolean)]);
+    });
+  }
+
+  function removeImage(index) {
+    onChange(images.filter((_, itemIndex) => itemIndex !== index));
+  }
+
+  return (
+    <div className="rounded border border-white/10 bg-black/20 p-3">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        onChange={handleFileChange}
+        className="hidden"
+      />
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm text-white/80">
+          <ImageIcon className="h-4 w-4 text-white/45" />
+          <span>{images.length > 0 ? `${images.length} images` : "No images selected"}</span>
+        </div>
+        <ResetButton onClick={onReset} />
+      </div>
+      {images.length > 0 ? (
+        <div className="mb-3 grid grid-cols-3 gap-2">
+          {images.map((src, index) => (
+            <div key={`${src.slice(0, 32)}-${index}`} className="group relative overflow-hidden rounded border border-white/10 bg-black/35">
+              <img src={src} alt="" className="aspect-square w-full object-contain" />
+              <button
+                type="button"
+                className="absolute right-1 top-1 rounded bg-black/70 p-1 text-white/70 opacity-0 hover:text-white group-hover:opacity-100"
+                onClick={() => removeImage(index)}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <Button type="button" variant="secondary" size="sm" className="h-9 w-full rounded" onClick={pickImages}>
+        <Upload className="h-4 w-4" />
+        Upload
+      </Button>
     </div>
   );
 }
@@ -1337,6 +1458,21 @@ function ModuleSettings({ module, settings, onChange, onPreview, onReset }) {
           );
         }
 
+        if (item.type === "images") {
+          return (
+            <div key={item.key}>
+              <div className="mb-2 flex items-center justify-between gap-3 text-xs text-white/55">
+                <span>{item.label || item.key}</span>
+              </div>
+              <ImagesSettingInput
+                value={value}
+                onChange={(next) => onChange(item.key, next)}
+                onReset={() => onReset(item)}
+              />
+            </div>
+          );
+        }
+
         return (
           <div key={item.key}>
             <div className="mb-2 flex items-center justify-between gap-3 text-xs text-white/55">
@@ -1359,11 +1495,32 @@ function isInteractiveDragTarget(target) {
   return !!target?.closest?.("button,a,input,select,textarea,[role='button'],[data-no-drag='true']");
 }
 
-function OverlayModuleView({ module, html, position, editMode, onDragStart }) {
+function overlayRenderEntries(module, rendered) {
+  const items = Array.isArray(rendered) ? rendered : [{ html: rendered }];
+  return items
+    .map((item, index) => {
+      const entry = item && typeof item === "object" && !Array.isArray(item)
+        ? item
+        : { html: item };
+      const childId = safeOverlayId(entry.id ?? index + 1);
+      const widgetId = Array.isArray(rendered) ? `${module.id}:${childId}` : module.id;
+      return {
+        module,
+        widgetId,
+        renderId: widgetId,
+        html: String(entry.html ?? ""),
+        defaultPosition: normalizePosition(entry.defaultPosition, module.defaultPosition),
+      };
+    })
+    .filter((entry) => entry.html);
+}
+
+function OverlayModuleView({ entry, position, editMode, onDragStart }) {
+  const { module, widgetId, html } = entry;
   const scopedClass = `overlay-module overlay-module-${safeClassName(module.id)}`;
   return (
     <div
-      data-overlay-widget={module.id}
+      data-overlay-widget={widgetId}
       className={cn(
         "fixed z-[2147483000] text-white",
         scopedClass,
@@ -1375,7 +1532,7 @@ function OverlayModuleView({ module, html, position, editMode, onDragStart }) {
       style={{ left: `${position.x}%`, top: `${position.y}%` }}
       onPointerDown={(event) => {
         if (!editMode || module.locked || isInteractiveDragTarget(event.target)) return;
-        onDragStart(event, module.id);
+        onDragStart(event, widgetId, module.id);
       }}
     >
       <div dangerouslySetInnerHTML={{ __html: html }} />
@@ -1390,7 +1547,7 @@ export default function GameOverlay({ captureOnly = false }) {
   }
 
   const [rawModules, setRawModules] = useState([]);
-  const loadedModules = useMemo(() => rawModules.map(evaluateModule).filter(Boolean), [rawModules]);
+  const loadedModules = useMemo(() => rawModules.flatMap(evaluateModule), [rawModules]);
   const modules = loadedModules.length > 0 ? loadedModules : FALLBACK_MODULES;
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [overlayActive, setOverlayActive] = useState(true);
@@ -1497,7 +1654,7 @@ export default function GameOverlay({ captureOnly = false }) {
     ])
       .then(([nextModules, nextConfig, latestLcStats, debugStatus]) => {
         const loaded = Array.isArray(nextModules) ? nextModules : [];
-        const evaluated = loaded.map(evaluateModule).filter(Boolean);
+        const evaluated = loaded.flatMap(evaluateModule);
         invoke("report_game_overlay_frontend_info", {
           message: `modules loaded=${loaded.length} [${loaded.map((module) => module.file_name || module.id).join(", ")}], evaluated=${evaluated.length} [${evaluated.map((module) => module.id).join(", ")}]`,
         }).catch(console.error);
@@ -1957,10 +2114,10 @@ export default function GameOverlay({ captureOnly = false }) {
     setConfig(normalized);
   }
 
-  function startDrag(event, id) {
+  function startDrag(event, id, moduleId = id) {
     if (!editMode) return;
     const rect = event.currentTarget.closest("[data-overlay-widget]")?.getBoundingClientRect();
-    setSelectedModuleId(id);
+    setSelectedModuleId(moduleId);
     dragRef.current = {
       id,
       offsetX: rect ? event.clientX - rect.left : 0,
@@ -2061,7 +2218,7 @@ export default function GameOverlay({ captureOnly = false }) {
     invoke("get_game_overlay_modules")
       .then((nextModules) => {
         const loaded = Array.isArray(nextModules) ? nextModules : [];
-        const evaluated = loaded.map(evaluateModule).filter(Boolean);
+        const evaluated = loaded.flatMap(evaluateModule);
         setRawModules(loaded);
         setModuleLoadError(evaluated.length === 0 ? "No overlay modules loaded. Built-in fallback is active." : "");
       })
@@ -2115,35 +2272,36 @@ export default function GameOverlay({ captureOnly = false }) {
   overlayContextRef.current = context;
 
   const renderedModules = modules
-    .map((module) => {
+    .flatMap((module) => {
       const settings = config.module_settings[module.id] ?? module.defaultSettings;
       const api = createModuleApi(module.id, inputSnapshotRef, consumedInputRef, overlayContextRef);
       let visible = false;
-      let html = "";
+      let rendered = "";
       let data = context;
       try {
         module.tick?.({ context, settings, config, api });
         data = module.derive({ context, settings, config, api }) ?? context;
         visible = !!module.visible({ context, data, settings, config, api });
-        html = String(module.render({ context, data, settings, config, api }) ?? "");
+        rendered = module.render({ context, data, settings, config, api }) ?? "";
       } catch (error) {
         visible = editMode;
-        html = `<div class="overlay-title">${escapeHtml(module.name)}</div><div class="overlay-line">Module error</div>`;
+        rendered = `<div class="overlay-title">${escapeHtml(module.name)}</div><div class="overlay-line">Module error</div>`;
         console.error(`Overlay module ${module.id} failed`, error);
         pushOverlayLog("error", `Module ${module.id} failed`, String(error?.message ?? error));
         invoke("report_game_overlay_frontend_error", {
           message: `module ${module.id} render failed: ${error?.message ?? error}`,
         }).catch(console.error);
       }
-      return { module, settings, visible, html };
+      if (!visible) return [];
+      return overlayRenderEntries(module, rendered).map((entry) => ({ ...entry, settings }));
     })
-    .filter((entry) => entry.visible);
+    .filter(Boolean);
 
   const renderReport = [
     `modules=${modules.length}`,
     `moduleIds=${modules.map((module) => module.id).join(",") || "none"}`,
     `rendered=${renderedModules.length}`,
-    `renderedIds=${renderedModules.map((entry) => entry.module.id).join(",") || "none"}`,
+    `renderedIds=${renderedModules.map((entry) => entry.widgetId).join(",") || "none"}`,
     `hiddenIds=${modules
       .filter((module) => !renderedModules.some((entry) => entry.module.id === module.id))
       .map((module) => `${module.id}:enabled=${String((config.module_settings[module.id] ?? module.defaultSettings)?.enabled)}`)
@@ -2186,12 +2344,11 @@ export default function GameOverlay({ captureOnly = false }) {
         : null}
 
       {overlayActive
-        ? renderedModules.map(({ module, html }) => (
+        ? renderedModules.map((entry) => (
             <OverlayModuleView
-              key={module.id}
-              module={module}
-              html={html}
-              position={normalizePosition(config.widgets[module.id], module.defaultPosition)}
+              key={entry.renderId}
+              entry={entry}
+              position={normalizePosition(config.widgets[entry.widgetId], entry.defaultPosition)}
               editMode={editMode}
               onDragStart={startDrag}
             />

@@ -1,6 +1,7 @@
 mod bepinex_cfg;
 mod discord_presence;
 mod downloader;
+mod event_config;
 mod google_oauth;
 mod installer;
 mod lcstats_autosheet;
@@ -783,6 +784,299 @@ fn force_enable_mods_for_version(
     Ok(())
 }
 
+fn force_disable_mods_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+    mods_to_disable: &[(String, String)],
+) -> Result<(), String> {
+    if mods_to_disable.is_empty() {
+        return Ok(());
+    }
+
+    let mut list = read_disablemod(app)?;
+    let mut changed = false;
+    for (dev, name) in mods_to_disable {
+        changed |= add_disabled_mod(&mut list, dev, name);
+    }
+    if changed {
+        list.mods
+            .sort_by(|a, b| a.dev.cmp(&b.dev).then(a.name.cmp(&b.name)));
+        list.mods.dedup();
+        write_disablemod(app, &list)?;
+    }
+
+    let plugins = plugins_dir(app, version)?;
+    let patchers = patchers_dir(app, version)?;
+    for (dev, name) in mods_to_disable {
+        if let Some(dir) = mod_dir_for(&plugins, dev, name) {
+            let _ = set_mod_files_old_suffix(&dir, false);
+        }
+        if let Some(dir) = mod_dir_for(&patchers, dev, name) {
+            let _ = set_mod_files_old_suffix(&dir, false);
+        }
+    }
+
+    Ok(())
+}
+
+fn legacy_event_selection_state_path(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
+        .join("config")
+        .join(format!("event_state_v{version}.json")))
+}
+
+fn event_selection_state_path(app: &tauri::AppHandle, version: u32) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
+        .join("config")
+        .join("events")
+        .join("state")
+        .join(format!("v{version}.json")))
+}
+
+fn read_event_selection_state(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<EventSelectionState, String> {
+    let path = event_selection_state_path(app, version)?;
+    if !path.exists() {
+        let legacy = legacy_event_selection_state_path(app, version)?;
+        if legacy.exists() {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            match std::fs::rename(&legacy, &path) {
+                Ok(()) => {}
+                Err(_) => {
+                    let text = std::fs::read_to_string(&legacy).map_err(|e| e.to_string())?;
+                    std::fs::write(&path, text).map_err(|e| e.to_string())?;
+                    let _ = std::fs::remove_file(&legacy);
+                }
+            }
+        }
+    }
+    if !path.exists() {
+        return Ok(EventSelectionState::default());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    serde_json::from_str::<EventSelectionState>(&text).map_err(|e| e.to_string())
+}
+
+fn write_event_selection_state(
+    app: &tauri::AppHandle,
+    version: u32,
+    state: &EventSelectionState,
+) -> Result<(), String> {
+    let path = event_selection_state_path(app, version)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
+    std::fs::write(path, json).map_err(|e| e.to_string())
+}
+
+fn mod_pairs_from_disabled(mods: &[DisabledMod]) -> Vec<(String, String)> {
+    mods.iter()
+        .map(|m| (m.dev.clone(), m.name.clone()))
+        .collect()
+}
+
+fn mod_entry_pairs(mods: &[mod_config::ModEntry]) -> Vec<(String, String)> {
+    mods
+        .iter()
+        .filter(|m| m.enabled)
+        .map(|m| (m.dev.clone(), m.name.clone()))
+        .collect()
+}
+
+fn disabled_mods_from_pairs(mods: &[(String, String)]) -> Vec<DisabledMod> {
+    let mut seen = HashSet::new();
+    let mut out = vec![];
+    for (dev, name) in mods {
+        let key = normalize_mod_key(dev, name);
+        if seen.insert(key) {
+            out.push(normalize_mod_id(dev, name));
+        }
+    }
+    out.sort_by(|a, b| a.dev.cmp(&b.dev).then(a.name.cmp(&b.name)));
+    out
+}
+
+fn remove_mods_from_disablemod(app: &tauri::AppHandle, mods: &[(String, String)]) -> Result<(), String> {
+    if mods.is_empty() {
+        return Ok(());
+    }
+
+    let keys = mod_keys_from_pairs(mods);
+    let mut list = read_disablemod(app)?;
+    let before = list.mods.len();
+    list.mods
+        .retain(|m| !keys.contains(&normalize_mod_key(&m.dev, &m.name)));
+    if list.mods.len() != before {
+        write_disablemod(app, &list)?;
+    }
+    Ok(())
+}
+
+fn remove_event_installed_mods_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+    mods_to_remove: &[(String, String)],
+) -> Result<(), String> {
+    if mods_to_remove.is_empty() {
+        return Ok(());
+    }
+
+    let plugins = plugins_dir(app, version)?;
+    let patchers = patchers_dir(app, version)?;
+    for (dev, name) in mods_to_remove {
+        for root in [&plugins, &patchers] {
+            let Some(dir) = mod_dir_for(root, dev, name) else {
+                continue;
+            };
+            if !dir.starts_with(root) {
+                continue;
+            }
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                log::warn!(
+                    "Failed to remove expired event mod folder {}: {e}",
+                    dir.to_string_lossy()
+                );
+            }
+        }
+    }
+
+    remove_mods_from_disablemod(app, mods_to_remove)
+}
+
+fn normalized_steam_id(value: &str) -> String {
+    let digits = value
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .collect::<String>();
+    if digits.len() == 17 && digits.starts_with("7656") {
+        digits
+    } else {
+        String::new()
+    }
+}
+
+fn normalized_tester_name(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+fn event_allows_current_tester(
+    app: &tauri::AppHandle,
+    event: &event_config::EventEntry,
+) -> Result<bool, String> {
+    let tester_steam_ids: HashSet<String> = event
+        .testers
+        .iter()
+        .map(|id| normalized_steam_id(id))
+        .filter(|id| !id.is_empty())
+        .collect();
+    let tester_names: HashSet<String> = event
+        .testers
+        .iter()
+        .filter(|id| normalized_steam_id(id).is_empty())
+        .map(|id| normalized_tester_name(id))
+        .filter(|id| !id.is_empty())
+        .collect();
+    if tester_steam_ids.is_empty() && tester_names.is_empty() {
+        return Ok(true);
+    }
+
+    let login = downloader::depot_get_login_state(app.clone())?;
+    let current_steam_id = login
+        .steam_id
+        .as_deref()
+        .map(normalized_steam_id)
+        .unwrap_or_default();
+    let current_name = login
+        .username
+        .as_deref()
+        .map(normalized_tester_name)
+        .unwrap_or_default();
+    Ok((!current_steam_id.is_empty() && tester_steam_ids.contains(&current_steam_id))
+        || (!current_name.is_empty() && tester_names.contains(&current_name)))
+}
+
+async fn event_forced_enabled_mods_for_launch(
+    app: &tauri::AppHandle,
+    version: u32,
+    event_id: Option<String>,
+) -> Result<Vec<(String, String)>, String> {
+    let event_id = event_id.unwrap_or_default().trim().to_string();
+    if event_id.is_empty() {
+        clear_event_mods_for_version(app, version)?;
+        return Ok(vec![]);
+    }
+
+    let client = reqwest::Client::new();
+    let events = event_config::fetch_events(&client).await?;
+    let event = events
+        .events
+        .into_iter()
+        .find(|entry| entry.id.eq_ignore_ascii_case(&event_id))
+        .ok_or_else(|| format!("event not found: {event_id}"))?;
+
+    if !event.versions.is_empty() && !event.versions.contains(&version) {
+        return Err(format!(
+            "{} is not available for v{}",
+            event.name, version
+        ));
+    }
+
+    if !event_allows_current_tester(app, &event)? {
+        return Err(format!("{} is only available to testers", event.name));
+    }
+
+    let event_mods: Vec<mod_config::ModEntry> = event
+        .mods
+        .into_iter()
+        .filter(|m| m.is_compatible(version))
+        .collect();
+    Ok(mod_entry_pairs(&event_mods))
+}
+
+fn clear_event_mods_for_version(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
+    let state = read_event_selection_state(app, version)?;
+    let previous_mods = mod_pairs_from_disabled(&state.mods);
+    let installed_mods = mod_pairs_from_disabled(&state.installed_mods);
+    force_disable_mods_for_version(app, version, &previous_mods)?;
+    remove_event_installed_mods_for_version(app, version, &installed_mods)?;
+    write_event_selection_state(app, version, &EventSelectionState::default())
+}
+
+fn reconcile_event_mods_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+    event_id: Option<String>,
+) -> Result<bool, String> {
+    let state = read_event_selection_state(app, version)?;
+    let saved = state.event_id.as_deref().unwrap_or("").trim();
+    if saved.is_empty() {
+        return Ok(false);
+    }
+
+    let active = event_id.unwrap_or_default();
+    let active = active.trim();
+    if !active.eq_ignore_ascii_case(saved) {
+        clear_event_mods_for_version(app, version)?;
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
 fn overall_from_step(step: u32, step_progress: f64, steps_total: u32) -> f64 {
     if steps_total == 0 {
         return 0.0;
@@ -799,6 +1093,14 @@ struct ManifestDto {
     mods: Vec<mod_config::ModEntry>,
     manifests: BTreeMap<u32, String>,
     preset_tag_constraints: BTreeMap<String, mod_config::TagConstraint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct EventSelectionState {
+    event_id: Option<String>,
+    mods: Vec<DisabledMod>,
+    #[serde(default)]
+    installed_mods: Vec<DisabledMod>,
 }
 
 fn preset_tag_constraint_for_name<'a>(
@@ -2506,20 +2808,20 @@ register("renderOverlay", ({ settings }) => {
   const arm = Math.max(1, (size - gap) / 2);
   const color = settings.color ?? "#ffffff";
   const opacity = Number(settings.opacity ?? 0.9);
-  const line = `position:absolute;background:${color};opacity:${opacity};box-shadow:0 0 8px rgba(0,0,0,.45);`;
+  const line = `position:absolute;background:${color};opacity:${opacity};`;
   const center = size / 2 - thickness / 2;
   if (settings.style === "dot") {
     return `<div style="width:${size}px;height:${size}px;position:relative"><div style="${line}left:${center}px;top:${center}px;width:${thickness}px;height:${thickness}px;border-radius:999px"></div></div>`;
   }
   if (settings.style === "circle") {
-    return `<div style="width:${size}px;height:${size}px;border:${thickness}px solid ${color};opacity:${opacity};border-radius:999px;box-shadow:0 0 8px rgba(0,0,0,.45)"></div>`;
+    return `<div style="width:${size}px;height:${size}px;border:${thickness}px solid ${color};opacity:${opacity};border-radius:999px"></div>`;
   }
   if (settings.style === "x") {
-    const xLine = `position:absolute;left:${gap / 2}px;top:${center}px;width:${Math.max(1, size - gap)}px;height:${thickness}px;background:${color};opacity:${opacity};box-shadow:0 0 8px rgba(0,0,0,.45);transform-origin:center;`;
+    const xLine = `position:absolute;left:${gap / 2}px;top:${center}px;width:${Math.max(1, size - gap)}px;height:${thickness}px;background:${color};opacity:${opacity};transform-origin:center;`;
     return `<div style="position:relative;width:${size}px;height:${size}px"><div style="${xLine}transform:rotate(45deg)"></div><div style="${xLine}transform:rotate(-45deg)"></div></div>`;
   }
   if (settings.style === "square") {
-    return `<div style="width:${size}px;height:${size}px;border:${thickness}px solid ${color};opacity:${opacity};box-shadow:0 0 8px rgba(0,0,0,.45)"></div>`;
+    return `<div style="width:${size}px;height:${size}px;border:${thickness}px solid ${color};opacity:${opacity}"></div>`;
   }
   return `<div style="position:relative;width:${size}px;height:${size}px">
     <div style="${line}left:0;top:${size / 2 - thickness / 2}px;width:${arm}px;height:${thickness}px"></div>
@@ -2588,7 +2890,41 @@ register("renderOverlay", ({ settings, api }) => {
   const width = Math.max(48, Math.min(900, Number(settings.width ?? 240) || 240));
   const opacity = Math.max(0.05, Math.min(1, Number(settings.opacity ?? 1) || 1));
   const radius = Math.max(0, Math.min(48, Number(settings.radius ?? 0) || 0));
-  return `<img src="${api.html(src)}" alt="" style="display:block;width:${width}px;max-width:90vw;height:auto;opacity:${opacity};border-radius:${radius}px;filter:drop-shadow(0 12px 28px rgba(0,0,0,.45));" />`;
+  return `<img src="${api.html(src)}" alt="" style="display:block;width:${width}px;max-width:90vw;height:auto;opacity:${opacity};border-radius:${radius}px;" />`;
+});
+"##,
+    ),
+    (
+        "multi_image_uploads.js",
+        r##"/// <reference path="./hq-overlay-module.d.ts" />
+// @ts-check
+
+setName("Multi Image Uploads");
+setDescription("Upload several images in one setting. Each uploaded image becomes its own draggable overlay.");
+setDefaultPosition({ x: 60, y: 12 });
+register("settings", [
+  Setting.toggle("enabled", "Enabled", true),
+  Setting.images("images", "Images", []),
+  Setting.range("width", "Width", 48, 900, 1, 220),
+  Setting.range("opacity", "Opacity", 0.05, 1, 0.05, 1),
+  Setting.range("radius", "Corner Radius", 0, 48, 1, 0)
+]);
+register("visible", ({ context, settings }) => settings.enabled !== false && (context.editMode || (settings.images ?? []).length > 0));
+register("renderOverlay", ({ context, settings, api }) => {
+  const images = Array.isArray(settings.images) ? settings.images.filter((src) => String(src).startsWith("data:image/")) : [];
+  if (images.length === 0) {
+    return context.editMode
+      ? [{ id: "empty", html: `<div style="border:1px dashed rgba(255,255,255,.25);background:rgba(0,0,0,.45);padding:12px 16px;border-radius:6px;color:rgba(255,255,255,.58);font-size:14px">Upload images</div>` }]
+      : [];
+  }
+  const width = Math.max(48, Math.min(900, Number(settings.width ?? 220) || 220));
+  const opacity = Math.max(0.05, Math.min(1, Number(settings.opacity ?? 1) || 1));
+  const radius = Math.max(0, Math.min(48, Number(settings.radius ?? 0) || 0));
+  return images.map((src, index) => ({
+    id: `image-${index + 1}`,
+    defaultPosition: { x: 60 + index * 4, y: 12 + index * 8 },
+    html: `<img src="${api.html(src)}" alt="" style="display:block;width:${width}px;max-width:90vw;height:auto;opacity:${opacity};border-radius:${radius}px;" />`
+  }));
 });
 "##,
     ),
@@ -2606,9 +2942,7 @@ setCss(`
       border: 1px solid rgba(255,255,255,.14);
       border-radius: 6px;
       background: rgba(12,14,18,.86);
-      box-shadow: 0 16px 42px rgba(0,0,0,.42);
       padding: 11px 12px;
-      backdrop-filter: blur(10px);
     }
     .overlay-module-real_bottom_line .rl-head {
       margin-bottom: 7px;
@@ -2687,7 +3021,7 @@ register("renderOverlay", ({ data, api }) => {
 setName("Leaderboard");
 setDescription("Shows your estimated HighQuotaHQ rank from the latest LCStatsTracker payload.");
 setDefaultPosition({ x: 4, y: 18 });
-setWrapperClass("rounded border border-white/15 bg-black/70 p-3 shadow-xl shadow-black/45");
+setWrapperClass("rounded border border-white/15 bg-black/70 p-3");
 register("settings", [
   Setting.toggle("enabled", "Enabled", false),
   Setting.selectMenu("track", "Track", [
@@ -2743,7 +3077,7 @@ register("renderOverlay", ({ context, settings, api }) => {
 setName("End Summary");
 setDescription("Shows a temporary end summary event or a preview while editing layout.");
 setDefaultPosition({ x: 72, y: 8 });
-setWrapperClass("rounded border border-white/15 bg-black/70 p-3 shadow-xl shadow-black/45");
+setWrapperClass("rounded border border-white/15 bg-black/70 p-3");
 register("visible", ({ context }) => context.editMode || !!context.endSummary);
 register("renderOverlay", ({ context, api }) => {
   const summary = context.endSummary ?? {
@@ -2766,6 +3100,7 @@ const OVERLAY_MODULE_TYPES: &str = r##"type OverlaySettingSchema =
   | { key: string; label: string; type: "number"; min?: number; max?: number; step?: number; default?: number }
   | { key: string; label: string; type: "range"; min: number; max: number; step?: number; default?: number }
   | { key: string; label: string; type: "text" | "textarea" | "key" | "image"; default?: string }
+  | { key: string; label: string; type: "images"; default?: string[] }
   | { key: string; label: string; type: "select"; options: Array<{ label: string; value: string }>; default?: string };
 
 /** Shortcut strings captured by key buttons, for example "Insert", "Ctrl+Shift+K", or "Ctrl+Shift+*". */
@@ -2910,6 +3245,12 @@ type OverlayHandlerArgs<TData = any> = {
   api: OverlayModuleApi;
 };
 
+type OverlayRenderItem = {
+  id?: string;
+  html: string | number | null | undefined;
+  defaultPosition?: { x: number; y: number };
+};
+
 type OverlayModuleApi = {
   id: string;
   formatSeconds(totalSeconds: number): string;
@@ -2937,6 +3278,7 @@ declare const Setting: {
   text(key: string, label: string, defaultValue?: string): OverlaySettingSchema;
   textarea(key: string, label: string, defaultValue?: string): OverlaySettingSchema;
   image(key: string, label: string, defaultValue?: string): OverlaySettingSchema;
+  images(key: string, label: string, defaultValue?: string[]): OverlaySettingSchema;
   key(key: string, label: string, defaultValue?: OverlayShortcutString): OverlaySettingSchema;
   hotkey(key: string, label: string, defaultValue?: OverlayShortcutString): OverlaySettingSchema;
   select(key: string, label: string, options: Array<{ label: string; value: string }>, defaultValue?: string): OverlaySettingSchema;
@@ -2948,7 +3290,7 @@ declare function register(type: "defaults" | "metadata", payload: Record<string,
 declare function register(type: "css", payload: string): unknown;
 declare function register(type: "visible", payload: (args: OverlayHandlerArgs) => boolean | void): unknown;
 declare function register<TData = any>(type: "derive", payload: (args: OverlayHandlerArgs) => TData): unknown;
-declare function register<TData = any>(type: "renderOverlay", payload: (args: OverlayHandlerArgs<TData>) => string | number | null | undefined): unknown;
+declare function register<TData = any>(type: "renderOverlay", payload: (args: OverlayHandlerArgs<TData>) => string | number | null | undefined | OverlayRenderItem[]): unknown;
 declare function register<TData = any>(type: "tick" | "lcstats", payload: (args: OverlayHandlerArgs<TData>) => unknown): unknown;
 declare function register(type: OverlayRegisterType, payload: any): unknown;
 
@@ -3035,46 +3377,6 @@ fn default_overlay_widget_positions() -> HashMap<String, OverlayWidgetPosition> 
                 x: 50.0,
                 y: 50.0,
                 snap: false,
-            },
-        ),
-        (
-            "game_timer".to_string(),
-            OverlayWidgetPosition {
-                x: 4.0,
-                y: 6.0,
-                snap: true,
-            },
-        ),
-        (
-            "leaderboard".to_string(),
-            OverlayWidgetPosition {
-                x: 4.0,
-                y: 18.0,
-                snap: true,
-            },
-        ),
-        (
-            "image".to_string(),
-            OverlayWidgetPosition {
-                x: 64.0,
-                y: 16.0,
-                snap: true,
-            },
-        ),
-        (
-            "real_bottom_line".to_string(),
-            OverlayWidgetPosition {
-                x: 4.0,
-                y: 34.0,
-                snap: true,
-            },
-        ),
-        (
-            "end_summary".to_string(),
-            OverlayWidgetPosition {
-                x: 72.0,
-                y: 8.0,
-                snap: true,
             },
         ),
     ])
@@ -3558,6 +3860,21 @@ fn set_game_overlay_obs_capture_armed(
     Ok(cfg)
 }
 
+fn ensure_game_overlay_module_examples(dir: &Path) -> Result<(), String> {
+    let example_dir = dir.join("example");
+    std::fs::create_dir_all(&example_dir).map_err(|e| e.to_string())?;
+    for (file_name, source) in DEFAULT_OVERLAY_MODULES {
+        if *file_name == "crosshair.js" {
+            continue;
+        }
+        let example_path = example_dir.join(file_name);
+        if !example_path.exists() {
+            std::fs::write(&example_path, source).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 fn ensure_default_game_overlay_modules(app: &tauri::AppHandle) -> Result<(), String> {
     let dir = game_overlay_module_dir(app)?;
     if dir.exists() {
@@ -3581,9 +3898,13 @@ fn ensure_default_game_overlay_modules(app: &tauri::AppHandle) -> Result<(), Str
     )
     .map_err(|e| e.to_string())?;
     for (file_name, source) in DEFAULT_OVERLAY_MODULES {
+        if *file_name != "crosshair.js" {
+            continue;
+        }
         let path = dir.join(file_name);
         std::fs::write(&path, source).map_err(|e| e.to_string())?;
     }
+    ensure_game_overlay_module_examples(&dir)?;
     std::fs::write(
         dir.join(OVERLAY_MODULE_TYPES_VERSION_FILE_NAME),
         app.package_info().version.to_string(),
@@ -5908,6 +6229,16 @@ fn set_selected_version(app: tauri::AppHandle, version: u32) -> Result<u32, Stri
     storage::set_selected_version(&app, version)
 }
 
+#[tauri::command]
+fn get_events_enabled(app: tauri::AppHandle) -> Result<bool, String> {
+    storage::events_enabled(&app)
+}
+
+#[tauri::command]
+fn set_events_enabled(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    storage::set_events_enabled(&app, enabled)
+}
+
 fn same_storage_path(a: &std::path::Path, b: &std::path::Path) -> bool {
     if let (Ok(a), Ok(b)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         return a == b;
@@ -6069,6 +6400,16 @@ fn set_game_storage_dir(
 async fn open_custom_layout_docs() -> Result<bool, String> {
     opener::open("https://github.com/P-Asta/hq-launcher/blob/main/docs/CUSTOM_LAYOUT.md")
         .map_err(|e| format!("failed to open Custom Layout docs: {e}"))?;
+    Ok(true)
+}
+
+#[tauri::command]
+async fn open_external_url(url: String) -> Result<bool, String> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+        return Err("only http(s) URLs can be opened".to_string());
+    }
+    opener::open(trimmed).map_err(|e| format!("failed to open URL: {e}"))?;
     Ok(true)
 }
 
@@ -7660,6 +8001,7 @@ fn show_game_overlay_end_summary(
 async fn launch_game(
     app: tauri::AppHandle,
     version: u32,
+    event_id: Option<String>,
     launch_options: Option<Vec<String>>,
     launch_command_template: Option<String>,
     allow_multiple: Option<bool>,
@@ -7668,13 +8010,20 @@ async fn launch_game(
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
     wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
+    let event_forced_ids =
+        event_forced_enabled_mods_for_launch(&app, version, event_id).await?;
     let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
 
     let mut forced_disabled_ids = practice_mode_mod_ids();
     forced_disabled_ids.extend(run_mode_tagged_mod_ids(version, None).await?);
 
     // Non-practice launch: mode-required disabled mods win over the saved disabled list.
-    let _ = apply_effective_mod_states_for_version(&app, version, &forced_disabled_ids, &[]);
+    let _ = apply_effective_mod_states_for_version(
+        &app,
+        version,
+        &forced_disabled_ids,
+        &event_forced_ids,
+    );
     // For HQoL specifically, also ensure `.old` matches disablemod.json on normal runs.
     let _ = sync_hqol_with_disablemod_for_version(&app, version);
     let _ = sync_vlog_with_disablemod_for_version(&app, version);
@@ -7732,6 +8081,7 @@ async fn launch_game_practice(
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
     wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
+    clear_event_mods_for_version(&app, version)?;
     let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
 
     // Practice run: install + enable practice mods (compatible with this game version).
@@ -7798,6 +8148,7 @@ async fn launch_game_preset(
     version: u32,
     preset: String,
     practice: bool,
+    event_id: Option<String>,
     launch_options: Option<Vec<String>>,
     launch_command_template: Option<String>,
     allow_multiple: Option<bool>,
@@ -7806,6 +8157,8 @@ async fn launch_game_preset(
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
     wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
+    let event_forced_ids =
+        event_forced_enabled_mods_for_launch(&app, version, event_id).await?;
     // Normalize preset and map to manifest tags.
     let tags = preset_tags_for_name(&preset);
 
@@ -7841,6 +8194,7 @@ async fn launch_game_preset(
     allow_eclipsed_hq_optional_mods(&preset, &mut tagged_disabled_ids);
     let mut forced_enabled_ids = preset_ids.clone();
     forced_enabled_ids.extend(practice_ids.clone());
+    forced_enabled_ids.extend(event_forced_ids);
     if practice {
         forced_enabled_ids.extend(practice_mode_forced_enabled_ids());
     }
@@ -8052,7 +8406,11 @@ async fn prepare_preset(
         });
     }
 
-    let res = prepare_preset_for_version(&app, version, &preset, practice, cancel.clone()).await;
+    let res = async {
+        clear_event_mods_for_version(&app, version)?;
+        prepare_preset_for_version(&app, version, &preset, practice, cancel.clone()).await
+    }
+    .await;
 
     // Clear active prepare if it is still ours.
     {
@@ -8616,6 +8974,191 @@ async fn get_manifest() -> Result<ManifestDto, String> {
         manifests,
         preset_tag_constraints,
     })
+}
+
+#[tauri::command]
+async fn get_events() -> Result<event_config::EventManifest, String> {
+    let client = reqwest::Client::new();
+    event_config::fetch_events(&client).await
+}
+
+#[tauri::command]
+fn clear_selected_event(app: tauri::AppHandle, version: u32) -> Result<bool, String> {
+    clear_event_mods_for_version(&app, version)?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn reconcile_selected_event(
+    app: tauri::AppHandle,
+    version: u32,
+    event_id: Option<String>,
+) -> Result<bool, String> {
+    reconcile_event_mods_for_version(&app, version, event_id)
+}
+
+#[tauri::command]
+async fn prepare_event(
+    app: tauri::AppHandle,
+    version: u32,
+    event_id: String,
+    state: State<'_, PrepareState>,
+) -> Result<bool, String> {
+    let client = reqwest::Client::new();
+    let events = event_config::fetch_events(&client).await?;
+    let event = events
+        .events
+        .into_iter()
+        .find(|entry| entry.id.eq_ignore_ascii_case(event_id.trim()))
+        .ok_or_else(|| format!("event not found: {event_id}"))?;
+
+    if !event.versions.is_empty() && !event.versions.contains(&version) {
+        return Err(format!(
+            "{} is not available for v{}",
+            event.name, version
+        ));
+    }
+
+    if !event_allows_current_tester(&app, &event)? {
+        return Err(format!("{} is only available to testers", event.name));
+    }
+
+    let game_root = version_dir(&app, version)?;
+    if !game_root.exists() {
+        return Err(format!(
+            "version folder not found: {}",
+            game_root.to_string_lossy()
+        ));
+    }
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut guard = state
+            .active
+            .lock()
+            .map_err(|_| "prepare state lock poisoned".to_string())?;
+        if let Some(active) = guard.take() {
+            active.cancel.store(true, Ordering::Relaxed);
+        }
+        let id = state.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        *guard = Some(ActivePrepare {
+            id,
+            version,
+            cancel: cancel.clone(),
+        });
+    }
+
+    let res: Result<(), String> = async {
+        prepare_preset_for_version(&app, version, &event.preset, false, cancel.clone()).await?;
+
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Cancelled".to_string());
+        }
+
+        let event_mods: Vec<mod_config::ModEntry> = event
+            .mods
+            .iter()
+            .filter(|m| m.enabled)
+            .cloned()
+            .collect();
+        let selected_pairs = mod_entry_pairs(&event_mods);
+        let previous_state = read_event_selection_state(&app, version)?;
+        let selected_keys = mod_keys_from_pairs(&selected_pairs);
+        let previous_pairs = mod_pairs_from_disabled(&previous_state.mods);
+        let previous_installed_pairs = mod_pairs_from_disabled(&previous_state.installed_mods);
+        let previous_only: Vec<(String, String)> = previous_pairs
+            .into_iter()
+            .filter(|(dev, name)| !selected_keys.contains(&normalize_mod_key(dev, name)))
+            .collect();
+        let previous_installed_kept: Vec<(String, String)> = previous_installed_pairs
+            .iter()
+            .filter(|(dev, name)| selected_keys.contains(&normalize_mod_key(dev, name)))
+            .cloned()
+            .collect();
+        let previous_installed_only: Vec<(String, String)> = previous_installed_pairs
+            .into_iter()
+            .filter(|(dev, name)| !selected_keys.contains(&normalize_mod_key(dev, name)))
+            .collect();
+
+        force_disable_mods_for_version(&app, version, &previous_only)?;
+        remove_event_installed_mods_for_version(&app, version, &previous_installed_only)?;
+
+        let newly_installed_pairs = mod_entry_pairs(
+            &filter_missing_mods_for_version(&app, version, &event_mods)?
+        );
+
+        if !event_mods.is_empty() {
+            let cfg = ModsConfig {
+                mods: event_mods.clone(),
+            };
+            mods::install_mods_with_progress(
+                &app,
+                &game_root,
+                version,
+                &cfg,
+                &[],
+                Some(cancel.clone()),
+                |done, total, progress_info| {
+                    let step_progress = if total == 0 {
+                        1.0
+                    } else {
+                        (done as f64 / total as f64).clamp(0.0, 1.0)
+                    };
+                    progress::emit_progress(
+                        &app,
+                        TaskProgressPayload {
+                            version,
+                            steps_total: 1,
+                            step: 1,
+                            step_name: "Event Mods".to_string(),
+                            step_progress,
+                            overall_percent: overall_from_step(1, step_progress, 1),
+                            detail: progress_info
+                                .detail
+                                .or_else(|| Some(format!("Installing {} event mods...", event.name))),
+                            downloaded_bytes: progress_info.downloaded_bytes,
+                            total_bytes: progress_info.total_bytes,
+                            extracted_files: progress_info.extracted_files.or(Some(done)),
+                            total_files: progress_info.total_files.or(Some(total)),
+                        },
+                    );
+                },
+            )
+            .await?;
+        }
+
+        let mut installed_pairs = previous_installed_kept;
+        installed_pairs.extend(newly_installed_pairs);
+
+        force_enable_mods_for_version(&app, version, &selected_pairs)?;
+        write_event_selection_state(
+            &app,
+            version,
+            &EventSelectionState {
+                event_id: Some(event.id.clone()),
+                mods: disabled_mods_from_pairs(&selected_pairs),
+                installed_mods: disabled_mods_from_pairs(&installed_pairs),
+            },
+        )?;
+        wait_for_mod_file_renames_to_settle();
+        Ok(())
+    }
+    .await;
+
+    {
+        let mut guard = state
+            .active
+            .lock()
+            .map_err(|_| "prepare state lock poisoned".to_string())?;
+        if guard
+            .as_ref()
+            .is_some_and(|active| active.version == version && Arc::ptr_eq(&active.cancel, &cancel))
+        {
+            *guard = None;
+        }
+    }
+
+    res.map(|_| true)
 }
 
 #[tauri::command]
@@ -9392,6 +9935,12 @@ pub fn run() {
             set_mod_enabled,
             list_installed_mod_versions,
             get_manifest,
+            get_events,
+            get_events_enabled,
+            set_events_enabled,
+            prepare_event,
+            clear_selected_event,
+            reconcile_selected_event,
             get_practice_mod_list,
             list_installed_versions,
             list_config_files,
@@ -9455,6 +10004,7 @@ pub fn run() {
             installer::get_current_proton_dir,
             delete_installed_version,
             open_custom_layout_docs,
+            open_external_url,
             open_version_folder,
             open_downloader_folder,
             open_mod_folder,
