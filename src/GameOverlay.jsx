@@ -218,6 +218,435 @@ function valueAtAny(root, paths, fallback = undefined) {
   return fallback;
 }
 
+function firstValue(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== "") return value;
+  }
+  return undefined;
+}
+
+function arrayValue(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function pickMatchingKey(object, pattern) {
+  if (!object || typeof object !== "object") return undefined;
+  for (const [key, value] of Object.entries(object)) {
+    if (pattern.test(key)) return value;
+  }
+  return undefined;
+}
+
+function cleanOverlayName(value, fallback = "Unknown") {
+  const text = String(value ?? "")
+    .replace(/^"+|"+$/g, "")
+    .replace(/\(Clone\)$/i, "")
+    .trim();
+  return text || fallback;
+}
+
+function looksLikeOverlayName(value) {
+  if (typeof value !== "string") return false;
+  const text = cleanOverlayName(value);
+  if (!text || text === "Unknown") return false;
+  if (/^\d+$/.test(text)) return false;
+  if (/^(true|false|null|undefined|none)$/i.test(text)) return false;
+  if (/^(ship|level|moon|inside|outside|main|entrance|fire|exit)$/i.test(text)) return false;
+  return /[a-z]/i.test(text);
+}
+
+function findNestedOverlayName(root) {
+  const preferredKeys = /name|item|scrap|object|prop|display/i;
+  const ignoredKeys = /location|position|rotation|scale|spawn|collected|previous|day|value|price|weight|id|seed/i;
+  const seen = new Set();
+  const stack = [{ value: root, score: 0 }];
+  let best = "";
+  let bestScore = -1;
+
+  while (stack.length > 0) {
+    const entry = stack.pop();
+    const value = entry?.value;
+    const score = Number(entry?.score ?? 0);
+
+    if (typeof value === "string") {
+      if (looksLikeOverlayName(value) && score > bestScore) {
+        best = cleanOverlayName(value);
+        bestScore = score;
+      }
+      continue;
+    }
+
+    if (!value || typeof value !== "object" || seen.has(value)) continue;
+    seen.add(value);
+
+    for (const [key, child] of Object.entries(value)) {
+      if (ignoredKeys.test(key)) continue;
+      stack.push({ value: child, score: preferredKeys.test(key) ? score + 3 : score });
+    }
+  }
+
+  return best;
+}
+
+function normalizeScrapItem(item) {
+  const name = findNestedOverlayName(item) || "Unknown";
+  const value = intish(pickMatchingKey(item, /^(scrap)?value$|^price$/i));
+  return { name, value, raw: item };
+}
+
+function overlayDataSources(context) {
+  return [
+    context?.endSummary?.payload,
+    context?.lcstats,
+    context?.endSummary,
+  ].filter(Boolean);
+}
+
+function collectScrapItemsFromSource(source) {
+  const direct = pickMatchingKey(source, /^(missed|uncollected|left|remaining).*items$|^scrapMissed$/i);
+  return arrayValue(direct)
+    .filter((item) => item && typeof item === "object")
+    .map(normalizeScrapItem)
+    .filter((item) => item.name !== "Unknown" || item.value > 0)
+    .sort((a, b) => b.value - a.value);
+}
+
+function uniqueScrapItems(items) {
+  const unique = [];
+  const seen = new Set();
+  for (const item of arrayValue(items)) {
+    const key = `${item.name}:${item.value}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+  }
+  return unique;
+}
+
+function groupScrapItems(items) {
+  const groups = new Map();
+  for (const item of arrayValue(items)) {
+    const name = item.name || "Unknown";
+    const current = groups.get(name) ?? { name, values: [], total: 0, max: 0, count: 0, items: [] };
+    current.values.push(item.value);
+    current.items.push(item);
+    current.total += item.value;
+    current.max = Math.max(current.max, item.value);
+    current.count += 1;
+    groups.set(name, current);
+  }
+
+  return [...groups.values()]
+    .map((group) => ({ ...group, values: group.values.sort((a, b) => b - a) }))
+    .sort((a, b) => b.max - a.max || b.total - a.total || a.name.localeCompare(b.name));
+}
+
+function remainingScrapFromTotals(source) {
+  const perf = pickMatchingKey(source, /^performanceInfo$/i) ?? {};
+  const explicit = firstValue(
+    pickMatchingKey(source, /^(remaining|missed|uncollected).*scrap$/i),
+    pickMatchingKey(perf, /^(remaining|missed|uncollected).*scrap$/i),
+  );
+  if (explicit !== undefined) return intish(explicit);
+
+  const available = firstValue(
+    pickMatchingKey(perf, /^totalAvailableValue$/i),
+    pickMatchingKey(source, /^totalAvailableValue$|^bottomLineTrue$/i),
+  );
+  const collected = firstValue(
+    pickMatchingKey(perf, /^collectedTotal$/i),
+    pickMatchingKey(source, /^collectedTotal$/i),
+  );
+  if (available !== undefined && collected !== undefined) {
+    return Math.max(0, intish(available) - intish(collected));
+  }
+  return null;
+}
+
+function remainingScrapFromEndText(summary) {
+  const text = [summary?.title, ...arrayValue(summary?.lines)].join("\n");
+  const match = text.match(/(?:scrap|left|missed|remaining|uncollected)[^\d-]*(\d[\d,]*)/i);
+  return match ? intish(match[1].replace(/,/g, "")) : null;
+}
+
+function normalizedScrapSummary(context) {
+  const sources = overlayDataSources(context);
+  const items = uniqueScrapItems(sources.flatMap(collectScrapItemsFromSource));
+  const itemTotal = items.reduce((total, item) => total + item.value, 0);
+  const source = sources[0] ?? null;
+  const total = itemTotal || (
+    sources.map(remainingScrapFromTotals).find((value) => value !== null)
+    ?? remainingScrapFromEndText(context?.endSummary)
+    ?? null
+  );
+  const moon = cleanOverlayName(firstValue(
+    pickMatchingKey(pickMatchingKey(source, /^moonInfo$/i) ?? {}, /^name$/i),
+    pickMatchingKey(source, /^(moonName|moon|levelName)$/i),
+    context?.endSummary?.title,
+  ));
+
+  return {
+    moon,
+    total,
+    remaining: total,
+    items,
+    groups: groupScrapItems(items),
+  };
+}
+
+function hasEnemyName(value, pattern) {
+  if (typeof value === "string") return pattern.test(value);
+  if (!value || typeof value !== "object") return false;
+  return pattern.test(String(pickMatchingKey(value, /^(enemyName|name|type|enemy)$/i) ?? ""));
+}
+
+function countEnemyKeys(root, pattern, modePattern) {
+  if (!root || typeof root !== "object") return null;
+  const seen = new Set();
+  const stack = [root];
+  let total = 0;
+  let found = false;
+
+  while (stack.length > 0) {
+    const value = stack.pop();
+    if (!value || typeof value !== "object" || seen.has(value)) continue;
+    seen.add(value);
+
+    for (const [key, child] of Object.entries(value)) {
+      if (pattern.test(key) && modePattern.test(key) && typeof child !== "object") {
+        total += intish(child);
+        found = true;
+        continue;
+      }
+      if (modePattern.test(key) && child && typeof child === "object" && !Array.isArray(child)) {
+        for (const [enemyKey, enemyValue] of Object.entries(child)) {
+          if (pattern.test(enemyKey) && typeof enemyValue !== "object") {
+            total += intish(enemyValue);
+            found = true;
+          }
+        }
+      }
+      if (child && typeof child === "object") stack.push(child);
+    }
+  }
+
+  return found ? total : null;
+}
+
+function countEnemyArrays(root, pattern, modePattern) {
+  const seen = new Set();
+  const stack = [{ value: root, inContainer: false }];
+  let count = 0;
+  let foundContainer = false;
+
+  while (stack.length > 0) {
+    const entry = stack.pop();
+    const value = entry?.value;
+    if (!value || typeof value !== "object" || seen.has(value)) continue;
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      if (entry.inContainer) {
+        foundContainer = true;
+        for (const item of value) {
+          if (hasEnemyName(item, pattern)) count += 1;
+          if (item && typeof item === "object") stack.push({ value: item, inContainer: true });
+        }
+      } else {
+        for (const item of value) {
+          if (item && typeof item === "object") stack.push({ value: item, inContainer: false });
+        }
+      }
+      continue;
+    }
+
+    for (const [key, child] of Object.entries(value)) {
+      if (modePattern.test(key) && Array.isArray(child)) {
+        foundContainer = true;
+        for (const item of child) {
+          if (hasEnemyName(item, pattern)) count += 1;
+        }
+      }
+      stack.push({ value: child, inContainer: modePattern.test(key) });
+    }
+  }
+
+  return foundContainer || count > 0 ? count : null;
+}
+
+const OVERLAY_ENEMY_CATALOG = [
+  { id: "jester", name: "Jester", names: ["Jester"], kind: "bool", source: "all" },
+  { id: "barber", name: "Barber", names: ["Clay Surgeon", "ClaySurgeon"], kind: "bool", source: "all" },
+  { id: "bunkerSpider", name: "Bunker Spider", names: ["Bunker Spider", "SandSpider"], kind: "bool", source: "all" },
+  { id: "bracken", name: "Bracken", names: ["Flowerman"], kind: "bool", source: "all" },
+  { id: "cadaver", name: "Cadaver", names: ["Cadaver Growths", "Cadaver Growth"], kind: "bool", source: "all" },
+  { id: "ghostGirl", name: "Ghost Girl", names: ["Girl"], kind: "bool", source: "all" },
+  { id: "maneater", name: "Maneater", names: ["Maneater", "CaveDweller"], kind: "bool", source: "all" },
+  { id: "backwaterGunkfish", name: "Backwater Gunkfish", names: ["Stingray"], kind: "count", source: "all" },
+  { id: "coilHead", name: "Coil Head", names: ["Spring"], kind: "count", source: "all" },
+  { id: "hoardingBug", name: "Hoarding Bug", names: ["Hoarding bug", "Hoarding Bug"], kind: "count", source: "all" },
+  { id: "hygrodere", name: "Hygrodere", names: ["Blob", "Hygrodere"], kind: "count", source: "indoor" },
+  { id: "masked", name: "Masked", names: ["MaskedPlayerEnemy", "Masked"], kind: "count", source: "all" },
+  { id: "snareFlea", name: "Snare Flea", names: ["Centipede"], kind: "count", source: "all" },
+  { id: "sporeLizard", name: "Spore Lizard", names: ["Puffer"], kind: "count", source: "all" },
+  { id: "thumper", name: "Thumper", names: ["Crawler"], kind: "count", source: "all" },
+  { id: "nutcracker", name: "Nutcracker", names: ["Nutcracker"], kind: "count", source: "indoor" },
+  { id: "butler", name: "Butler", names: ["Butler"], kind: "count", source: "indoor" },
+  { id: "manticoil", name: "Manticoil", names: ["Manticoil", "Mantacoil"], kind: "count", source: "day" },
+  { id: "roamingLocusts", name: "Roaming Locusts", names: ["Roaming Locusts", "Docile Locust Bees"], kind: "count", source: "day" },
+  { id: "circuitBees", name: "Circuit Bees", names: ["Circuit Bees", "Red Locust Bees"], kind: "count", source: "day" },
+  { id: "tulipSnake", name: "Tulip Snake", names: ["Tulip Snake", "FlowerSnake"], kind: "count", source: "day" },
+  { id: "giantSapsucker", name: "Giant Sapsucker", names: ["Giant Sapsucker", "Giant Kiwi"], kind: "count", source: "day" },
+  { id: "earthLeviathan", name: "Earth Leviathan", names: ["Earth Leviathan"], kind: "count", source: "night" },
+  { id: "forestGiant", name: "Forest Giant", names: ["ForestGiant"], kind: "count", source: "night" },
+  { id: "baboonHawk", name: "Baboon Hawk", names: ["Baboon hawk"], kind: "count", source: "night" },
+  { id: "oldBird", name: "Old Bird", names: ["RadMech", "Old Bird"], kind: "count", source: "night" },
+  { id: "bushWolf", name: "Bush Wolf", names: ["Bush Wolf"], kind: "bool", source: "night" },
+  { id: "feiopar", name: "Feiopar", names: ["Feiopar"], kind: "count", source: "night" },
+  { id: "eyelessDog", name: "Eyeless Dog", names: ["MouthDog", "Eyeless Dog"], kind: "count", source: "night" },
+];
+
+function normalizedEnemyKey(value) {
+  return String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function resolveEnemyDefinition(value) {
+  if (value && typeof value === "object" && Array.isArray(value.names)) {
+    return {
+      id: value.id ?? normalizedEnemyKey(value.name ?? value.names[0]),
+      name: value.name ?? value.names[0],
+      names: value.names.map(String),
+      kind: value.kind ?? "count",
+      source: value.source ?? "all",
+    };
+  }
+  const key = normalizedEnemyKey(value);
+  const found = OVERLAY_ENEMY_CATALOG.find((enemy) =>
+    normalizedEnemyKey(enemy.id) === key
+    || normalizedEnemyKey(enemy.name) === key
+    || enemy.names.some((name) => normalizedEnemyKey(name) === key)
+  );
+  if (found) return found;
+  const name = String(value ?? "");
+  return { id: normalizedEnemyKey(name), name, names: [name], kind: "count", source: "all" };
+}
+
+function enemyNameMatches(value, names) {
+  const key = normalizedEnemyKey(value);
+  return names.some((name) => normalizedEnemyKey(name) === key);
+}
+
+function spawnGroupNames(source) {
+  switch (String(source ?? "all").toLowerCase()) {
+    case "indoor":
+    case "inside":
+      return ["IndoorSpawns"];
+    case "day":
+    case "daytime":
+      return ["DayTimeSpawns"];
+    case "night":
+    case "outside":
+    case "nighttime":
+      return ["NightTimeSpawns"];
+    case "all":
+    default:
+      return ["IndoorSpawns", "DayTimeSpawns", "NightTimeSpawns"];
+  }
+}
+
+function countEnemySpawnArrays(source, names, sourceMode) {
+  if (!source || typeof source !== "object") return null;
+  let found = false;
+  let total = 0;
+  for (const group of spawnGroupNames(sourceMode)) {
+    const values = arrayValue(source[group]);
+    if (values.length > 0) found = true;
+    total += values.filter((spawn) => enemyNameMatches(spawn?.Enemy ?? spawn?.enemy ?? spawn?.name, names)).length;
+  }
+  return found ? total : null;
+}
+
+function enemyCountFromSources(sources, pattern, modePattern) {
+  let total = 0;
+  let found = false;
+  for (const source of sources) {
+    const keyed = countEnemyKeys(source, pattern, modePattern);
+    if (keyed !== null) {
+      total += keyed;
+      found = true;
+      continue;
+    }
+    const arrayCount = countEnemyArrays(source, pattern, modePattern);
+    if (arrayCount !== null) {
+      total += arrayCount;
+      found = true;
+    }
+  }
+  return found ? total : 0;
+}
+
+function normalizedEnemyCounts(context, enemy, options = {}) {
+  const sources = overlayDataSources(context);
+  const definition = resolveEnemyDefinition(enemy);
+  const sourceMode = options.source ?? definition.source ?? "all";
+  const exactSpawned = sources
+    .map((source) => countEnemySpawnArrays(source, definition.names, sourceMode))
+    .find((count) => count !== null);
+  const pattern = new RegExp(definition.names.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "i");
+  const killed = enemyCountFromSources(sources, pattern, /kill|killed|dead|slain|defeat|defeated/i);
+  let spawned = exactSpawned ?? enemyCountFromSources(sources, pattern, /spawn|spawned|enemy|enemies|creature|monster|outside|inside/i);
+  if (spawned === 0 && killed > 0) spawned = killed;
+  return {
+    id: definition.id,
+    name: definition.name,
+    names: definition.names.slice(),
+    kind: definition.kind,
+    source: sourceMode,
+    killed,
+    spawned,
+    alive: Math.max(0, spawned - killed),
+    present: spawned > 0,
+  };
+}
+
+function overlayErrorMessage(error) {
+  return String(error?.message ?? error ?? "Unknown error");
+}
+
+function overlayErrorStack(error) {
+  return String(error?.stack ?? error?.message ?? error ?? "Unknown error");
+}
+
+function createDiagnosticModule(raw, error) {
+  const id = safeOverlayId(`error_${raw?.id || raw?.file_name?.replace(/\.js$/i, "") || "module"}`);
+  const fileName = raw?.file_name || raw?.id || "unknown module";
+  const message = overlayErrorMessage(error);
+  return {
+    id,
+    fileName,
+    name: `Broken: ${fileName}`,
+    description: `This overlay module failed to load: ${message}`,
+    locked: true,
+    defaultPosition: { x: 4, y: 12 },
+    defaultSettings: {},
+    settings: [],
+    css: "",
+    wrapperClass: "rounded border border-red-300/30 bg-red-950/70 px-3 py-2 text-xs text-red-100 shadow-xl shadow-black/50",
+    visible: ({ context }) => !!context.editMode,
+    derive: ({ context }) => context,
+    tick: () => {},
+    render: () => `<div class="font-semibold">Module load failed</div><div>${escapeHtml(fileName)}</div><div>${escapeHtml(message)}</div>`,
+    loadError: {
+      moduleId: id,
+      moduleName: fileName,
+      fileName,
+      phase: "load",
+      message,
+      stack: overlayErrorStack(error),
+    },
+  };
+}
+
 function isStreamOverlaysPayload(value) {
   if (!value || typeof value !== "object") return false;
   return value.type === "data"
@@ -650,15 +1079,22 @@ function matchesInputShortcut(event, shortcut) {
 }
 
 function createInputApi(moduleId, inputSnapshotRef, consumedInputRef) {
+  const consumeCallCounts = new Map();
+
   function current() {
     return inputSnapshotRef.current ?? createInputSnapshot();
   }
 
-  function consume(type, shortcut) {
+  function consume(type, shortcut, scope = "") {
     const snapshot = current();
     const event = snapshot.events.find((item) => item.type === type && matchesInputShortcut(item, shortcut));
     if (!event) return false;
-    const key = `${moduleId}:${type}:${canonicalShortcut(shortcut)}:${event.id}`;
+    const canonical = canonicalShortcut(shortcut);
+    const callKey = `${type}:${canonical}:${event.id}`;
+    const callIndex = consumeCallCounts.get(callKey) ?? 0;
+    consumeCallCounts.set(callKey, callIndex + 1);
+    const consumer = scope ? `scope:${String(scope)}` : `call:${callIndex}`;
+    const key = `${moduleId}:${type}:${canonical}:${event.id}:${consumer}`;
     if (consumedInputRef.current.has(key)) return false;
     consumedInputRef.current.add(key);
     if (consumedInputRef.current.size > 512) {
@@ -674,8 +1110,8 @@ function createInputApi(moduleId, inputSnapshotRef, consumedInputRef) {
     shortcut: (shortcut) => current().down.has(canonicalShortcut(shortcut)),
     pressed: (shortcut) => current().events.some((event) => event.type === "keydown" && matchesInputShortcut(event, shortcut)),
     released: (shortcut) => current().events.some((event) => event.type === "keyup" && matchesInputShortcut(event, shortcut)),
-    consumePress: (shortcut) => consume("keydown", shortcut),
-    consumeRelease: (shortcut) => consume("keyup", shortcut),
+    consumePress: (shortcut, scope) => consume("keydown", shortcut, scope),
+    consumeRelease: (shortcut, scope) => consume("keyup", shortcut, scope),
     events: () => current().events.slice(),
     last: () => current().events[0] ?? null,
   };
@@ -687,6 +1123,26 @@ function createModuleApi(
   consumedInputRef = { current: new Set() },
   contextRef = { current: null },
 ) {
+  const currentContext = () => contextRef.current ?? {};
+  const scrapApi = {
+    summary: () => normalizedScrapSummary(currentContext()),
+    moon: () => normalizedScrapSummary(currentContext()).moon,
+    remaining: () => normalizedScrapSummary(currentContext()).remaining,
+    total: () => normalizedScrapSummary(currentContext()).total,
+    items: () => normalizedScrapSummary(currentContext()).items,
+    groups: () => normalizedScrapSummary(currentContext()).groups,
+  };
+  const enemiesApi = {
+    list: () => OVERLAY_ENEMY_CATALOG.map((enemy) => ({ ...enemy, names: enemy.names.slice() })),
+    counts: (enemy, options) => normalizedEnemyCounts(currentContext(), enemy, options),
+    spawned: (enemy, options) => normalizedEnemyCounts(currentContext(), enemy, options).spawned,
+    killed: (enemy, options) => normalizedEnemyCounts(currentContext(), enemy, options).killed,
+    alive: (enemy, options) => normalizedEnemyCounts(currentContext(), enemy, options).alive,
+    present: (enemy, options) => normalizedEnemyCounts(currentContext(), enemy, options).present,
+    butler: (options) => normalizedEnemyCounts(currentContext(), "butler", options),
+    nutcracker: (options) => normalizedEnemyCounts(currentContext(), "nutcracker", options),
+  };
+
   return {
     id: moduleId,
     formatSeconds,
@@ -697,6 +1153,8 @@ function createModuleApi(
     intish,
     valueAt,
     valueAtAny,
+    scrap: scrapApi,
+    enemies: enemiesApi,
     className: (name) => `overlay-module-${safeClassName(moduleId)} ${name ? safeClassName(name) : ""}`.trim(),
     now: () => Date.now(),
     input: createInputApi(moduleId, inputSnapshotRef, consumedInputRef),
@@ -959,7 +1417,7 @@ function evaluateModule(raw) {
       .filter(Boolean);
   } catch (error) {
     console.error(`Failed to load overlay module ${raw.file_name ?? raw.id}`, error);
-    return [];
+    return [createDiagnosticModule(raw, error)];
   }
 }
 
@@ -1550,7 +2008,7 @@ export default function GameOverlay({ captureOnly = false }) {
   const loadedModules = useMemo(() => rawModules.flatMap(evaluateModule), [rawModules]);
   const modules = loadedModules.length > 0 ? loadedModules : FALLBACK_MODULES;
   const [config, setConfig] = useState(DEFAULT_CONFIG);
-  const [overlayActive, setOverlayActive] = useState(true);
+  const [overlayActive, setOverlayActive] = useState(false);
   const [controlsOpen, setControlsOpen] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [selectedModuleId, setSelectedModuleId] = useState("general");
@@ -1579,6 +2037,7 @@ export default function GameOverlay({ captureOnly = false }) {
   const controlsDragRef = useRef(null);
   const latestConfigRef = useRef(DEFAULT_CONFIG);
   const renderReportRef = useRef("");
+  const moduleErrorReportRef = useRef("");
   const inputSnapshotRef = useRef(createInputSnapshot());
   const consumedInputRef = useRef(new Set());
   const overlayContextRef = useRef(null);
@@ -1659,7 +2118,14 @@ export default function GameOverlay({ captureOnly = false }) {
           message: `modules loaded=${loaded.length} [${loaded.map((module) => module.file_name || module.id).join(", ")}], evaluated=${evaluated.length} [${evaluated.map((module) => module.id).join(", ")}]`,
         }).catch(console.error);
         setRawModules(loaded);
-        setModuleLoadError(evaluated.length === 0 ? "No overlay modules loaded. Built-in fallback is active." : "");
+        const failedLoads = evaluated.filter((module) => module.loadError);
+        setModuleLoadError(
+          evaluated.length === 0
+            ? "No overlay modules loaded. Built-in fallback is active."
+            : failedLoads.length > 0
+              ? `Failed to load ${failedLoads.length} overlay module${failedLoads.length === 1 ? "" : "s"}: ${failedLoads.map((module) => module.fileName).join(", ")}`
+              : "",
+        );
         setConfig(normalizeConfig(nextConfig, evaluated.length > 0 ? evaluated : FALLBACK_MODULES));
         if (debugStatus) {
           setOverlayDebug(debugStatus);
@@ -1915,13 +2381,13 @@ export default function GameOverlay({ captureOnly = false }) {
 
   useEffect(() => {
     if (captureOnly) return undefined;
-    const shortcuts = collectModuleInputShortcuts(modules, config);
+    const shortcuts = overlayActive ? collectModuleInputShortcuts(modules, config) : [];
     invoke("set_game_overlay_input_shortcuts", { shortcuts }).catch((error) => {
       invoke("report_game_overlay_frontend_error", {
         message: `failed to register input shortcuts: ${error?.message ?? error}`,
       }).catch(console.error);
     });
-  }, [captureOnly, modules, config.module_settings, config.general?.overlay_key]);
+  }, [captureOnly, overlayActive, modules, config.module_settings, config.general?.overlay_key]);
 
   useEffect(() => {
     if (!endSummary?.expiresAt) return undefined;
@@ -2220,7 +2686,14 @@ export default function GameOverlay({ captureOnly = false }) {
         const loaded = Array.isArray(nextModules) ? nextModules : [];
         const evaluated = loaded.flatMap(evaluateModule);
         setRawModules(loaded);
-        setModuleLoadError(evaluated.length === 0 ? "No overlay modules loaded. Built-in fallback is active." : "");
+        const failedLoads = evaluated.filter((module) => module.loadError);
+        setModuleLoadError(
+          evaluated.length === 0
+            ? "No overlay modules loaded. Built-in fallback is active."
+            : failedLoads.length > 0
+              ? `Failed to load ${failedLoads.length} overlay module${failedLoads.length === 1 ? "" : "s"}: ${failedLoads.map((module) => module.fileName).join(", ")}`
+              : "",
+        );
       })
       .catch((error) => {
         console.error(error);
@@ -2269,28 +2742,62 @@ export default function GameOverlay({ captureOnly = false }) {
     valueAt,
     valueAtAny,
   };
+  context.scrap = {
+    summary: () => normalizedScrapSummary(context),
+    moon: () => normalizedScrapSummary(context).moon,
+    remaining: () => normalizedScrapSummary(context).remaining,
+    total: () => normalizedScrapSummary(context).total,
+    items: () => normalizedScrapSummary(context).items,
+    groups: () => normalizedScrapSummary(context).groups,
+  };
+  context.enemies = {
+    list: () => OVERLAY_ENEMY_CATALOG.map((enemy) => ({ ...enemy, names: enemy.names.slice() })),
+    counts: (enemy, options) => normalizedEnemyCounts(context, enemy, options),
+    spawned: (enemy, options) => normalizedEnemyCounts(context, enemy, options).spawned,
+    killed: (enemy, options) => normalizedEnemyCounts(context, enemy, options).killed,
+    alive: (enemy, options) => normalizedEnemyCounts(context, enemy, options).alive,
+    present: (enemy, options) => normalizedEnemyCounts(context, enemy, options).present,
+    butler: (options) => normalizedEnemyCounts(context, "butler", options),
+    nutcracker: (options) => normalizedEnemyCounts(context, "nutcracker", options),
+  };
   overlayContextRef.current = context;
 
+  const moduleErrors = [];
   const renderedModules = modules
     .flatMap((module) => {
+      if (module.loadError) {
+        moduleErrors.push(module.loadError);
+      }
       const settings = config.module_settings[module.id] ?? module.defaultSettings;
       const api = createModuleApi(module.id, inputSnapshotRef, consumedInputRef, overlayContextRef);
       let visible = false;
       let rendered = "";
       let data = context;
+      let failedPhase = "";
       try {
+        failedPhase = "tick";
         module.tick?.({ context, settings, config, api });
+        failedPhase = "derive";
         data = module.derive({ context, settings, config, api }) ?? context;
+        failedPhase = "visible";
         visible = !!module.visible({ context, data, settings, config, api });
+        failedPhase = "render";
         rendered = module.render({ context, data, settings, config, api }) ?? "";
       } catch (error) {
+        const message = overlayErrorMessage(error);
+        const stack = overlayErrorStack(error);
+        const phase = failedPhase || "render";
+        moduleErrors.push({
+          moduleId: module.id,
+          moduleName: module.name,
+          fileName: module.fileName,
+          phase,
+          message,
+          stack,
+        });
         visible = editMode;
-        rendered = `<div class="overlay-title">${escapeHtml(module.name)}</div><div class="overlay-line">Module error</div>`;
-        console.error(`Overlay module ${module.id} failed`, error);
-        pushOverlayLog("error", `Module ${module.id} failed`, String(error?.message ?? error));
-        invoke("report_game_overlay_frontend_error", {
-          message: `module ${module.id} render failed: ${error?.message ?? error}`,
-        }).catch(console.error);
+        rendered = `<div class="overlay-title">${escapeHtml(module.name)}</div><div class="overlay-line">${escapeHtml(phase)} failed</div><div class="overlay-line">${escapeHtml(message)}</div>`;
+        console.error(`Overlay module ${module.id} ${phase} failed`, error);
       }
       if (!visible) return [];
       return overlayRenderEntries(module, rendered).map((entry) => ({ ...entry, settings }));
@@ -2315,6 +2822,34 @@ export default function GameOverlay({ captureOnly = false }) {
     renderReportRef.current = renderReport;
     invoke("report_game_overlay_frontend_info", { message: `render ${renderReport}` }).catch(console.error);
   }, [renderReport]);
+
+  const moduleErrorReport = moduleErrors
+    .map((error) => [
+      error.moduleId,
+      error.fileName,
+      error.phase,
+      error.message,
+      error.stack,
+    ].join("\u001f"))
+    .join("\u001e");
+
+  useEffect(() => {
+    if (!moduleErrorReport || moduleErrorReportRef.current === moduleErrorReport) return;
+    moduleErrorReportRef.current = moduleErrorReport;
+    for (const error of moduleErrors) {
+      const title = `Module ${error.moduleId} ${error.phase} failed`;
+      const details = [
+        error.fileName ? `file: ${error.fileName}` : "",
+        error.moduleName ? `name: ${error.moduleName}` : "",
+        `error: ${error.message}`,
+        error.stack && error.stack !== error.message ? error.stack : "",
+      ].filter(Boolean).join("\n");
+      pushOverlayLog("error", title, details);
+      invoke("report_game_overlay_frontend_error", {
+        message: `${title}\n${details}`,
+      }).catch(console.error);
+    }
+  }, [moduleErrorReport]);
 
   const moduleCss = modules
     .filter((module) => module.css.trim())

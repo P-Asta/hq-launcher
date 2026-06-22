@@ -25,7 +25,7 @@ The launcher also writes `hq-overlay-module.d.ts` into `overlayModule`. Add this
 // @ts-check
 
 setName("Quota Alert");
-setDescription("Shows the latest quota value from LCStatsTracker.");
+setDescription("Shows normalized remaining scrap after a run ends.");
 setDefaultPosition({ x: 8, y: 10 });
 setWrapperClass("rounded border border-white/15 bg-black/70 p-3");
 
@@ -37,8 +37,9 @@ register("settings", [
 register("visible", ({ context, settings }) => context.editMode || settings.enabled !== false);
 
 register("renderOverlay", ({ api, settings }) => {
-  const quota = api.valueAt(api.getLcStats(), "QuotaInfo.NewQuota", 0);
-  return `<div style="color:${api.html(settings.color)}">Quota ${api.number(quota)}</div>`;
+  const scrap = api.scrap.summary();
+  const total = scrap.remaining ?? 0;
+  return `<div style="color:${api.html(settings.color)}">${api.html(scrap.moon)} Scrap ${api.number(total)}</div>`;
 });
 ```
 
@@ -116,25 +117,234 @@ Common helpers:
 
 ```js
 register("renderOverlay", ({ api }) => {
-  const stats = api.getLcStats();
-  const stream = api.getStreamOverlay();
-  const moon = stream?.moonName ?? api.valueAt(stats, "MoonInfo.Name", "Unknown");
-  const quota = stream?.quotaValue ?? api.valueAt(stats, "QuotaInfo.NewQuota", 0);
+  const scrap = api.scrap.summary();
+  const bracken = api.enemies.counts("Bracken");
+  const eyelessDogs = api.enemies.counts("Eyeless Dog");
 
-  return `<div>${api.html(moon)}</div><div>${api.number(quota)}</div>`;
+  return `<div>${api.html(scrap.moon)}</div>
+    <div>Scrap ${api.number(scrap.remaining ?? 0)}</div>
+    <div>Bracken ${api.number(bracken.spawned)}</div>
+    <div>Eyeless Dog ${api.number(eyelessDogs.spawned)}</div>`;
 });
 ```
 
 - `api.getLcStats()`: latest LCStatsTracker payload view.
 - `api.getLcStatsRaw()`: raw latest LCStatsTracker payload string, or `null`.
 - `api.getStreamOverlay()`: latest StreamOverlays payload, or `null`.
-- `api.valueAt(root, path, fallback)`: read a nested value.
-- `api.valueAtAny(root, paths, fallback)`: read the first matching nested value.
+- `api.scrap.summary()`: normalized end-run scrap data from LCStatsTracker/end-summary sources.
+- `api.scrap.items()`: missed/remaining scrap as `{ name, value, raw }[]`.
+- `api.scrap.groups()`: missed/remaining scrap grouped by name.
+- `api.scrap.remaining()` / `api.scrap.total()`: normalized remaining scrap value, or `null`.
+- `api.scrap.moon()`: normalized moon name.
+- `api.enemies.list()`: typed Custom Layout enemy catalog with display names, code names, type, and default source.
+- `api.enemies.counts(name, options)`: normalized `{ killed, spawned, alive, present }` counts for any typed catalog display name or code name.
+- `api.enemies.spawned(name, options)` / `killed` / `alive` / `present`: direct count helpers.
+- `api.enemies.butler()` / `api.enemies.nutcracker()`: convenience shortcuts.
 - `api.number(value)`: numeric display formatting.
 - `api.html(value)`: HTML escaping.
 - `api.className(name)`: stable class name scoped to the overlay id.
 
 StreamOverlays reading is opt-in. Enable `Use StreamOverlays API` in Overlay Settings when a module needs it.
+
+### Normalized Scrap API
+
+Use `api.scrap` when you want end-run missed/remaining scrap without reading
+LCStatsTracker field names yourself. All scrap helpers read the same normalized
+summary object.
+
+`api.scrap.summary()` returns an `OverlayScrapSummary`:
+
+```js
+{
+  moon: "Artifice",
+  total: 455,
+  remaining: 455,
+  items: [
+    { name: "Cash Register", value: 160, raw: {} },
+    { name: "Gold Bar", value: 110, raw: {} }
+  ],
+  groups: [
+    {
+      name: "Apparatus",
+      values: [30, 20, 10],
+      total: 60,
+      max: 30,
+      count: 3,
+      items: [
+        { name: "Apparatus", value: 30, raw: {} },
+        { name: "Apparatus", value: 20, raw: {} },
+        { name: "Apparatus", value: 10, raw: {} }
+      ]
+    }
+  ]
+}
+```
+
+`OverlayScrapSummary` fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `moon` | `string` | Normalized moon/run name. Falls back to `"Unknown"`. |
+| `total` | `number \| null` | Normalized scrap left behind. Same value as `remaining`. |
+| `remaining` | `number \| null` | Scrap left behind. `null` when no reliable source exists. |
+| `items` | `OverlayScrapItem[]` | Individual missed/remaining scrap items, sorted by `value` high to low. |
+| `groups` | `OverlayScrapGroup[]` | `items` grouped by normalized item `name`. |
+
+`OverlayScrapItem` fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `name` | `string` | Human display name such as `"Cash Register"` or `"Gold Bar"`. |
+| `value` | `number` | Scrap value. Missing or unparsable values become `0`. |
+| `raw` | `any` | Original payload item. Use only for debugging or advanced modules. |
+
+`OverlayScrapGroup` fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `name` | `string` | Shared item name for the group. |
+| `values` | `number[]` | All values in the group, sorted high to low. |
+| `total` | `number` | Sum of all `values`. |
+| `max` | `number` | Highest individual value in the group. |
+| `count` | `number` | Number of items in the group. |
+| `items` | `OverlayScrapItem[]` | The individual normalized items in this group. |
+
+`groups` are sorted by `max` descending, then `total` descending, then `name`
+ascending. That means the most important high-value groups naturally render
+first.
+
+Scrap helpers:
+
+| Helper | Returns |
+| --- | --- |
+| `api.scrap.moon()` | `string`, usually the moon/run title or `"Unknown"` |
+| `api.scrap.remaining()` | `number | null`, normalized scrap left behind |
+| `api.scrap.total()` | `number | null`, alias for `remaining()` |
+| `api.scrap.items()` | `OverlayScrapItem[]`, sorted high value first |
+| `api.scrap.groups()` | `OverlayScrapGroup[]`, grouped by item name |
+
+Common scrap patterns:
+
+```js
+const scrap = api.scrap.summary();
+const totalText = scrap.remaining == null ? "?" : api.number(scrap.remaining);
+
+const rows = scrap.groups.slice(0, 6).map((group) => {
+  const detail = group.count > 1 ? `${group.count}x / ${api.number(group.total)}` : api.number(group.max);
+  return `<div>${api.html(group.name)} ${detail}</div>`;
+}).join("");
+```
+
+### Normalized Enemy API
+
+Use `api.enemies` when you want spawn/killed counts without manually checking
+`IndoorSpawns`, `DayTimeSpawns`, or `NightTimeSpawns`.
+
+`api.enemies.counts("Bracken")` returns an `OverlayEnemyCounts`:
+
+```js
+{
+  id: "bracken",
+  name: "Bracken",
+  names: ["Flowerman"],
+  kind: "bool",
+  source: "all",
+  killed: 0,
+  spawned: 1,
+  alive: 1,
+  present: true
+}
+```
+
+`OverlayEnemyCounts` fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | `string` | Stable catalog id, such as `"bracken"` or `"eyelessDog"`. |
+| `name` | `string` | Human display name, such as `"Bracken"`. |
+| `names` | `string[]` | LCStatsTracker code names and aliases matched for this enemy. |
+| `kind` | `"bool" \| "count" \| string` | Custom Layout style. `bool` means presence is usually displayed; `count` means count is usually displayed. |
+| `source` | `OverlayEnemySource` | Spawn group used for this count. |
+| `killed` | `number` | Best-effort killed count from available payloads. |
+| `spawned` | `number` | Spawn count from the selected source. |
+| `alive` | `number` | `Math.max(0, spawned - killed)`. |
+| `present` | `boolean` | `true` when `spawned > 0`. |
+
+`OverlayEnemyDefinition`, returned by `api.enemies.list()`:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | `string` | Stable catalog id accepted by `api.enemies.counts(id)`. |
+| `name` | `string` | Human display name. |
+| `names` | `string[]` | LCStatsTracker code names and aliases. |
+| `kind` | `"bool" \| "count" \| string` | Suggested display style. |
+| `source` | `"all" \| "indoor" \| "night" \| string` | Default source used by `counts()`. |
+
+`OverlayEnemySource` values:
+
+| Source | Spawn arrays read |
+| --- | --- |
+| `"all"` | `IndoorSpawns`, `DayTimeSpawns`, and `NightTimeSpawns` |
+| `"indoor"` / `"inside"` | `IndoorSpawns` only |
+| `"day"` / `"daytime"` | `DayTimeSpawns` only |
+| `"night"` / `"nighttime"` / `"outside"` | `NightTimeSpawns` only |
+
+Enemy helpers:
+
+| Helper | Returns |
+| --- | --- |
+| `api.enemies.list()` | `OverlayEnemyDefinition[]`, every known typed enemy entry. |
+| `api.enemies.counts(name, options)` | `OverlayEnemyCounts` |
+| `api.enemies.spawned(name, options)` | `number` |
+| `api.enemies.killed(name, options)` | `number` |
+| `api.enemies.alive(name, options)` | `number` |
+| `api.enemies.present(name, options)` | `boolean`, true when `spawned > 0` |
+| `api.enemies.butler(options)` | `OverlayEnemyCounts` for Butler |
+| `api.enemies.nutcracker(options)` | `OverlayEnemyCounts` for Nutcracker |
+
+Common enemy patterns:
+
+```js
+const bracken = api.enemies.counts("Bracken");
+const coilHeads = api.enemies.spawned("Coil Head");
+const outsideDogs = api.enemies.counts("Eyeless Dog", { source: "night" });
+
+const visibleEnemies = api.enemies.list()
+  .map((enemy) => api.enemies.counts(enemy))
+  .filter((enemy) => enemy.present);
+```
+
+Scrap/enemy helpers let modules avoid hard-coding LCStatsTracker field names:
+
+```js
+register("derive", ({ api }) => {
+  const scrap = api.scrap.summary();
+  const enemies = ["Jester", "Flowerman", "Spring", "MouthDog"].map((name) => ({
+    name,
+    ...api.enemies.counts(name)
+  }));
+  return {
+    moon: scrap.moon,
+    total: scrap.remaining,
+    groups: scrap.groups,
+    enemies
+  };
+});
+```
+
+Enemy names follow the Custom Layout catalog. You can use either display names like
+`"Bracken"` and `"Eyeless Dog"` or LCStatsTracker code names like `"Flowerman"`
+and `"MouthDog"`. Pass `{ source: "indoor" }`, `{ source: "day" }`, or
+`{ source: "night" }` when you need a specific spawn group.
+
+Known names are typed for autocomplete, including indoor, daytime, and nighttime
+entities such as `"Hygrodere"`, `"MaskedPlayerEnemy"`, `"Tulip Snake"`,
+`"Giant Sapsucker"`, `"Old Bird"`, and `"Kidnapper Fox"`. For modded enemies,
+pass a custom query object:
+
+```js
+api.enemies.counts({ name: "Custom Monster", names: ["CustomMonster"] });
+```
 
 ## Input
 
@@ -159,6 +369,24 @@ register("visible", () => enabled);
 - `api.input.down(shortcut)` / `held(shortcut)` / `shortcut(shortcut)`: true while held.
 - `api.input.pressed(shortcut)` / `released(shortcut)`: transient recent checks.
 - `api.input.events()`: recent normalized input events.
+
+On Windows, module shortcuts are observed without blocking the original key
+input, so a key bound by an overlay module should still reach Lethal Company.
+
+The same shortcut can be assigned to multiple module settings. When one module
+uses the same key for multiple independent actions, pass a stable scope string
+so each binding can consume the same physical key press once:
+
+```js
+register("tick", ({ settings, api }) => {
+  if (api.input.consumePress(settings.toggleKey, "toggle")) {
+    enabled = !enabled;
+  }
+  if (api.input.consumePress(settings.dismissKey, "dismiss")) {
+    dismissed = true;
+  }
+});
+```
 
 ## Leaderboard Data
 

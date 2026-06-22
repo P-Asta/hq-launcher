@@ -311,6 +311,104 @@ function LauncherRoot() {
   );
 }
 
+function OverlayEmergencyFallback({ error, onRetry }) {
+  const [controlsOpen, setControlsOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const stack = String(error?.stack ?? error?.message ?? error);
+  const shortStack = stack.split("\n").slice(0, 8).join("\n");
+
+  useEffect(() => {
+    let unlisten = null;
+    let disposed = false;
+    listen("overlay://controls-open-changed", (event) => {
+      if (!disposed) setControlsOpen(!!event.payload);
+    }).then((nextUnlisten) => {
+      if (disposed) {
+        nextUnlisten();
+      } else {
+        unlisten = nextUnlisten;
+      }
+    }).catch(console.error);
+    return () => {
+      disposed = true;
+      if (typeof unlisten === "function") unlisten();
+    };
+  }, []);
+
+  function closeControls() {
+    invoke("set_game_overlay_controls_open", { open: false }).catch(console.error);
+  }
+
+  async function copyError() {
+    await navigator.clipboard.writeText(stack);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1200);
+  }
+
+  if (!controlsOpen) {
+    return (
+      <div className="pointer-events-none fixed right-4 top-4 z-[2147483647] max-w-[min(360px,calc(100vw-2rem))] text-white">
+        <div className="rounded border border-red-300/35 bg-red-950/75 px-3 py-2 text-xs shadow-2xl shadow-black/60">
+          <div className="font-semibold text-red-100">Overlay crashed</div>
+          <div className="mt-1 text-red-100/70">Focus Lethal Company and press the overlay key to open recovery.</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-[2147483647] bg-black/35 text-white">
+      <div className="absolute right-6 top-6 flex w-[min(620px,calc(100vw-3rem))] flex-col overflow-hidden rounded border border-red-300/35 bg-[#121318]/98 shadow-2xl shadow-black/70">
+        <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+          <div>
+            <div className="text-sm font-semibold text-red-100">Overlay Recovery</div>
+            <div className="text-xs text-white/45">Game input is protected; this panel only appears when the overlay menu is open.</div>
+          </div>
+          <button
+            type="button"
+            onClick={closeControls}
+            className="flex h-8 w-8 items-center justify-center rounded text-white/55 hover:bg-white/10 hover:text-white"
+            aria-label="Close overlay recovery"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="p-4">
+          <div className="mb-3 rounded border border-red-300/20 bg-red-950/35 px-3 py-2 text-sm text-red-100">
+            GameOverlay render failed: {String(error?.message ?? error)}
+          </div>
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-black/35 p-3 font-mono text-[11px] leading-relaxed text-white/65">
+            {shortStack}
+          </pre>
+          <div className="mt-4 flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => copyError().catch(console.error)}
+              className="rounded border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/75 hover:bg-white/10 hover:text-white"
+            >
+              {copied ? "Copied" : "Copy error"}
+            </button>
+            <button
+              type="button"
+              onClick={onRetry}
+              className="rounded border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/75 hover:bg-white/10 hover:text-white"
+            >
+              Retry overlay
+            </button>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="rounded bg-red-300 px-3 py-2 text-xs font-semibold text-black hover:bg-red-200"
+            >
+              Reload overlay
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 class OverlayErrorBoundary extends Component {
   constructor(props) {
     super(props);
@@ -322,6 +420,7 @@ class OverlayErrorBoundary extends Component {
   }
 
   componentDidCatch(error, info) {
+    invoke("set_game_overlay_controls_open", { open: false }).catch(console.error);
     invoke("report_game_overlay_frontend_error", {
       message: `GameOverlay render failed: ${error?.message ?? error}\n${info?.componentStack ?? ""}`,
     }).catch(console.error);
@@ -330,14 +429,10 @@ class OverlayErrorBoundary extends Component {
   render() {
     if (this.state.error) {
       return (
-        <div className="fixed inset-0 z-[2147483647] bg-black/70 p-6 text-white">
-          <div className="rounded border border-red-300/40 bg-red-950/80 p-4 text-sm shadow-2xl shadow-black/60">
-            <div className="mb-2 font-semibold text-red-100">GameOverlay render failed</div>
-            <pre className="whitespace-pre-wrap break-words text-xs text-red-100/80">
-              {String(this.state.error?.stack ?? this.state.error?.message ?? this.state.error)}
-            </pre>
-          </div>
-        </div>
+        <OverlayEmergencyFallback
+          error={this.state.error}
+          onRetry={() => this.setState({ error: null })}
+        />
       );
     }
 

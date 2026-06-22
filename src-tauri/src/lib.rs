@@ -21,17 +21,20 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Emitter, Manager, State};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::{Code, ShortcutState};
+#[cfg(not(target_os = "windows"))]
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Modifiers, Shortcut};
 
 #[cfg(target_os = "windows")]
 use std::ffi::CString;
 #[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStringExt;
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HWND, LPARAM, RECT};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM,
+};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory;
 #[cfg(target_os = "windows")]
@@ -39,7 +42,9 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+use windows_sys::Win32::System::LibraryLoader::{
+    GetModuleHandleA, GetModuleHandleW, GetProcAddress,
+};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Memory::{
     VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE,
@@ -55,9 +60,11 @@ use windows_sys::Win32::System::Threading::{
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
-    GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, SetWindowLongPtrW, SetWindowPos,
-    GWL_EXSTYLE, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_APPWINDOW,
+    CallNextHookEx, EnumWindows, GetForegroundWindow, GetMessageW, GetWindowLongPtrW,
+    GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+    SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowsHookExW, GWL_EXSTYLE,
+    HC_ACTION, HWND_TOPMOST, KBDLLHOOKSTRUCT, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WS_EX_APPWINDOW,
     WS_EX_TOOLWINDOW,
 };
 #[cfg(target_os = "windows")]
@@ -82,6 +89,10 @@ const GAME_OVERLAY_MONITOR_INTERVAL_DEFAULT_MS: u64 = 1_000;
 const GAME_OVERLAY_MONITOR_INTERVAL_MIN_MS: u64 = 500;
 const GAME_OVERLAY_MONITOR_INTERVAL_MAX_MS: u64 = 5_000;
 #[cfg(target_os = "windows")]
+const VK_CONTROL_KEY: i32 = 0x11;
+#[cfg(target_os = "windows")]
+const VK_SHIFT_KEY: i32 = 0x10;
+#[cfg(target_os = "windows")]
 const VK_TAB_KEY: i32 = 0x09;
 #[cfg(target_os = "windows")]
 const VK_ALT_KEY: i32 = 0x12;
@@ -97,6 +108,9 @@ const VK_DOWN_KEY: i32 = 0x28;
 const VK_LWIN_KEY: i32 = 0x5B;
 #[cfg(target_os = "windows")]
 const VK_RWIN_KEY: i32 = 0x5C;
+
+#[cfg(target_os = "windows")]
+static GAME_OVERLAY_INPUT_HOOK_APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
 fn manifest_state_has_version(app: &tauri::AppHandle, version: u32) -> bool {
     let Ok(app_data) = app.path().app_data_dir() else {
@@ -2934,7 +2948,7 @@ register("renderOverlay", ({ context, settings, api }) => {
 // @ts-check
 
 setName("Real Bottom Line");
-setDescription("Reads the full LCStatsTracker payload in JS and briefly shows the real bottom/top line after a run payload arrives.");
+setDescription("Uses normalized overlay API values to show bottom/top line after a run payload arrives.");
 setDefaultPosition({ x: 4, y: 34 });
 setCss(`
     .overlay-module-real_bottom_line .rl-card {
@@ -2972,21 +2986,12 @@ register("settings", [
 register("derive", ({ context, api }) => {
     const stats = context.lcstats;
     if (!stats) return null;
-    const lostItems = Array.isArray(stats.MissedItems)
-      ? stats.MissedItems.filter((item) => item && item.CollectedOnPreviousDay)
-      : [];
-    const lostScrap = lostItems.reduce((total, item) => total + api.intish(item.Value), 0);
-    const real = api.intish(api.valueAtAny(stats, [
-      "PerformanceInfo.TotalAvailableValue",
-      "TotalAvailableValue",
-      "BottomLineTrue"
-    ]));
+    const scrap = api.scrap.summary();
+    const lostScrap = api.intish(scrap.remaining);
+    const real = api.intish(stats.totalAvailableValue);
     return {
-      moon: api.stripLcQuote(api.valueAt(stats, "MoonInfo.Name", "Unknown")),
-      collected: api.intish(api.valueAtAny(stats, [
-        "PerformanceInfo.CollectedTotal",
-        "CollectedTotal"
-      ])),
+      moon: scrap.moon || stats.moon || "Unknown",
+      collected: api.intish(stats.collectedTotal),
       real,
       topLine: real + lostScrap,
       lostScrap
@@ -3184,6 +3189,158 @@ type OverlayStreamOverlays = {
   [key: string]: any;
 };
 
+type OverlayScrapItem = {
+  /** Normalized scrap display name, for example "Cash Register". */
+  name: string;
+  /** Scrap value. Missing or unparsable values become 0. */
+  value: number;
+  /** Original payload item for debugging or advanced modules. */
+  raw?: any;
+};
+
+type OverlayScrapGroup = {
+  /** Shared normalized item name for this group. */
+  name: string;
+  /** Individual values in this group, sorted high to low. */
+  values: number[];
+  /** Sum of all values in this group. */
+  total: number;
+  /** Highest individual value in this group. */
+  max: number;
+  /** Number of items in this group. */
+  count: number;
+  /** Original normalized scrap items in this group. */
+  items: OverlayScrapItem[];
+};
+
+type OverlayScrapSummary = {
+  /** Normalized moon/run name, or "Unknown" when unavailable. */
+  moon: string;
+  /** Normalized scrap left behind. Same value as remaining. */
+  total: number | null;
+  /** Normalized scrap left behind, or null when unavailable. */
+  remaining: number | null;
+  /** Missed/remaining scrap items, sorted high value first. */
+  items: OverlayScrapItem[];
+  /** Missed/remaining scrap items grouped by name, sorted by max desc, total desc, then name asc. */
+  groups: OverlayScrapGroup[];
+};
+
+type OverlayScrapApi = {
+  /** Full normalized end-run scrap summary. */
+  summary(): OverlayScrapSummary;
+  /** Shortcut for summary().moon. */
+  moon(): string;
+  /** Shortcut for summary().remaining. */
+  remaining(): number | null;
+  /** Alias for remaining(). */
+  total(): number | null;
+  /** Shortcut for summary().items. */
+  items(): OverlayScrapItem[];
+  /** Shortcut for summary().groups. */
+  groups(): OverlayScrapGroup[];
+};
+
+type OverlayEnemyCounts = {
+  /** Stable catalog id, for example "bracken". */
+  id: string;
+  /** Human display name, for example "Bracken". */
+  name: string;
+  /** LCStatsTracker code names and aliases matched for this enemy. */
+  names: string[];
+  /** Custom Layout style: bool enemies usually display presence, count enemies display counts. */
+  kind: "bool" | "count" | string;
+  /** Spawn source used for the count. */
+  source: OverlayEnemySource;
+  /** Best-effort killed count from available payloads. */
+  killed: number;
+  /** Spawn count from IndoorSpawns, DayTimeSpawns, and/or NightTimeSpawns. */
+  spawned: number;
+  /** Math.max(0, spawned - killed). */
+  alive: number;
+  /** True when spawned > 0. */
+  present: boolean;
+};
+
+/** Spawn groups to read when counting enemies. */
+type OverlayEnemySource = "all" | "indoor" | "inside" | "day" | "daytime" | "night" | "nighttime" | "outside";
+/** Typed enemy ids, display names, and LCStatsTracker code names accepted by api.enemies helpers. */
+type OverlayEnemyName =
+  | "jester" | "Jester"
+  | "barber" | "Barber" | "Clay Surgeon" | "ClaySurgeon"
+  | "bunkerSpider" | "Bunker Spider" | "SandSpider"
+  | "bracken" | "Bracken" | "Flowerman"
+  | "cadaver" | "Cadaver" | "Cadaver Growth" | "Cadaver Growths"
+  | "ghostGirl" | "Ghost Girl" | "Girl"
+  | "maneater" | "Maneater" | "CaveDweller"
+  | "backwaterGunkfish" | "Backwater Gunkfish" | "Stingray"
+  | "coilHead" | "Coil Head" | "Spring"
+  | "hoardingBug" | "Hoarding Bug" | "Hoarding bug"
+  | "hygrodere" | "Hygrodere" | "Blob"
+  | "masked" | "Masked" | "MaskedPlayerEnemy"
+  | "snareFlea" | "Snare Flea" | "Centipede"
+  | "sporeLizard" | "Spore Lizard" | "Puffer"
+  | "thumper" | "Thumper" | "Crawler"
+  | "nutcracker" | "Nutcracker"
+  | "butler" | "Butler"
+  | "manticoil" | "Manticoil" | "Mantacoil"
+  | "roamingLocusts" | "Roaming Locusts" | "Docile Locust Bees"
+  | "circuitBees" | "Circuit Bees" | "Red Locust Bees"
+  | "tulipSnake" | "Tulip Snake" | "FlowerSnake"
+  | "giantSapsucker" | "Giant Sapsucker" | "Giant Kiwi"
+  | "earthLeviathan" | "Earth Leviathan"
+  | "forestGiant" | "Forest Giant" | "ForestGiant"
+  | "baboonHawk" | "Baboon Hawk" | "Baboon hawk"
+  | "oldBird" | "Old Bird" | "RadMech"
+  | "bushWolf" | "Bush Wolf" | "Kidnapper Fox"
+  | "feiopar" | "Feiopar"
+  | "eyelessDog" | "Eyeless Dog" | "MouthDog";
+
+type OverlayEnemyQuery = {
+  /** Optional stable id for your custom/modded enemy. */
+  id?: string;
+  /** Human display name for your custom/modded enemy. */
+  name?: string;
+  /** LCStatsTracker names/aliases to match exactly after normalization. */
+  names: string[];
+  /** Suggested display style for consumers of this query. */
+  kind?: "bool" | "count" | string;
+  /** Default source to use when no options.source override is supplied. */
+  source?: OverlayEnemySource;
+};
+
+type OverlayEnemyDefinition = {
+  /** Stable catalog id used by OverlayEnemyName. */
+  id: string;
+  /** Human display name. */
+  name: string;
+  /** LCStatsTracker code names and aliases. */
+  names: string[];
+  /** Custom Layout style. */
+  kind: "bool" | "count" | string;
+  /** Default source used by counts(). */
+  source: "all" | "indoor" | "night" | string;
+};
+
+type OverlayEnemiesApi = {
+  /** Known typed enemy catalog. Use this to render dynamic enemy lists. */
+  list(): OverlayEnemyDefinition[];
+  /** Full normalized counts for a known enemy name or custom query object. */
+  counts(enemy: OverlayEnemyName | OverlayEnemyQuery, options?: { source?: OverlayEnemySource }): OverlayEnemyCounts;
+  /** Shortcut for counts(...).spawned. */
+  spawned(enemy: OverlayEnemyName | OverlayEnemyQuery, options?: { source?: OverlayEnemySource }): number;
+  /** Shortcut for counts(...).killed. */
+  killed(enemy: OverlayEnemyName | OverlayEnemyQuery, options?: { source?: OverlayEnemySource }): number;
+  /** Shortcut for counts(...).alive. */
+  alive(enemy: OverlayEnemyName | OverlayEnemyQuery, options?: { source?: OverlayEnemySource }): number;
+  /** Shortcut for counts(...).present. */
+  present(enemy: OverlayEnemyName | OverlayEnemyQuery, options?: { source?: OverlayEnemySource }): boolean;
+  /** Convenience shortcut for counts("Butler"). */
+  butler(options?: { source?: OverlayEnemySource }): OverlayEnemyCounts;
+  /** Convenience shortcut for counts("Nutcracker"). */
+  nutcracker(options?: { source?: OverlayEnemySource }): OverlayEnemyCounts;
+};
+
 type OverlayContext = {
   editMode: boolean;
   controlsOpen: boolean;
@@ -3208,8 +3365,8 @@ type OverlayContext = {
   number(value: any): string;
   stripLcQuote(value: any): any;
   intish(value: any, fallback?: number): number;
-  valueAt(root: any, path: string | string[], fallback?: any): any;
-  valueAtAny(root: any, paths: Array<string | string[]>, fallback?: any): any;
+  scrap: OverlayScrapApi;
+  enemies: OverlayEnemiesApi;
 };
 
 type OverlayInputEvent = {
@@ -3231,8 +3388,10 @@ type OverlayInputApi = {
   shortcut(shortcut: OverlayShortcutString): boolean;
   pressed(shortcut: OverlayShortcutString): boolean;
   released(shortcut: OverlayShortcutString): boolean;
-  consumePress(shortcut: OverlayShortcutString): boolean;
-  consumeRelease(shortcut: OverlayShortcutString): boolean;
+  /** One-shot key down check. Optional scope lets one module bind the same key to multiple independent actions. */
+  consumePress(shortcut: OverlayShortcutString, scope?: string): boolean;
+  /** One-shot key release check. Optional scope lets one module bind the same key to multiple independent actions. */
+  consumeRelease(shortcut: OverlayShortcutString, scope?: string): boolean;
   events(): OverlayInputEvent[];
   last(): OverlayInputEvent | null;
 };
@@ -3259,8 +3418,8 @@ type OverlayModuleApi = {
   number(value: any): string;
   stripLcQuote(value: any): any;
   intish(value: any, fallback?: number): number;
-  valueAt(root: any, path: string | string[], fallback?: any): any;
-  valueAtAny(root: any, paths: Array<string | string[]>, fallback?: any): any;
+  scrap: OverlayScrapApi;
+  enemies: OverlayEnemiesApi;
   className(name?: string): string;
   now(): number;
   input: OverlayInputApi;
@@ -3306,8 +3465,6 @@ declare const api: OverlayModuleApi;
 declare const html: OverlayModuleApi["html"];
 declare const formatSeconds: OverlayModuleApi["formatSeconds"];
 declare const number: OverlayModuleApi["number"];
-declare const valueAt: OverlayModuleApi["valueAt"];
-declare const valueAtAny: OverlayModuleApi["valueAtAny"];
 declare const intish: OverlayModuleApi["intish"];
 "##;
 
@@ -3392,6 +3549,7 @@ struct GameOverlayState {
     obs_capture_owned_preview: AtomicBool,
     overlay_enabled: AtomicBool,
     overlay_frontend_active: AtomicBool,
+    input_hook_running: AtomicBool,
     monitor_interval_ms: AtomicU64,
     stream_overlays_monitor_running: AtomicBool,
     window_visible: AtomicBool,
@@ -3403,7 +3561,9 @@ struct GameOverlayState {
     open_hint_focus_started: Mutex<Option<(u32, std::time::Instant)>>,
     open_hint_shown_pids: Mutex<HashSet<u32>>,
     registered_overlay_shortcut: Mutex<Option<String>>,
+    overlay_shortcut_down: Mutex<HashSet<String>>,
     registered_overlay_input_shortcuts: Mutex<HashSet<String>>,
+    overlay_input_down_shortcuts: Mutex<HashSet<String>>,
     last_message: Mutex<String>,
     last_error: Mutex<Option<String>>,
 }
@@ -3428,6 +3588,7 @@ impl Default for GameOverlayState {
             obs_capture_owned_preview: AtomicBool::new(false),
             overlay_enabled: AtomicBool::new(true),
             overlay_frontend_active: AtomicBool::new(false),
+            input_hook_running: AtomicBool::new(false),
             monitor_interval_ms: AtomicU64::new(GAME_OVERLAY_MONITOR_INTERVAL_DEFAULT_MS),
             stream_overlays_monitor_running: AtomicBool::new(false),
             window_visible: AtomicBool::new(false),
@@ -3439,7 +3600,9 @@ impl Default for GameOverlayState {
             open_hint_focus_started: Mutex::new(None),
             open_hint_shown_pids: Mutex::new(HashSet::new()),
             registered_overlay_shortcut: Mutex::new(None),
+            overlay_shortcut_down: Mutex::new(HashSet::new()),
             registered_overlay_input_shortcuts: Mutex::new(HashSet::new()),
+            overlay_input_down_shortcuts: Mutex::new(HashSet::new()),
             last_message: Mutex::new(String::new()),
             last_error: Mutex::new(None),
         }
@@ -4139,6 +4302,7 @@ fn overlay_shortcut_keys() -> &'static [(&'static str, Code)] {
     ]
 }
 
+#[cfg(not(target_os = "windows"))]
 fn parse_overlay_shortcut_modifiers(prefix: &str) -> Option<Option<Modifiers>> {
     let prefix = prefix.trim();
     if prefix.is_empty() {
@@ -4158,6 +4322,7 @@ fn parse_overlay_shortcut_modifiers(prefix: &str) -> Option<Option<Modifiers>> {
     Some(Some(modifiers))
 }
 
+#[cfg(not(target_os = "windows"))]
 fn overlay_shortcuts_for_key(key: &str) -> Vec<Shortcut> {
     let trimmed = key.trim();
     if trimmed.is_empty() {
@@ -4190,6 +4355,226 @@ fn overlay_shortcuts_for_key(key: &str) -> Vec<Shortcut> {
     }
 
     shortcuts
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct OverlayShortcutModifierState {
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    meta: bool,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct OverlayShortcutSpec {
+    vk_code: u32,
+    modifiers: OverlayShortcutModifierState,
+}
+
+#[cfg(target_os = "windows")]
+fn parse_overlay_shortcut_modifier_state(prefix: &str) -> Option<OverlayShortcutModifierState> {
+    let mut state = OverlayShortcutModifierState {
+        ctrl: false,
+        shift: false,
+        alt: false,
+        meta: false,
+    };
+    let prefix = prefix.trim();
+    if prefix.is_empty() {
+        return Some(state);
+    }
+
+    for part in prefix.split('+') {
+        match part.trim().to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => state.ctrl = true,
+            "shift" => state.shift = true,
+            "alt" => state.alt = true,
+            "meta" | "super" | "cmd" | "win" | "windows" => state.meta = true,
+            _ => return None,
+        }
+    }
+    Some(state)
+}
+
+#[cfg(target_os = "windows")]
+fn overlay_shortcut_vk_for_code(code: Code) -> Option<u32> {
+    Some(match code {
+        Code::KeyA => 0x41,
+        Code::KeyB => 0x42,
+        Code::KeyC => 0x43,
+        Code::KeyD => 0x44,
+        Code::KeyE => 0x45,
+        Code::KeyF => 0x46,
+        Code::KeyG => 0x47,
+        Code::KeyH => 0x48,
+        Code::KeyI => 0x49,
+        Code::KeyJ => 0x4A,
+        Code::KeyK => 0x4B,
+        Code::KeyL => 0x4C,
+        Code::KeyM => 0x4D,
+        Code::KeyN => 0x4E,
+        Code::KeyO => 0x4F,
+        Code::KeyP => 0x50,
+        Code::KeyQ => 0x51,
+        Code::KeyR => 0x52,
+        Code::KeyS => 0x53,
+        Code::KeyT => 0x54,
+        Code::KeyU => 0x55,
+        Code::KeyV => 0x56,
+        Code::KeyW => 0x57,
+        Code::KeyX => 0x58,
+        Code::KeyY => 0x59,
+        Code::KeyZ => 0x5A,
+        Code::Digit0 => 0x30,
+        Code::Digit1 => 0x31,
+        Code::Digit2 => 0x32,
+        Code::Digit3 => 0x33,
+        Code::Digit4 => 0x34,
+        Code::Digit5 => 0x35,
+        Code::Digit6 => 0x36,
+        Code::Digit7 => 0x37,
+        Code::Digit8 => 0x38,
+        Code::Digit9 => 0x39,
+        Code::F1 => 0x70,
+        Code::F2 => 0x71,
+        Code::F3 => 0x72,
+        Code::F4 => 0x73,
+        Code::F5 => 0x74,
+        Code::F6 => 0x75,
+        Code::F7 => 0x76,
+        Code::F8 => 0x77,
+        Code::F9 => 0x78,
+        Code::F10 => 0x79,
+        Code::F11 => 0x7A,
+        Code::F12 => 0x7B,
+        Code::F13 => 0x7C,
+        Code::F14 => 0x7D,
+        Code::F15 => 0x7E,
+        Code::F16 => 0x7F,
+        Code::F17 => 0x80,
+        Code::F18 => 0x81,
+        Code::F19 => 0x82,
+        Code::F20 => 0x83,
+        Code::F21 => 0x84,
+        Code::F22 => 0x85,
+        Code::F23 => 0x86,
+        Code::F24 => 0x87,
+        Code::Insert => 0x2D,
+        Code::Delete => 0x2E,
+        Code::Home => 0x24,
+        Code::End => 0x23,
+        Code::PageUp => 0x21,
+        Code::PageDown => 0x22,
+        Code::ArrowUp => 0x26,
+        Code::ArrowDown => 0x28,
+        Code::ArrowLeft => 0x25,
+        Code::ArrowRight => 0x27,
+        Code::Escape => 0x1B,
+        Code::Tab => 0x09,
+        Code::Enter => 0x0D,
+        Code::Space => 0x20,
+        Code::Backspace => 0x08,
+        Code::Backquote => 0xC0,
+        Code::Minus => 0xBD,
+        Code::Equal => 0xBB,
+        Code::BracketLeft => 0xDB,
+        Code::BracketRight => 0xDD,
+        Code::Backslash => 0xDC,
+        Code::Semicolon => 0xBA,
+        Code::Quote => 0xDE,
+        Code::Comma => 0xBC,
+        Code::Period => 0xBE,
+        Code::Slash => 0xBF,
+        Code::Numpad0 => 0x60,
+        Code::Numpad1 => 0x61,
+        Code::Numpad2 => 0x62,
+        Code::Numpad3 => 0x63,
+        Code::Numpad4 => 0x64,
+        Code::Numpad5 => 0x65,
+        Code::Numpad6 => 0x66,
+        Code::Numpad7 => 0x67,
+        Code::Numpad8 => 0x68,
+        Code::Numpad9 => 0x69,
+        Code::NumpadAdd => 0x6B,
+        Code::NumpadMultiply => 0x6A,
+        Code::NumpadSubtract => 0x6D,
+        Code::NumpadDecimal => 0x6E,
+        Code::NumpadDivide => 0x6F,
+        Code::NumpadEnter => 0x0D,
+        _ => return None,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn overlay_shortcut_specs_for_key(key: &str) -> Vec<OverlayShortcutSpec> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let mut specs = Vec::new();
+
+    for &(shortcut_key, shortcut_code) in overlay_shortcut_keys() {
+        let shortcut_lower = shortcut_key.to_ascii_lowercase();
+        let modifier_prefix = if lower == shortcut_lower {
+            Some("")
+        } else if lower.ends_with(&shortcut_lower) {
+            let prefix_end = trimmed.len().saturating_sub(shortcut_key.len());
+            let prefix = &trimmed[..prefix_end];
+            prefix
+                .strip_suffix('+')
+                .filter(|without_separator| !without_separator.is_empty())
+        } else {
+            None
+        };
+
+        let Some(modifier_prefix) = modifier_prefix else {
+            continue;
+        };
+        let Some(modifiers) = parse_overlay_shortcut_modifier_state(modifier_prefix) else {
+            continue;
+        };
+        let Some(vk_code) = overlay_shortcut_vk_for_code(shortcut_code) else {
+            continue;
+        };
+        let spec = OverlayShortcutSpec { vk_code, modifiers };
+        if !specs.contains(&spec) {
+            specs.push(spec);
+        }
+    }
+
+    specs
+}
+
+#[cfg(target_os = "windows")]
+fn current_overlay_shortcut_modifier_state() -> OverlayShortcutModifierState {
+    fn key_down(vkey: i32) -> bool {
+        unsafe { GetAsyncKeyState(vkey) < 0 }
+    }
+
+    OverlayShortcutModifierState {
+        ctrl: key_down(VK_CONTROL_KEY),
+        shift: key_down(VK_SHIFT_KEY),
+        alt: key_down(VK_ALT_KEY),
+        meta: key_down(VK_LWIN_KEY) || key_down(VK_RWIN_KEY),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn overlay_shortcut_matches_hook_press(shortcut: &str, vk_code: u32) -> bool {
+    let current = current_overlay_shortcut_modifier_state();
+    overlay_shortcut_specs_for_key(shortcut)
+        .into_iter()
+        .any(|spec| spec.vk_code == vk_code && spec.modifiers == current)
+}
+
+#[cfg(target_os = "windows")]
+fn overlay_shortcut_uses_vk(shortcut: &str, vk_code: u32) -> bool {
+    overlay_shortcut_specs_for_key(shortcut)
+        .into_iter()
+        .any(|spec| spec.vk_code == vk_code)
 }
 
 fn sanitize_overlay_position(position: &str) -> String {
@@ -4400,6 +4785,9 @@ fn set_game_overlay_controls_open_inner(
             open,
         )
         .map_err(|e| e.to_string())?;
+        if !open {
+            focus_lethal_company_window(app);
+        }
         let app_handle = app.clone();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -4423,7 +4811,7 @@ fn suspend_game_overlay_controls_for_focus_loss_inner(
     }
     state
         .controls_suspended_for_focus_loss
-        .store(true, Ordering::Relaxed);
+        .store(false, Ordering::Relaxed);
     state.controls_open.store(false, Ordering::Relaxed);
     #[cfg(not(target_os = "windows"))]
     {
@@ -4437,10 +4825,7 @@ fn suspend_game_overlay_controls_for_focus_loss_inner(
                 false,
             )
             .map_err(|e| e.to_string())?;
-            set_game_overlay_debug(
-                app,
-                "controls suspended until Lethal Company is focused again",
-            );
+            set_game_overlay_debug(app, "controls closed after focus loss");
             Ok(())
         });
         return Ok(true);
@@ -4456,10 +4841,7 @@ fn suspend_game_overlay_controls_for_focus_loss_inner(
             false,
         )
         .map_err(|e| e.to_string())?;
-        set_game_overlay_debug(
-            app,
-            "controls suspended until Lethal Company is focused again",
-        );
+        set_game_overlay_debug(app, "controls closed after focus loss");
         Ok(true)
     }
 }
@@ -4753,7 +5135,7 @@ fn foreground_matches_game(foreground_pid: u32, active_pids: &HashSet<u32>) -> b
 #[cfg(target_os = "windows")]
 struct FindLethalCompanyWindowState {
     active_pids: HashSet<u32>,
-    result: Option<(u32, RECT)>,
+    result: Option<(u32, HWND, RECT)>,
 }
 
 #[cfg(target_os = "windows")]
@@ -4790,7 +5172,7 @@ unsafe extern "system" fn enum_lethal_company_window(hwnd: HWND, lparam: LPARAM)
     }
 
     let state = unsafe { &mut *(lparam as *mut FindLethalCompanyWindowState) };
-    state.result = Some((pid, rect));
+    state.result = Some((pid, hwnd, rect));
     0
 }
 
@@ -4807,6 +5189,11 @@ fn state_matches_window_pid_or_title(
 
 #[cfg(target_os = "windows")]
 fn find_lethal_company_window(active_pids: &HashSet<u32>) -> Option<(u32, RECT)> {
+    find_lethal_company_window_with_handle(active_pids).map(|(pid, _hwnd, rect)| (pid, rect))
+}
+
+#[cfg(target_os = "windows")]
+fn find_lethal_company_window_with_handle(active_pids: &HashSet<u32>) -> Option<(u32, HWND, RECT)> {
     let mut state = FindLethalCompanyWindowState {
         active_pids: active_pids.clone(),
         result: None,
@@ -4818,6 +5205,42 @@ fn find_lethal_company_window(active_pids: &HashSet<u32>) -> Option<(u32, RECT)>
         );
     }
     state.result
+}
+
+#[cfg(target_os = "windows")]
+fn focus_lethal_company_window(app: &tauri::AppHandle) -> bool {
+    let active_pids: HashSet<u32> = app
+        .state::<GameState>()
+        .active
+        .lock()
+        .map(|active_games| {
+            active_games
+                .iter()
+                .map(|active| active.child.id())
+                .collect()
+        })
+        .unwrap_or_default();
+    let Some((_pid, hwnd, _rect)) = find_lethal_company_window_with_handle(&active_pids) else {
+        set_game_overlay_debug(
+            app,
+            "focus restore skipped because no Lethal Company window was found",
+        );
+        return false;
+    };
+    let ok = unsafe { SetForegroundWindow(hwnd) };
+    if ok == 0 {
+        let err = unsafe { GetLastError() };
+        set_game_overlay_error(
+            app,
+            format!("failed to restore Lethal Company focus: {err}"),
+        );
+        return false;
+    }
+    set_game_overlay_debug(
+        app,
+        "Lethal Company focus restored after overlay menu close",
+    );
+    true
 }
 
 #[cfg(target_os = "windows")]
@@ -5297,6 +5720,147 @@ fn should_emit_game_overlay_input(app: &tauri::AppHandle) -> bool {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn handle_game_overlay_input_hook_event(vk_code: u32, message: u32) {
+    let Some(app) = GAME_OVERLAY_INPUT_HOOK_APP.get() else {
+        return;
+    };
+
+    let state = app.state::<GameOverlayState>();
+    if !should_emit_game_overlay_input(app) {
+        if let Ok(mut down) = state.overlay_shortcut_down.lock() {
+            down.clear();
+        }
+        if let Ok(mut down) = state.overlay_input_down_shortcuts.lock() {
+            down.clear();
+        }
+        return;
+    }
+
+    let shortcut_state = match message {
+        WM_KEYDOWN | WM_SYSKEYDOWN => ShortcutState::Pressed,
+        WM_KEYUP | WM_SYSKEYUP => ShortcutState::Released,
+        _ => return,
+    };
+
+    let overlay_shortcut = state
+        .registered_overlay_shortcut
+        .lock()
+        .ok()
+        .and_then(|shortcut| shortcut.clone());
+    if let Some(shortcut) = overlay_shortcut {
+        let matched = {
+            let Ok(mut down) = state.overlay_shortcut_down.lock() else {
+                return;
+            };
+            match shortcut_state {
+                ShortcutState::Pressed => {
+                    overlay_shortcut_matches_hook_press(&shortcut, vk_code) && down.insert(shortcut.clone())
+                }
+                ShortcutState::Released => {
+                    overlay_shortcut_uses_vk(&shortcut, vk_code) && down.remove(&shortcut)
+                }
+            }
+        };
+        if matched {
+            emit_game_overlay_input_shortcut(app, &shortcut, shortcut_state, "overlay-key");
+            if shortcut_state == ShortcutState::Pressed {
+                handle_game_overlay_shortcut(app, &shortcut);
+            }
+        }
+    }
+
+    let watched: Vec<String> = state
+        .registered_overlay_input_shortcuts
+        .lock()
+        .map(|shortcuts| shortcuts.iter().cloned().collect())
+        .unwrap_or_default();
+    if watched.is_empty() {
+        return;
+    }
+
+    let mut matched = Vec::new();
+    {
+        let Ok(mut down) = state.overlay_input_down_shortcuts.lock() else {
+            return;
+        };
+        for shortcut in watched {
+            match shortcut_state {
+                ShortcutState::Pressed => {
+                    if overlay_shortcut_matches_hook_press(&shortcut, vk_code)
+                        && down.insert(shortcut.clone())
+                    {
+                        matched.push(shortcut);
+                    }
+                }
+                ShortcutState::Released => {
+                    if overlay_shortcut_uses_vk(&shortcut, vk_code) && down.remove(&shortcut) {
+                        matched.push(shortcut);
+                    }
+                }
+            }
+        }
+    }
+
+    for shortcut in matched {
+        emit_game_overlay_input_shortcut(app, &shortcut, shortcut_state, "module-key");
+    }
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn game_overlay_input_keyboard_hook(
+    code: i32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if code == HC_ACTION as i32 {
+        let message = wparam as u32;
+        if matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP) {
+            let keyboard = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
+            handle_game_overlay_input_hook_event(keyboard.vkCode, message);
+        }
+    }
+    unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
+}
+
+#[cfg(target_os = "windows")]
+fn start_game_overlay_input_hook(app: &tauri::AppHandle) {
+    let _ = GAME_OVERLAY_INPUT_HOOK_APP.set(app.clone());
+    let state = app.state::<GameOverlayState>();
+    if state.input_hook_running.swap(true, Ordering::Relaxed) {
+        return;
+    }
+
+    let app_handle = app.clone();
+    std::thread::spawn(move || {
+        let module = unsafe { GetModuleHandleW(std::ptr::null()) };
+        let hook = unsafe {
+            SetWindowsHookExW(
+                WH_KEYBOARD_LL,
+                Some(game_overlay_input_keyboard_hook),
+                module,
+                0,
+            )
+        };
+        if hook.is_null() {
+            app_handle
+                .state::<GameOverlayState>()
+                .input_hook_running
+                .store(false, Ordering::Relaxed);
+            set_game_overlay_error(&app_handle, "failed to install overlay module input hook");
+            return;
+        }
+        set_game_overlay_debug(&app_handle, "overlay module input hook installed");
+
+        let mut message: MSG = unsafe { std::mem::zeroed() };
+        while unsafe { GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) } > 0 {}
+        app_handle
+            .state::<GameOverlayState>()
+            .input_hook_running
+            .store(false, Ordering::Relaxed);
+    });
+}
+
 fn emit_game_overlay_input_shortcut(
     app: &tauri::AppHandle,
     shortcut_label: &str,
@@ -5417,7 +5981,6 @@ fn register_game_overlay_shortcut(app: &tauri::AppHandle) {
     let shortcut_label = read_game_overlay_config(app)
         .map(|cfg| cfg.general.overlay_key)
         .unwrap_or_else(|_| "Insert".to_string());
-    let shortcuts = overlay_shortcuts_for_key(&shortcut_label);
     let state = app.state::<GameOverlayState>();
     let mut registered = state.registered_overlay_shortcut.lock().unwrap();
 
@@ -5426,53 +5989,92 @@ fn register_game_overlay_shortcut(app: &tauri::AppHandle) {
         .map(|current| current.eq_ignore_ascii_case(&shortcut_label))
         .unwrap_or(false)
     {
+        #[cfg(target_os = "windows")]
+        start_game_overlay_input_hook(app);
         return;
     }
 
     if let Some(previous_label) = registered.take() {
-        let previous_shortcuts = overlay_shortcuts_for_key(&previous_label);
-        if !previous_shortcuts.is_empty() {
-            if let Err(e) = app
-                .global_shortcut()
-                .unregister_multiple(previous_shortcuts)
-            {
-                log::warn!("Failed to unregister previous overlay shortcut {previous_label}: {e}");
+        #[cfg(target_os = "windows")]
+        {
+            state
+                .overlay_shortcut_down
+                .lock()
+                .unwrap()
+                .remove(&previous_label);
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let previous_shortcuts = overlay_shortcuts_for_key(&previous_label);
+            if !previous_shortcuts.is_empty() {
+                if let Err(e) = app
+                    .global_shortcut()
+                    .unregister_multiple(previous_shortcuts)
+                {
+                    log::warn!(
+                        "Failed to unregister previous overlay shortcut {previous_label}: {e}"
+                    );
+                }
             }
         }
     }
 
-    if shortcuts.is_empty() {
-        set_game_overlay_error(
+    #[cfg(target_os = "windows")]
+    {
+        if overlay_shortcut_specs_for_key(&shortcut_label).is_empty() {
+            set_game_overlay_error(
+                app,
+                format!("Unsupported overlay shortcut: {shortcut_label}"),
+            );
+            return;
+        }
+
+        *registered = Some(shortcut_label.clone());
+        start_game_overlay_input_hook(app);
+        set_game_overlay_debug(
             app,
-            format!("Unsupported overlay shortcut: {shortcut_label}"),
+            format!("registered overlay shortcut hook {shortcut_label}"),
         );
         return;
     }
 
-    let shortcut_label_for_handler = shortcut_label.clone();
-    match app
-        .global_shortcut()
-        .on_shortcuts(shortcuts, move |app, _shortcut, event| {
-            emit_game_overlay_input_shortcut(
-                app,
-                &shortcut_label_for_handler,
-                event.state,
-                "overlay-key",
-            );
-            if event.state != ShortcutState::Pressed {
-                return;
-            }
-            handle_game_overlay_shortcut(app, &shortcut_label_for_handler);
-        }) {
-        Ok(()) => {
-            set_game_overlay_debug(app, format!("registered overlay shortcut {shortcut_label}"));
-            *registered = Some(shortcut_label);
-        }
-        Err(e) => {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let shortcuts = overlay_shortcuts_for_key(&shortcut_label);
+        if shortcuts.is_empty() {
             set_game_overlay_error(
                 app,
-                format!("Failed to register overlay shortcut {shortcut_label}: {e}"),
+                format!("Unsupported overlay shortcut: {shortcut_label}"),
             );
+            return;
+        }
+
+        let shortcut_label_for_handler = shortcut_label.clone();
+        match app
+            .global_shortcut()
+            .on_shortcuts(shortcuts, move |app, _shortcut, event| {
+                emit_game_overlay_input_shortcut(
+                    app,
+                    &shortcut_label_for_handler,
+                    event.state,
+                    "overlay-key",
+                );
+                if event.state != ShortcutState::Pressed {
+                    return;
+                }
+                handle_game_overlay_shortcut(app, &shortcut_label_for_handler);
+            }) {
+            Ok(()) => {
+                set_game_overlay_debug(app, format!("registered overlay shortcut {shortcut_label}"));
+                *registered = Some(shortcut_label);
+            }
+            Err(e) => {
+                set_game_overlay_error(
+                    app,
+                    format!("Failed to register overlay shortcut {shortcut_label}: {e}"),
+                );
+            }
         }
     }
 }
@@ -7910,42 +8512,58 @@ fn set_game_overlay_input_shortcuts(
         .filter(|shortcut| !shortcut.eq_ignore_ascii_case(&overlay_key))
         .collect();
 
-    let mut registered = state.registered_overlay_input_shortcuts.lock().unwrap();
-    let previous = registered.clone();
+    #[cfg(target_os = "windows")]
+    {
+        let mut registered = state.registered_overlay_input_shortcuts.lock().unwrap();
+        *registered = next.clone();
+        state
+            .overlay_input_down_shortcuts
+            .lock()
+            .unwrap()
+            .retain(|shortcut| next.contains(shortcut));
+        start_game_overlay_input_hook(&app);
+        return Ok(true);
+    }
 
-    for shortcut in previous.difference(&next) {
-        let parsed = overlay_shortcuts_for_key(shortcut);
-        if !parsed.is_empty() {
-            if let Err(e) = app.global_shortcut().unregister_multiple(parsed) {
-                log::warn!("Failed to unregister overlay input shortcut {shortcut}: {e}");
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut registered = state.registered_overlay_input_shortcuts.lock().unwrap();
+        let previous = registered.clone();
+
+        for shortcut in previous.difference(&next) {
+            let parsed = overlay_shortcuts_for_key(shortcut);
+            if !parsed.is_empty() {
+                if let Err(e) = app.global_shortcut().unregister_multiple(parsed) {
+                    log::warn!("Failed to unregister overlay input shortcut {shortcut}: {e}");
+                }
             }
         }
-    }
 
-    for shortcut in next.difference(&previous) {
-        let parsed = overlay_shortcuts_for_key(shortcut);
-        if parsed.is_empty() {
-            log::warn!("Unsupported overlay input shortcut: {shortcut}");
-            continue;
+        for shortcut in next.difference(&previous) {
+            let parsed = overlay_shortcuts_for_key(shortcut);
+            if parsed.is_empty() {
+                log::warn!("Unsupported overlay input shortcut: {shortcut}");
+                continue;
+            }
+            let shortcut_for_handler = shortcut.clone();
+            if let Err(e) =
+                app.global_shortcut()
+                    .on_shortcuts(parsed, move |app, _shortcut, event| {
+                        emit_game_overlay_input_shortcut(
+                            app,
+                            &shortcut_for_handler,
+                            event.state,
+                            "module-key",
+                        );
+                    })
+            {
+                log::warn!("Failed to register overlay input shortcut {shortcut}: {e}");
+            }
         }
-        let shortcut_for_handler = shortcut.clone();
-        if let Err(e) = app
-            .global_shortcut()
-            .on_shortcuts(parsed, move |app, _shortcut, event| {
-                emit_game_overlay_input_shortcut(
-                    app,
-                    &shortcut_for_handler,
-                    event.state,
-                    "module-key",
-                );
-            })
-        {
-            log::warn!("Failed to register overlay input shortcut {shortcut}: {e}");
-        }
-    }
 
-    *registered = next;
-    Ok(true)
+        *registered = next;
+        Ok(true)
+    }
 }
 
 #[tauri::command]
@@ -9848,6 +10466,8 @@ pub fn run() {
                 }
             }
             register_game_overlay_shortcut(app.handle());
+            #[cfg(target_os = "windows")]
+            start_game_overlay_input_hook(app.handle());
             #[cfg(target_os = "windows")]
             start_game_overlay_monitor(app.handle());
 

@@ -89,6 +89,158 @@ type OverlayStreamOverlays = {
   [key: string]: any;
 };
 
+type OverlayScrapItem = {
+  /** Normalized scrap display name, for example "Cash Register". */
+  name: string;
+  /** Scrap value. Missing or unparsable values become 0. */
+  value: number;
+  /** Original payload item for debugging or advanced modules. */
+  raw?: any;
+};
+
+type OverlayScrapGroup = {
+  /** Shared normalized item name for this group. */
+  name: string;
+  /** Individual values in this group, sorted high to low. */
+  values: number[];
+  /** Sum of all values in this group. */
+  total: number;
+  /** Highest individual value in this group. */
+  max: number;
+  /** Number of items in this group. */
+  count: number;
+  /** Original normalized scrap items in this group. */
+  items: OverlayScrapItem[];
+};
+
+type OverlayScrapSummary = {
+  /** Normalized moon/run name, or "Unknown" when unavailable. */
+  moon: string;
+  /** Normalized scrap left behind. Same value as remaining. */
+  total: number | null;
+  /** Normalized scrap left behind, or null when unavailable. */
+  remaining: number | null;
+  /** Missed/remaining scrap items, sorted high value first. */
+  items: OverlayScrapItem[];
+  /** Missed/remaining scrap items grouped by name, sorted by max desc, total desc, then name asc. */
+  groups: OverlayScrapGroup[];
+};
+
+type OverlayScrapApi = {
+  /** Full normalized end-run scrap summary. */
+  summary(): OverlayScrapSummary;
+  /** Shortcut for summary().moon. */
+  moon(): string;
+  /** Shortcut for summary().remaining. */
+  remaining(): number | null;
+  /** Alias for remaining(). */
+  total(): number | null;
+  /** Shortcut for summary().items. */
+  items(): OverlayScrapItem[];
+  /** Shortcut for summary().groups. */
+  groups(): OverlayScrapGroup[];
+};
+
+type OverlayEnemyCounts = {
+  /** Stable catalog id, for example "bracken". */
+  id: string;
+  /** Human display name, for example "Bracken". */
+  name: string;
+  /** LCStatsTracker code names and aliases matched for this enemy. */
+  names: string[];
+  /** Custom Layout style: bool enemies usually display presence, count enemies display counts. */
+  kind: "bool" | "count" | string;
+  /** Spawn source used for the count. */
+  source: OverlayEnemySource;
+  /** Best-effort killed count from available payloads. */
+  killed: number;
+  /** Spawn count from IndoorSpawns, DayTimeSpawns, and/or NightTimeSpawns. */
+  spawned: number;
+  /** Math.max(0, spawned - killed). */
+  alive: number;
+  /** True when spawned > 0. */
+  present: boolean;
+};
+
+/** Spawn groups to read when counting enemies. */
+type OverlayEnemySource = "all" | "indoor" | "inside" | "day" | "daytime" | "night" | "nighttime" | "outside";
+/** Typed enemy ids, display names, and LCStatsTracker code names accepted by api.enemies helpers. */
+type OverlayEnemyName =
+  | "jester" | "Jester"
+  | "barber" | "Barber" | "Clay Surgeon" | "ClaySurgeon"
+  | "bunkerSpider" | "Bunker Spider" | "SandSpider"
+  | "bracken" | "Bracken" | "Flowerman"
+  | "cadaver" | "Cadaver" | "Cadaver Growth" | "Cadaver Growths"
+  | "ghostGirl" | "Ghost Girl" | "Girl"
+  | "maneater" | "Maneater" | "CaveDweller"
+  | "backwaterGunkfish" | "Backwater Gunkfish" | "Stingray"
+  | "coilHead" | "Coil Head" | "Spring"
+  | "hoardingBug" | "Hoarding Bug" | "Hoarding bug"
+  | "hygrodere" | "Hygrodere" | "Blob"
+  | "masked" | "Masked" | "MaskedPlayerEnemy"
+  | "snareFlea" | "Snare Flea" | "Centipede"
+  | "sporeLizard" | "Spore Lizard" | "Puffer"
+  | "thumper" | "Thumper" | "Crawler"
+  | "nutcracker" | "Nutcracker"
+  | "butler" | "Butler"
+  | "manticoil" | "Manticoil" | "Mantacoil"
+  | "roamingLocusts" | "Roaming Locusts" | "Docile Locust Bees"
+  | "circuitBees" | "Circuit Bees" | "Red Locust Bees"
+  | "tulipSnake" | "Tulip Snake" | "FlowerSnake"
+  | "giantSapsucker" | "Giant Sapsucker" | "Giant Kiwi"
+  | "earthLeviathan" | "Earth Leviathan"
+  | "forestGiant" | "Forest Giant" | "ForestGiant"
+  | "baboonHawk" | "Baboon Hawk" | "Baboon hawk"
+  | "oldBird" | "Old Bird" | "RadMech"
+  | "bushWolf" | "Bush Wolf" | "Kidnapper Fox"
+  | "feiopar" | "Feiopar"
+  | "eyelessDog" | "Eyeless Dog" | "MouthDog";
+
+type OverlayEnemyQuery = {
+  /** Optional stable id for your custom/modded enemy. */
+  id?: string;
+  /** Human display name for your custom/modded enemy. */
+  name?: string;
+  /** LCStatsTracker names/aliases to match exactly after normalization. */
+  names: string[];
+  /** Suggested display style for consumers of this query. */
+  kind?: "bool" | "count" | string;
+  /** Default source to use when no options.source override is supplied. */
+  source?: OverlayEnemySource;
+};
+
+type OverlayEnemyDefinition = {
+  /** Stable catalog id used by OverlayEnemyName. */
+  id: string;
+  /** Human display name. */
+  name: string;
+  /** LCStatsTracker code names and aliases. */
+  names: string[];
+  /** Custom Layout style. */
+  kind: "bool" | "count" | string;
+  /** Default source used by counts(). */
+  source: "all" | "indoor" | "night" | string;
+};
+
+type OverlayEnemiesApi = {
+  /** Known typed enemy catalog. Use this to render dynamic enemy lists. */
+  list(): OverlayEnemyDefinition[];
+  /** Full normalized counts for a known enemy name or custom query object. */
+  counts(enemy: OverlayEnemyName | OverlayEnemyQuery, options?: { source?: OverlayEnemySource }): OverlayEnemyCounts;
+  /** Shortcut for counts(...).spawned. */
+  spawned(enemy: OverlayEnemyName | OverlayEnemyQuery, options?: { source?: OverlayEnemySource }): number;
+  /** Shortcut for counts(...).killed. */
+  killed(enemy: OverlayEnemyName | OverlayEnemyQuery, options?: { source?: OverlayEnemySource }): number;
+  /** Shortcut for counts(...).alive. */
+  alive(enemy: OverlayEnemyName | OverlayEnemyQuery, options?: { source?: OverlayEnemySource }): number;
+  /** Shortcut for counts(...).present. */
+  present(enemy: OverlayEnemyName | OverlayEnemyQuery, options?: { source?: OverlayEnemySource }): boolean;
+  /** Convenience shortcut for counts("Butler"). */
+  butler(options?: { source?: OverlayEnemySource }): OverlayEnemyCounts;
+  /** Convenience shortcut for counts("Nutcracker"). */
+  nutcracker(options?: { source?: OverlayEnemySource }): OverlayEnemyCounts;
+};
+
 type OverlayContext = {
   editMode: boolean;
   controlsOpen: boolean;
@@ -113,8 +265,8 @@ type OverlayContext = {
   number(value: any): string;
   stripLcQuote(value: any): any;
   intish(value: any, fallback?: number): number;
-  valueAt(root: any, path: string | string[], fallback?: any): any;
-  valueAtAny(root: any, paths: Array<string | string[]>, fallback?: any): any;
+  scrap: OverlayScrapApi;
+  enemies: OverlayEnemiesApi;
 };
 
 type OverlayInputEvent = {
@@ -136,8 +288,10 @@ type OverlayInputApi = {
   shortcut(shortcut: OverlayShortcutString): boolean;
   pressed(shortcut: OverlayShortcutString): boolean;
   released(shortcut: OverlayShortcutString): boolean;
-  consumePress(shortcut: OverlayShortcutString): boolean;
-  consumeRelease(shortcut: OverlayShortcutString): boolean;
+  /** One-shot key down check. Optional scope lets one module bind the same key to multiple independent actions. */
+  consumePress(shortcut: OverlayShortcutString, scope?: string): boolean;
+  /** One-shot key release check. Optional scope lets one module bind the same key to multiple independent actions. */
+  consumeRelease(shortcut: OverlayShortcutString, scope?: string): boolean;
   events(): OverlayInputEvent[];
   last(): OverlayInputEvent | null;
 };
@@ -158,8 +312,8 @@ type OverlayModuleApi = {
   number(value: any): string;
   stripLcQuote(value: any): any;
   intish(value: any, fallback?: number): number;
-  valueAt(root: any, path: string | string[], fallback?: any): any;
-  valueAtAny(root: any, paths: Array<string | string[]>, fallback?: any): any;
+  scrap: OverlayScrapApi;
+  enemies: OverlayEnemiesApi;
   className(name?: string): string;
   now(): number;
   input: OverlayInputApi;
@@ -211,6 +365,4 @@ declare const api: OverlayModuleApi;
 declare const html: OverlayModuleApi["html"];
 declare const formatSeconds: OverlayModuleApi["formatSeconds"];
 declare const number: OverlayModuleApi["number"];
-declare const valueAt: OverlayModuleApi["valueAt"];
-declare const valueAtAny: OverlayModuleApi["valueAtAny"];
 declare const intish: OverlayModuleApi["intish"];
