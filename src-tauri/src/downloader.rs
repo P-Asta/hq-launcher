@@ -84,6 +84,10 @@ fn strip_ansi(s: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
+fn escape_depot_arg_value(value: &str) -> String {
+    value.replace('"', "\\\"")
+}
+
 fn looks_like_twofactor_needed(text: &str) -> bool {
     let l = text.to_lowercase();
     // Patched IPC tokens
@@ -353,7 +357,7 @@ impl DepotDownloader {
             "-username".to_string(),
             credentials.username.clone(),
             "-password".to_string(),
-            credentials.password.clone(),
+            escape_depot_arg_value(&credentials.password),
             // "-remember-password".to_string(),
         ];
         let mut args = args;
@@ -613,7 +617,7 @@ impl DepotDownloader {
             .arg("-username")
             .arg(credentials.username.clone())
             .arg("-password")
-            .arg(credentials.password.clone())
+            .arg(escape_depot_arg_value(&credentials.password))
             .arg("-remember-password");
 
         let mut p =
