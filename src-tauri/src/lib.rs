@@ -4663,11 +4663,10 @@ fn ensure_game_overlay_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWi
     #[cfg(not(target_os = "windows"))]
     {
         builder = builder
-            .always_on_top(false)
-            .skip_taskbar(false)
-            .fullscreen(false)
-            .focusable(true)
-            .inner_size(960.0, 540.0);
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .fullscreen(true)
+            .focusable(false);
     }
 
     let window = builder
@@ -4732,6 +4731,11 @@ fn apply_game_overlay_interaction(
     window: &tauri::WebviewWindow,
     controls_open: bool,
 ) -> Result<(), String> {
+    // tao's Linux backend can panic if cursor-ignore is applied before GTK
+    // materializes the window, so non-Windows only toggles focusability.
+    window
+        .set_focusable(controls_open)
+        .map_err(|e| e.to_string())?;
     if controls_open {
         let _ = window.set_focus();
     }
@@ -5657,6 +5661,8 @@ fn start_game_overlay_monitor(app: &tauri::AppHandle) {
     }
     request_game_overlay_ui_task(app, "show overlay window", |app| {
         let window = ensure_game_overlay_window(app)?;
+        window.set_fullscreen(true).map_err(|e| e.to_string())?;
+        window.set_always_on_top(true).map_err(|e| e.to_string())?;
         window.show().map_err(|e| e.to_string())?;
         app.state::<GameOverlayState>()
             .window_visible
@@ -8590,6 +8596,8 @@ fn show_game_overlay_end_summary(
         request_game_overlay_ui_task(&app, "show overlay end summary", move |app| {
             let window = ensure_game_overlay_window(app)?;
             window.show().map_err(|e| e.to_string())?;
+            window.set_always_on_top(true).map_err(|e| e.to_string())?;
+            force_game_overlay_topmost(&window)?;
             apply_game_overlay_interaction(&window, false)?;
             app.state::<GameOverlayState>()
                 .window_visible
