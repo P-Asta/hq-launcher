@@ -626,11 +626,12 @@ fn build_value_updates(
         &stats.beehive_amount,
         layout.write_zero_for_missing_hives,
     );
-    push_value(
+    push_hive_text_value(
         &mut updates,
         &layout.beehive_collected_column,
         row,
-        blank_or_x(&stats.beehive_collected),
+        &stats.beehive_collected,
+        layout.write_zero_for_missing_hives,
     );
     if layout.beehive_collected_value_column.is_some() && !layout.beehive_collected_notes_enabled {
         push_value(
@@ -2525,6 +2526,7 @@ mod tests {
         let settings = CustomLcStatsLayoutSettings {
             bee_amount_column: "J".to_string(),
             split_hive_count: false,
+            beehive_collected_column: "BC".to_string(),
             bee_value_column: "K".to_string(),
             cheap_hive_column: "BA".to_string(),
             expensive_hive_column: "BB".to_string(),
@@ -2538,6 +2540,7 @@ mod tests {
 
         assert_eq!(cell_value(&updates, "J"), None);
         assert_eq!(cell_value(&updates, "K"), None);
+        assert_eq!(cell_value(&updates, "BC"), None);
         assert_eq!(cell_value(&updates, "BA"), None);
         assert_eq!(cell_value(&updates, "BB"), None);
 
@@ -2550,6 +2553,7 @@ mod tests {
 
         assert_eq!(cell_value(&updates, "J"), Some(&json!(0)));
         assert_eq!(cell_value(&updates, "K"), Some(&json!(0)));
+        assert_eq!(cell_value(&updates, "BC"), Some(&json!(0)));
         assert_eq!(cell_value(&updates, "BA"), Some(&json!(0)));
         assert_eq!(cell_value(&updates, "BB"), Some(&json!(0)));
     }
