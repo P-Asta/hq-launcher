@@ -127,6 +127,14 @@ function configPathMatchesMod(path, mod) {
   );
 }
 
+function isLockedCfgEntry(configPath, sectionName, entryName) {
+  return (
+    String(configPath ?? "").toLowerCase() === "asta.evlog.cfg" &&
+    String(sectionName ?? "") === "HQ Launcher" &&
+    String(entryName ?? "") === "EventId"
+  );
+}
+
 function isPracticeRunMode(mode) {
   return String(mode ?? "").toLowerCase().includes("practice");
 }
@@ -229,7 +237,16 @@ function clampVersionToRange(version, range) {
 
 const PRACTICE_LOCKED_MOD_KEYS = new Set([
   "hqhqteam::vlog",
+  "asta::evlog",
 ]);
+
+const BASE_VLOG_MOD_KEY = "hqhqteam::vlog";
+const EVENT_VLOG_MOD = {
+  dev: "asta",
+  name: "EVlog",
+  tags: [],
+  enabled: true,
+};
 
 const SMHQ_FORCED_MOD_KEYS = new Set([
   "slushyrh::freeeeeemoooooons",
@@ -2125,8 +2142,21 @@ export default function LauncherPage({
 
   const selectedEventMods = useMemo(() => {
     if (!selectedEvent) return [];
-    return (Array.isArray(selectedEvent.mods) ? selectedEvent.mods : []).filter(
+    const mods = Array.isArray(selectedEvent.mods)
+      ? [...selectedEvent.mods]
+      : [];
+    const eventVlogIndex = mods.findIndex(
+      (mod) => modKeyLower(mod) === modKeyLower(EVENT_VLOG_MOD)
+    );
+    if (eventVlogIndex >= 0) {
+      const [eventVlog] = mods.splice(eventVlogIndex, 1);
+      mods.unshift(eventVlog);
+    } else {
+      mods.unshift(EVENT_VLOG_MOD);
+    }
+    return mods.filter(
       (mod) =>
+        modKeyLower(mod) !== BASE_VLOG_MOD_KEY &&
         mod?.enabled !== false &&
         !isUiHiddenMod(mod) &&
         isModCompatibleWithVersion(mod, selectedVersion)
@@ -2326,6 +2356,8 @@ export default function LauncherPage({
   const modsForList = useMemo(() => {
     const regularMods = (Array.isArray(manifest.mods) ? manifest.mods : []).filter(
       (m) =>
+        !(selectedEvent && modKeyLower(m) === BASE_VLOG_MOD_KEY) &&
+        modKeyLower(m) !== modKeyLower(EVENT_VLOG_MOD) &&
         !modHasRunModeAffinity(m) &&
         m?.enabled !== false &&
         isModCompatibleWithVersion(m, selectedVersion)
@@ -2556,9 +2588,21 @@ export default function LauncherPage({
   ]);
 
   const displayedMods = useMemo(() => {
+    if (selectedEvent) {
+      const eventVlogIndex = filteredMods.findIndex(
+        (mod) => modKeyLower(mod) === modKeyLower(EVENT_VLOG_MOD)
+      );
+      if (eventVlogIndex >= 0) {
+        const eventVlog = filteredMods[eventVlogIndex];
+        const rest = filteredMods.filter((_, index) => index !== eventVlogIndex);
+        return presetSummaryEntry
+          ? [eventVlog, presetSummaryEntry, ...rest]
+          : [eventVlog, ...rest];
+      }
+    }
     if (!presetSummaryEntry) return filteredMods;
     return [presetSummaryEntry, ...filteredMods];
-  }, [filteredMods, presetSummaryEntry]);
+  }, [filteredMods, presetSummaryEntry, selectedEvent]);
 
   // If a tagged/preset-only mod was selected (e.g. before this filtering), clear the selection.
   useEffect(() => {
@@ -3722,6 +3766,7 @@ export default function LauncherPage({
 
   async function setCfgEntry(sectionName, entryName, nextValue) {
     if (!activeConfigPath) return;
+    if (isLockedCfgEntry(activeConfigPath, sectionName, entryName)) return;
     const key = `${sectionName}/${entryName}`;
 
     setSavingEntry(key);
@@ -7263,6 +7308,11 @@ export default function LauncherPage({
                             {(s.entries ?? []).map((e) => {
                               const id = `${s.name}/${e.name}`;
                               const v = e.value;
+                              const lockedEntry = isLockedCfgEntry(
+                                activeConfigPath,
+                                s.name,
+                                e.name
+                              );
                               return (
                                 <div
                                   key={id}
@@ -7288,9 +7338,15 @@ export default function LauncherPage({
 
                                   <div className="mt-3">
                                     {v?.type === "Bool" ? (
-                                      <label className="flex cursor-pointer items-center gap-2 text-sm">
+                                      <label
+                                        className={cn(
+                                          "flex cursor-pointer items-center gap-2 text-sm",
+                                          lockedEntry && "cursor-not-allowed opacity-60"
+                                        )}
+                                      >
                                         <Checkbox
                                           checked={!!v.data}
+                                          disabled={lockedEntry}
                                           onCheckedChange={(checked) =>
                                             setCfgEntry(s.name, e.name, {
                                               type: "Bool",
@@ -7314,6 +7370,7 @@ export default function LauncherPage({
                                             min={v.data.range.start}
                                             max={v.data.range.end}
                                             step={1}
+                                            disabled={lockedEntry}
                                             onValueChange={([val]) =>
                                               setCfgEntry(s.name, e.name, {
                                                 type: "Int",
@@ -7332,6 +7389,7 @@ export default function LauncherPage({
                                         <Input
                                           type="number"
                                           value={v.data?.value ?? 0}
+                                          disabled={lockedEntry}
                                           onChange={(ev) =>
                                             setCfgEntry(s.name, e.name, {
                                               type: "Int",
@@ -7354,6 +7412,7 @@ export default function LauncherPage({
                                             value={[v.data.value ?? 0]}
                                             min={v.data.range.start}
                                             max={v.data.range.end}
+                                            disabled={lockedEntry}
                                             step={
                                               (v.data.range.end -
                                                 v.data.range.start) /
@@ -7373,6 +7432,7 @@ export default function LauncherPage({
                                             className="w-13 shrink-0 text-sm text-white/80 tabular-nums"
                                             type="text"
                                             value={v.data?.value ?? 0}
+                                            disabled={lockedEntry}
                                             onChange={(ev) =>
                                               setCfgEntry(s.name, e.name, {
                                                 type: "Float",
@@ -7391,6 +7451,7 @@ export default function LauncherPage({
                                           type="number"
                                           step="any"
                                           value={v.data?.value ?? 0}
+                                          disabled={lockedEntry}
                                           onChange={(ev) =>
                                             setCfgEntry(s.name, e.name, {
                                               type: "Float",
@@ -7405,6 +7466,7 @@ export default function LauncherPage({
                                     ) : v?.type === "Enum" ? (
                                       <Select
                                         value={String(v.data?.index ?? 0)}
+                                        disabled={lockedEntry}
                                         onValueChange={(val) =>
                                           setCfgEntry(s.name, e.name, {
                                             type: "Enum",
@@ -7441,10 +7503,14 @@ export default function LauncherPage({
                                             return (
                                               <label
                                                 key={opt}
-                                                className="flex cursor-pointer items-center gap-2 text-sm text-white/80"
+                                                className={cn(
+                                                  "flex cursor-pointer items-center gap-2 text-sm text-white/80",
+                                                  lockedEntry && "cursor-not-allowed opacity-60"
+                                                )}
                                               >
                                                 <Checkbox
                                                   checked={checked}
+                                                  disabled={lockedEntry}
                                                   onCheckedChange={(
                                                     nextChecked
                                                   ) => {
@@ -7482,6 +7548,7 @@ export default function LauncherPage({
                                     ) : (
                                       <Input
                                         value={valueLabel(v)}
+                                        disabled={lockedEntry}
                                         onChange={(ev) =>
                                           setCfgEntry(s.name, e.name, {
                                             type: "String",

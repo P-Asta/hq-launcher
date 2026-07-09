@@ -1053,17 +1053,18 @@ async fn event_forced_enabled_mods_for_launch(
         return Err(format!("{} is only available to testers", event.name));
     }
 
-    let event_mods: Vec<mod_config::ModEntry> = event
+    let event_mods: Vec<mod_config::ModEntry> = with_default_event_mods(event
         .mods
         .into_iter()
         .filter(|m| m.is_compatible(version))
-        .collect();
+        .collect());
     Ok(mod_entry_pairs(&event_mods))
 }
 
 fn clear_event_mods_for_version(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
     let state = read_event_selection_state(app, version)?;
-    let previous_mods = mod_pairs_from_disabled(&state.mods);
+    let mut previous_mods = mod_pairs_from_disabled(&state.mods);
+    previous_mods.push(event_vlog_mod_id());
     let installed_mods = mod_pairs_from_disabled(&state.installed_mods);
     force_disable_mods_for_version(app, version, &previous_mods)?;
     remove_event_installed_mods_for_version(app, version, &installed_mods)?;
@@ -6395,6 +6396,53 @@ fn sync_vlog_with_disablemod_for_version(
     sync_named_mod_with_disablemod_for_version(app, version, "HQHQTeam", "VLog")
 }
 
+fn event_vlog_mod_entry() -> mod_config::ModEntry {
+    mod_config::ModEntry {
+        dev: "asta".to_string(),
+        name: "EVlog".to_string(),
+        tags: vec![],
+        enabled: true,
+        low_cap: None,
+        high_cap: None,
+        tag_constraints: BTreeMap::new(),
+        version_config: BTreeMap::new(),
+    }
+}
+
+fn event_vlog_mod_id() -> (String, String) {
+    ("asta".to_string(), "EVlog".to_string())
+}
+
+fn base_vlog_mod_id() -> (String, String) {
+    ("HQHQTeam".to_string(), "VLog".to_string())
+}
+
+fn with_default_event_mods(mut event_mods: Vec<mod_config::ModEntry>) -> Vec<mod_config::ModEntry> {
+    let base_vlog_key = normalize_mod_key("HQHQTeam", "VLog");
+    event_mods.retain(|m| normalize_mod_key(&m.dev, &m.name) != base_vlog_key);
+
+    let event_vlog = event_vlog_mod_entry();
+    let event_vlog_key = normalize_mod_key(&event_vlog.dev, &event_vlog.name);
+    if !event_mods
+        .iter()
+        .any(|m| normalize_mod_key(&m.dev, &m.name) == event_vlog_key)
+    {
+        event_mods.push(event_vlog);
+    }
+    event_mods
+}
+
+fn ensure_event_vlog_cfg(app: &tauri::AppHandle, version: u32, event_id: &str) -> Result<(), String> {
+    let cfg_dir = version_config_dir(app, version)?;
+    std::fs::create_dir_all(&cfg_dir).map_err(|e| e.to_string())?;
+    let cfg_path = cfg_dir.join("asta.evlog.cfg");
+    let event_id = event_id.trim();
+    let content = format!(
+        "[HQ Launcher]\n\n#*# hq-launcher events.json에서 mods[].id를 허용 목록에 추가할 이벤트 id입니다.\n# *Setting type: String*\n# *Default value:* \nEventId = {event_id}\n"
+    );
+    std::fs::write(&cfg_path, content).map_err(|e| e.to_string())
+}
+
 fn practice_mode_mod_ids() -> Vec<(String, String)> {
     variable::get_practice_mod_list()
         .into_iter()
@@ -6404,7 +6452,8 @@ fn practice_mode_mod_ids() -> Vec<(String, String)> {
 
 fn practice_mode_forced_disabled_ids() -> Vec<(String, String)> {
     let mut mods = practice_mode_mod_ids();
-    mods.push(("HQHQTeam".to_string(), "VLog".to_string()));
+    mods.push(base_vlog_mod_id());
+    mods.push(event_vlog_mod_id());
     mods
 }
 
@@ -6415,8 +6464,8 @@ fn practice_mode_forced_enabled_ids() -> Vec<(String, String)> {
 fn sync_practice_locked_mods_for_version(
     version_plugins_dir: &std::path::Path,
 ) -> Result<(), String> {
-    for (dev, name) in [("HQHQTeam", "VLog")] {
-        if let Some(dir) = mod_dir_for(version_plugins_dir, dev, name) {
+    for (dev, name) in [base_vlog_mod_id(), event_vlog_mod_id()] {
+        if let Some(dir) = mod_dir_for(version_plugins_dir, &dev, &name) {
             let _ = set_mod_files_old_suffix(&dir, false);
         }
     }
@@ -8636,12 +8685,24 @@ async fn launch_game(
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
     wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
+    let has_event = event_id
+        .as_deref()
+        .is_some_and(|id| !id.trim().is_empty());
+    let event_id_for_cfg = event_id.as_deref().unwrap_or_default().trim().to_string();
     let event_forced_ids =
         event_forced_enabled_mods_for_launch(&app, version, event_id).await?;
     let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
+    if has_event {
+        ensure_event_vlog_cfg(&app, version, &event_id_for_cfg)?;
+    }
 
     let mut forced_disabled_ids = practice_mode_mod_ids();
     forced_disabled_ids.extend(run_mode_tagged_mod_ids(version, None).await?);
+    forced_disabled_ids.push(if has_event {
+        base_vlog_mod_id()
+    } else {
+        event_vlog_mod_id()
+    });
 
     // Non-practice launch: mode-required disabled mods win over the saved disabled list.
     let _ = apply_effective_mod_states_for_version(
@@ -8783,6 +8844,10 @@ async fn launch_game_preset(
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
     wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
+    let has_event = event_id
+        .as_deref()
+        .is_some_and(|id| !id.trim().is_empty());
+    let event_id_for_cfg = event_id.as_deref().unwrap_or_default().trim().to_string();
     let event_forced_ids =
         event_forced_enabled_mods_for_launch(&app, version, event_id).await?;
     // Normalize preset and map to manifest tags.
@@ -8808,6 +8873,9 @@ async fn launch_game_preset(
     }
 
     let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
+    if has_event {
+        ensure_event_vlog_cfg(&app, version, &event_id_for_cfg)?;
+    }
 
     if !practice {
         // Non-practice run: force-disable practice mods.
@@ -8831,6 +8899,11 @@ async fn launch_game_preset(
     } else {
         let mut ids = practice_mode_mod_ids();
         ids.extend(tagged_disabled_ids);
+        ids.push(if has_event {
+            base_vlog_mod_id()
+        } else {
+            event_vlog_mod_id()
+        });
         ids
     };
 
@@ -8973,6 +9046,7 @@ async fn prepare_preset_for_version(
     } else {
         let mut ids = practice_mode_mod_ids();
         ids.extend(tagged_disabled_ids);
+        ids.push(event_vlog_mod_id());
         ids
     };
 
@@ -9656,6 +9730,7 @@ async fn prepare_event(
             game_root.to_string_lossy()
         ));
     }
+    ensure_event_vlog_cfg(&app, version, &event.id)?;
 
     let cancel = Arc::new(AtomicBool::new(false));
     {
@@ -9681,12 +9756,12 @@ async fn prepare_event(
             return Err("Cancelled".to_string());
         }
 
-        let event_mods: Vec<mod_config::ModEntry> = event
+        let event_mods: Vec<mod_config::ModEntry> = with_default_event_mods(event
             .mods
             .iter()
             .filter(|m| m.enabled)
             .cloned()
-            .collect();
+            .collect());
         let selected_pairs = mod_entry_pairs(&event_mods);
         let previous_state = read_event_selection_state(&app, version)?;
         let selected_keys = mod_keys_from_pairs(&selected_pairs);
@@ -9756,6 +9831,7 @@ async fn prepare_event(
         let mut installed_pairs = previous_installed_kept;
         installed_pairs.extend(newly_installed_pairs);
 
+        force_disable_mods_for_version(&app, version, &[base_vlog_mod_id()])?;
         force_enable_mods_for_version(&app, version, &selected_pairs)?;
         write_event_selection_state(
             &app,
