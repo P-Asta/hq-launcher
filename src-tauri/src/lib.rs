@@ -991,6 +991,17 @@ fn event_allows_current_tester(
     app: &tauri::AppHandle,
     event: &event_config::EventEntry,
 ) -> Result<bool, String> {
+    // The tester list grants early access before the event starts. Once the
+    // public start time is reached, everyone can see, prepare, and launch it.
+    let event_has_started = event
+        .starts_at
+        .as_deref()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value.trim()).ok())
+        .is_none_or(|starts_at| chrono::Utc::now() >= starts_at);
+    if event_has_started {
+        return Ok(true);
+    }
+
     let tester_steam_ids: HashSet<String> = event
         .testers
         .iter()
@@ -1063,11 +1074,26 @@ async fn event_forced_enabled_mods_for_launch(
 
 fn clear_event_mods_for_version(app: &tauri::AppHandle, version: u32) -> Result<(), String> {
     let state = read_event_selection_state(app, version)?;
+    let had_event = state
+        .event_id
+        .as_deref()
+        .is_some_and(|id| !id.trim().is_empty())
+        || !state.mods.is_empty()
+        || !state.installed_mods.is_empty();
     let mut previous_mods = mod_pairs_from_disabled(&state.mods);
     previous_mods.push(event_vlog_mod_id());
     let installed_mods = mod_pairs_from_disabled(&state.installed_mods);
     force_disable_mods_for_version(app, version, &previous_mods)?;
     remove_event_installed_mods_for_version(app, version, &installed_mods)?;
+    if had_event {
+        if state.base_vlog_was_disabled == Some(true) {
+            force_disable_mods_for_version(app, version, &[base_vlog_mod_id()])?;
+        } else {
+            // `None` is a legacy event-state file from before this preference
+            // was recorded. Enabling VLog repairs the state those versions left behind.
+            force_enable_mods_for_version(app, version, &[base_vlog_mod_id()])?;
+        }
+    }
     write_event_selection_state(app, version, &EventSelectionState::default())
 }
 
@@ -1116,6 +1142,8 @@ struct EventSelectionState {
     mods: Vec<DisabledMod>,
     #[serde(default)]
     installed_mods: Vec<DisabledMod>,
+    #[serde(default)]
+    base_vlog_was_disabled: Option<bool>,
 }
 
 fn preset_tag_constraint_for_name<'a>(
@@ -9732,6 +9760,18 @@ async fn prepare_event(
     }
     ensure_event_vlog_cfg(&app, version, &event.id)?;
 
+    let previous_state = read_event_selection_state(&app, version)?;
+    let base_vlog_was_disabled = if previous_state
+        .event_id
+        .as_deref()
+        .is_some_and(|id| !id.trim().is_empty())
+    {
+        previous_state.base_vlog_was_disabled
+    } else {
+        let disabled_keys = disabled_mod_keys(&read_disablemod(&app)?.mods);
+        Some(disabled_keys.contains(&normalize_mod_key("HQHQTeam", "VLog")))
+    };
+
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut guard = state
@@ -9763,7 +9803,6 @@ async fn prepare_event(
             .cloned()
             .collect());
         let selected_pairs = mod_entry_pairs(&event_mods);
-        let previous_state = read_event_selection_state(&app, version)?;
         let selected_keys = mod_keys_from_pairs(&selected_pairs);
         let previous_pairs = mod_pairs_from_disabled(&previous_state.mods);
         let previous_installed_pairs = mod_pairs_from_disabled(&previous_state.installed_mods);
@@ -9840,6 +9879,7 @@ async fn prepare_event(
                 event_id: Some(event.id.clone()),
                 mods: disabled_mods_from_pairs(&selected_pairs),
                 installed_mods: disabled_mods_from_pairs(&installed_pairs),
+                base_vlog_was_disabled,
             },
         )?;
         wait_for_mod_file_renames_to_settle();

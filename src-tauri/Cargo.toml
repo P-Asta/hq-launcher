@@ -39,6 +39,7 @@ log4rs = "1.4.0"
 tokio = { version = "1", features = ["process", "io-util", "rt", "macros"] }
 expectrl = "0.7"
 semver = "1"
+chrono = "0.4"
 opener = "0.8.3"
 dirs = "6.0.0"
 discord-rich-presence = "0.2"

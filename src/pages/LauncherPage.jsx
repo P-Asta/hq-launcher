@@ -2106,7 +2106,7 @@ export default function LauncherPage({
     return events.filter((event) => {
       if (!event?.id || !event?.name) return false;
       const testerAllowed = eventAllowsTester(event, loginState);
-      return testerAllowed && isEventActive(event, eventClock, testerAllowed);
+      return isEventActive(event, eventClock, testerAllowed);
     });
   }, [eventClock, eventsEnabled, eventsManifest, loginState]);
 
