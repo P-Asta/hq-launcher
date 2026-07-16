@@ -3084,6 +3084,7 @@ export default function LauncherPage({
         const stepName = String(p?.step_name ?? "");
         const isEnableModStep = stepName === "Enable Mod";
         const isModFilesStep = stepName === "Mod Files";
+        const isEventModsStep = stepName === "Event Mods";
         const isDeleteStep = stepName === "Delete Version";
         const isStorageMoveStep = stepName === "Move Storage";
         const isManifestSyncStep =
@@ -3092,6 +3093,7 @@ export default function LauncherPage({
           isEnableModStep ||
           stepName === "Practice Mods" ||
           stepName === "Preset Mods" ||
+          isEventModsStep ||
           isModFilesStep ||
           isDeleteStep ||
           isStorageMoveStep;
@@ -3126,6 +3128,16 @@ export default function LauncherPage({
           if (Number.isFinite(totalFiles) && totalFiles > 0) {
             setPresetPrompt({ open: true });
           }
+        }
+        // Event installs use the same setup progress UI as preset installs.
+        if (isEventModsStep) {
+          setPresetCancelBusy(false);
+          setPresetTask({
+            status: didFinish ? "done" : "working",
+            ...p,
+            error: null,
+          });
+          setPresetPrompt({ open: true });
         }
         if (isModFilesStep) {
           const nextTask = {
@@ -8445,11 +8457,17 @@ export default function LauncherPage({
               <div className="min-w-0">
                 <div className="text-lg font-semibold">
                   {presetTask?.status === "error"
-                    ? "Preset setup failed"
-                    : "Installing preset mods..."}
+                    ? presetTask?.step_name === "Event Mods"
+                      ? "Event setup failed"
+                      : "Preset setup failed"
+                    : presetTask?.step_name === "Event Mods"
+                      ? "Installing event mods..."
+                      : "Installing preset mods..."}
                 </div>
                 <div className="mt-1 text-sm text-white/55">
-                  Preset-tagged plugins are being installed for this run.
+                  {presetTask?.step_name === "Event Mods"
+                    ? "Event plugins are being installed for this run."
+                    : "Preset-tagged plugins are being installed for this run."}
                 </div>
               </div>
             </div>

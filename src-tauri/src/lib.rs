@@ -949,9 +949,25 @@ fn remove_event_installed_mods_for_version(
         return Ok(());
     }
 
+    let event_vlog_key = normalize_mod_key("asta", "EVlog");
+    let keep_event_vlog = mods_to_remove
+        .iter()
+        .any(|(dev, name)| normalize_mod_key(dev, name) == event_vlog_key);
+    if keep_event_vlog {
+        // EVlog is shared by launcher events. Keep the installed files so the
+        // next event can reuse them, but make sure they cannot load outside an
+        // active event.
+        force_disable_mods_for_version(app, version, &[event_vlog_mod_id()])?;
+    }
+
     let plugins = plugins_dir(app, version)?;
     let patchers = patchers_dir(app, version)?;
+    let mut removed_mods = vec![];
     for (dev, name) in mods_to_remove {
+        if normalize_mod_key(dev, name) == event_vlog_key {
+            continue;
+        }
+        removed_mods.push((dev.clone(), name.clone()));
         for root in [&plugins, &patchers] {
             let Some(dir) = mod_dir_for(root, dev, name) else {
                 continue;
@@ -968,7 +984,7 @@ fn remove_event_installed_mods_for_version(
         }
     }
 
-    remove_mods_from_disablemod(app, mods_to_remove)
+    remove_mods_from_disablemod(app, &removed_mods)
 }
 
 fn normalized_steam_id(value: &str) -> String {

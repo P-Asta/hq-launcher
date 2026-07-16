@@ -145,33 +145,64 @@ where
 
     // Fetch Thunderstore package list once (per-package API is unreliable/404).
     let cache_path = crate::thunderstore_cache_path(app)?;
-    let packages = if let Some((cached_packages, stale)) =
+    let (packages, stale_cache) = if let Some((cached_packages, stale)) =
         thunderstore::read_cached_packages(&cache_path)?
     {
-        if stale {
-            let cache_path_clone = cache_path.clone();
-            tauri::async_runtime::spawn(async move {
-                let refresh_client = reqwest::Client::new();
-                if let Err(e) = thunderstore::refresh_community_packages_with_cancel(
-                    &refresh_client,
-                    &cache_path_clone,
-                    None,
-                )
-                .await
-                {
-                    log::warn!("Failed to refresh expired Thunderstore cache in background: {e}");
-                }
-            });
-        }
-        cached_packages
+        (cached_packages, stale)
     } else {
-        thunderstore::fetch_community_packages_with_cancel(&client, &cache_path, cancel.as_ref())
-            .await?
+        (
+            thunderstore::fetch_community_packages_with_cancel(
+                &client,
+                &cache_path,
+                cancel.as_ref(),
+            )
+            .await?,
+            false,
+        )
     };
     log::info!("Fetched {} packages", packages.len());
     let mut package_map: HashMap<(String, String), PackageListing> = HashMap::new();
-    for p in packages.clone() {
+    for p in packages {
         package_map.insert((p.owner.to_lowercase(), p.name.to_lowercase()), p);
+    }
+
+    // A recently-published package can be absent from an otherwise valid cache.
+    // This is especially common for event-only mods that are published shortly
+    // before an event starts. Refresh synchronously once instead of treating the
+    // cached list as authoritative for the full cache TTL.
+    let missing_from_cache = cfg.mods.iter().any(|spec| {
+        install_compatibility_matches(spec, game_version, active_tags)
+            && !package_map.contains_key(&(spec.dev.to_lowercase(), spec.name.to_lowercase()))
+    });
+    if missing_from_cache {
+        log::info!("Package missing from cached Thunderstore list; refreshing package list");
+        let refreshed = thunderstore::refresh_community_packages_with_cancel(
+            &client,
+            &cache_path,
+            cancel.as_ref(),
+        )
+        .await?;
+        package_map.clear();
+        for package in refreshed {
+            package_map.insert(
+                (package.owner.to_lowercase(), package.name.to_lowercase()),
+                package,
+            );
+        }
+    } else if stale_cache {
+        let cache_path_clone = cache_path.clone();
+        tauri::async_runtime::spawn(async move {
+            let refresh_client = reqwest::Client::new();
+            if let Err(e) = thunderstore::refresh_community_packages_with_cancel(
+                &refresh_client,
+                &cache_path_clone,
+                None,
+            )
+            .await
+            {
+                log::warn!("Failed to refresh expired Thunderstore cache in background: {e}");
+            }
+        });
     }
 
     let target_plugins = plugins_dir(game_root);
@@ -322,19 +353,17 @@ where
 
         let key = (spec.dev.to_lowercase(), spec.name.to_lowercase());
         let Some(pkg) = package_map.get(&key) else {
-            installed = installed.saturating_add(1);
-            log::error!("Package not found in list: {}-{}", spec.dev, spec.name);
+            let message = format!("Package not found in Thunderstore: {mod_label}");
+            log::error!("{message}");
             on_progress(
                 installed,
                 total_mods,
                 ModInstallProgress {
-                    detail: Some(format!(
-                        "Failed to resolve {mod_label} (not found in package list)"
-                    )),
+                    detail: Some(message.clone()),
                     ..Default::default()
                 },
             );
-            continue;
+            return Err(message);
         };
 
         let pinned = spec.pinned_version_for(game_version);
