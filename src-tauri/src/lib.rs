@@ -6227,6 +6227,31 @@ fn collect_mod_entries_recursive(
     Ok(out)
 }
 
+fn is_launcher_visible_mod_asset_name(name: &str) -> bool {
+    let base_name = if name.to_ascii_lowercase().ends_with(".old") {
+        &name[..name.len().saturating_sub(4)]
+    } else {
+        name
+    };
+    std::path::Path::new(base_name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "png"
+                    | "jpg"
+                    | "jpeg"
+                    | "gif"
+                    | "webp"
+                    | "bmp"
+                    | "ico"
+                    | "svg"
+                    | "gpf"
+            )
+        })
+}
+
 fn set_mod_files_old_suffix(mod_dir: &std::path::Path, enabled: bool) -> Result<(), String> {
     if !mod_dir.exists() {
         return Ok(());
@@ -6255,6 +6280,19 @@ fn set_mod_files_old_suffix(mod_dir: &std::path::Path, enabled: bool) -> Result<
         for path in entries {
             let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
             if name.to_lowercase().ends_with(".old") {
+                // Repair image assets renamed by older launcher versions.
+                if path.is_file() && is_launcher_visible_mod_asset_name(name) {
+                    let restored_name = &name[..name.len().saturating_sub(4)];
+                    let restored_path = path.with_file_name(restored_name);
+                    if !restored_path.exists() {
+                        std::fs::rename(&path, restored_path).map_err(|e| e.to_string())?;
+                    }
+                }
+                continue;
+            }
+            // Keep image assets readable so disabled mods can still show their
+            // icons and previews in the launcher.
+            if path.is_file() && is_launcher_visible_mod_asset_name(name) {
                 continue;
             }
             let new_path = path.with_file_name(format!("{name}.old"));
@@ -6440,12 +6478,117 @@ fn sync_vlog_with_disablemod_for_version(
     sync_named_mod_with_disablemod_for_version(app, version, "HQHQTeam", "VLog")
 }
 
+async fn mod_switch_alternatives(
+    version: u32,
+    dev: &str,
+    name: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let client = reqwest::Client::new();
+    let (_manifest_version, cfg, _chains, _manifests, _preset_constraints) =
+        ModsConfig::fetch_manifest(&client).await?;
+    let source_key = normalize_mod_key(dev, name);
+    let Some(group) = cfg
+        .mods
+        .iter()
+        .find(|spec| normalize_mod_key(&spec.dev, &spec.name) == source_key)
+        .and_then(|spec| spec.switch_group.as_deref())
+        .map(str::trim)
+        .filter(|group| !group.is_empty())
+        .map(str::to_string)
+    else {
+        return Ok(vec![]);
+    };
+
+    Ok(cfg
+        .mods
+        .into_iter()
+        .filter(|spec| normalize_mod_key(&spec.dev, &spec.name) != source_key)
+        .filter(|spec| spec.is_install_compatible(version))
+        .filter(|spec| {
+            spec.switch_group
+                .as_deref()
+                .is_some_and(|candidate| candidate.trim().eq_ignore_ascii_case(&group))
+        })
+        .map(|spec| (spec.dev, spec.name))
+        .collect())
+}
+
+fn exclude_disabled_mod_switches_from_updates(
+    app: &tauri::AppHandle,
+    mut cfg: ModsConfig,
+) -> Result<ModsConfig, String> {
+    let disabled_keys = disabled_mod_keys(&read_disablemod(app)?.mods);
+    cfg.mods.retain(|spec| {
+        spec.switch_group.as_deref().is_none_or(|group| group.trim().is_empty())
+            || !disabled_keys.contains(&normalize_mod_key(&spec.dev, &spec.name))
+    });
+    Ok(cfg)
+}
+
+pub(crate) fn select_mod_switches_for_install(
+    app: &tauri::AppHandle,
+    mut cfg: ModsConfig,
+) -> Result<ModsConfig, String> {
+    let mut disabled = read_disablemod(app)?;
+    let disabled_keys = disabled_mod_keys(&disabled.mods);
+    let mut groups: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+
+    for spec in &cfg.mods {
+        let Some(group) = spec
+            .switch_group
+            .as_deref()
+            .map(str::trim)
+            .filter(|group| !group.is_empty())
+        else {
+            continue;
+        };
+        groups
+            .entry(group.to_lowercase())
+            .or_default()
+            .push((spec.dev.clone(), spec.name.clone()));
+    }
+
+    let mut selected_keys = HashSet::new();
+    let mut changed = false;
+    for members in groups.values() {
+        let selected = members
+            .iter()
+            .find(|(dev, name)| !disabled_keys.contains(&normalize_mod_key(dev, name)));
+        let Some((selected_dev, selected_name)) = selected else {
+            // The user explicitly turned the whole group off.
+            continue;
+        };
+        selected_keys.insert(normalize_mod_key(selected_dev, selected_name));
+        for (dev, name) in members {
+            if dev.eq_ignore_ascii_case(selected_dev) && name.eq_ignore_ascii_case(selected_name) {
+                continue;
+            }
+            changed |= add_disabled_mod(&mut disabled, dev, name);
+        }
+    }
+
+    if changed {
+        write_disablemod(app, &disabled)?;
+    }
+
+    cfg.mods.retain(|spec| {
+        spec.switch_group
+            .as_deref()
+            .map(str::trim)
+            .filter(|group| !group.is_empty())
+            .is_none()
+            || selected_keys.contains(&normalize_mod_key(&spec.dev, &spec.name))
+    });
+    Ok(cfg)
+}
+
 fn event_vlog_mod_entry() -> mod_config::ModEntry {
     mod_config::ModEntry {
         dev: "asta".to_string(),
         name: "EVlog".to_string(),
         tags: vec![],
         enabled: true,
+        switch_group: None,
         low_cap: None,
         high_cap: None,
         tag_constraints: BTreeMap::new(),
@@ -6701,6 +6844,7 @@ struct ActiveGame {
     mode_label: String,
     launch_options: Vec<String>,
     launch_command_template: Option<String>,
+    _vanilla_winhttp_guard: Option<VanillaWinhttpGuard>,
 }
 
 #[derive(Default)]
@@ -7425,8 +7569,10 @@ async fn check_mod_updates(
     let run_mode_name = run_mode.as_deref().unwrap_or("hq");
 
     let extract_dir = version_dir(&app, version)?;
-    let mods_cfg =
-        effective_mods_config_for_run_mode(&client, version, run_mode_name, false, true).await?;
+    let mods_cfg = exclude_disabled_mod_switches_from_updates(
+        &app,
+        effective_mods_config_for_run_mode(&client, version, run_mode_name, false, true).await?,
+    )?;
     let (preset, _practice) = preset_and_practice_for_run_mode(run_mode_name);
     let active_tags = preset_tags_for_name(&preset);
 
@@ -7516,14 +7662,17 @@ async fn apply_mod_updates(
             ));
         }
 
-        let mods_cfg = effective_mods_config_for_run_mode(
-            &client,
-            version,
-            &run_mode_name,
-            false,
-            true,
-        )
-        .await?;
+        let mods_cfg = exclude_disabled_mod_switches_from_updates(
+            &app,
+            effective_mods_config_for_run_mode(
+                &client,
+                version,
+                &run_mode_name,
+                false,
+                true,
+            )
+            .await?,
+        )?;
         let (preset, _practice) = preset_and_practice_for_run_mode(&run_mode_name);
         let active_tags = preset_tags_for_name(&preset);
 
@@ -7833,6 +7982,29 @@ fn ensure_game_not_running(
     Ok(())
 }
 
+fn ensure_launch_compatible_with_active_games(
+    app: &tauri::AppHandle,
+    state: &State<'_, GameState>,
+    version: u32,
+    vanilla: bool,
+) -> Result<(), String> {
+    let mut guard = state
+        .active
+        .lock()
+        .map_err(|_| "game state lock poisoned".to_string())?;
+    cleanup_active_games(app, &mut guard)?;
+    let conflict = guard.iter().any(|active| {
+        active.version == version && (vanilla || active._vanilla_winhttp_guard.is_some())
+    });
+    if conflict {
+        return Err(
+            "Vanilla and modded runs cannot use the same game version at the same time"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn cleanup_active_games(
     app: &tauri::AppHandle,
     active_games: &mut Vec<ActiveGame>,
@@ -7884,6 +8056,7 @@ fn inject_launch_dlls(
     pid: u32,
     version_dir: &std::path::Path,
     steam_path_override: Option<&str>,
+    load_bepinex: bool,
 ) -> Result<(), String> {
     let Some(steam_path) = get_windows_steam_install_path(steam_path_override) else {
         log::warn!("Steam install path not found; skipping Steam overlay DLL injection");
@@ -7899,6 +8072,10 @@ fn inject_launch_dlls(
             continue;
         }
         inject_dll_into_process(pid, &dll)?;
+    }
+
+    if !load_bepinex {
+        return Ok(());
     }
 
     let dll_path = version_dir.join("winhttp.dll");
@@ -8157,7 +8334,12 @@ fn spawn_game_process(
     exe_dir: &std::path::Path,
     launch_options: &[String],
     launch_command_template: Option<&str>,
+    load_bepinex: bool,
 ) -> Result<std::process::Child, String> {
+    if load_bepinex {
+        VanillaWinhttpGuard::restore_stale(_version_dir)?;
+    }
+
     #[cfg(target_os = "windows")]
     let overlay_config = read_steam_overlay_config(_app)?;
     #[cfg(target_os = "linux")]
@@ -8263,6 +8445,7 @@ fn spawn_game_process(
                 child.id(),
                 _version_dir,
                 overlay_config.steam_path.as_deref(),
+                load_bepinex,
             ) {
                 log::error!(
                     "failed to inject launch DLLs into pid {}: {}",
@@ -8287,6 +8470,97 @@ fn spawn_game_process(
     }
 
     Ok(child)
+}
+
+struct VanillaWinhttpGuard {
+    original: std::path::PathBuf,
+    hidden: std::path::PathBuf,
+    renamed: bool,
+}
+
+impl VanillaWinhttpGuard {
+    fn restore_stale(version_dir: &std::path::Path) -> Result<(), String> {
+        let original = version_dir.join("winhttp.dll");
+        let hidden = version_dir.join("winhttp.dll.hq-launcher-disabled");
+        if !original.exists() && hidden.exists() {
+            std::fs::rename(&hidden, &original).map_err(|e| {
+                format!(
+                    "failed to restore stale vanilla winhttp.dll backup {}: {e}",
+                    hidden.to_string_lossy()
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    fn hide(version_dir: &std::path::Path) -> Result<Self, String> {
+        let original = version_dir.join("winhttp.dll");
+        let hidden = version_dir.join("winhttp.dll.hq-launcher-disabled");
+
+        // Recover a backup left behind if the launcher was terminated during a
+        // previous vanilla launch.
+        Self::restore_stale(version_dir)?;
+
+        if original.exists() && hidden.exists() {
+            return Err(format!(
+                "cannot start Vanilla Run because both {} and {} exist",
+                original.to_string_lossy(),
+                hidden.to_string_lossy()
+            ));
+        }
+
+        let renamed = original.exists();
+        if renamed {
+            std::fs::rename(&original, &hidden).map_err(|e| {
+                format!(
+                    "failed to disable BepInEx by renaming {}: {e}",
+                    original.to_string_lossy()
+                )
+            })?;
+        }
+
+        Ok(Self {
+            original,
+            hidden,
+            renamed,
+        })
+    }
+
+    fn restore(&mut self) -> Result<(), String> {
+        if !self.renamed {
+            return Ok(());
+        }
+        std::fs::rename(&self.hidden, &self.original).map_err(|e| {
+            format!(
+                "the vanilla game started, but winhttp.dll could not be restored from {}: {e}",
+                self.hidden.to_string_lossy()
+            )
+        })?;
+        self.renamed = false;
+        Ok(())
+    }
+}
+
+impl Drop for VanillaWinhttpGuard {
+    fn drop(&mut self) {
+        if let Err(e) = self.restore() {
+            log::error!("Failed to restore winhttp.dll after Vanilla Run: {e}");
+        }
+    }
+}
+
+fn restore_stale_vanilla_winhttp_backups(app: &tauri::AppHandle) -> Result<(), String> {
+    let versions = storage::versions_dir(app)?;
+    let Ok(entries) = std::fs::read_dir(versions) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            VanillaWinhttpGuard::restore_stale(&path)?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -8766,6 +9040,7 @@ async fn launch_game(
         .launch_lock
         .lock()
         .map_err(|_| "game launch lock poisoned".to_string())?;
+    ensure_launch_compatible_with_active_games(&app, &state, version, false)?;
     if !allow_multiple.unwrap_or(false) {
         ensure_game_not_running(&app, &state)?;
     }
@@ -8779,6 +9054,7 @@ async fn launch_game(
         &exe_dir,
         &launch_options,
         launch_command_template.as_deref(),
+        true,
     )?;
     let pid = child.id();
     let id = state.next_id.fetch_add(1, Ordering::Relaxed) + 1;
@@ -8793,9 +9069,64 @@ async fn launch_game(
         mode_label: "HQ".to_string(),
         launch_options,
         launch_command_template: launch_command_template_for_state,
+        _vanilla_winhttp_guard: None,
     });
     let lcstats_enabled = is_lcstats_enabled(&app)?;
     lcstats_autosheet::start_for_launch(app.clone(), lcstats_enabled, &lcstats_state);
+    show_game_overlay(&app);
+    Ok(pid)
+}
+
+#[tauri::command]
+async fn launch_game_vanilla(
+    app: tauri::AppHandle,
+    version: u32,
+    launch_options: Option<Vec<String>>,
+    launch_command_template: Option<String>,
+    allow_multiple: Option<bool>,
+    state: State<'_, GameState>,
+    prepare_state: State<'_, PrepareState>,
+) -> Result<u32, String> {
+    wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
+    let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
+
+    let _launch_guard = state
+        .launch_lock
+        .lock()
+        .map_err(|_| "game launch lock poisoned".to_string())?;
+    ensure_launch_compatible_with_active_games(&app, &state, version, true)?;
+    if !allow_multiple.unwrap_or(false) {
+        ensure_game_not_running(&app, &state)?;
+    }
+
+    let launch_options = launch_options.unwrap_or_default();
+    let launch_command_template_for_state = launch_command_template.clone();
+    let winhttp_guard = VanillaWinhttpGuard::hide(&dir)?;
+    let child = spawn_game_process(
+        &app,
+        &dir,
+        &exe_path,
+        &exe_dir,
+        &launch_options,
+        launch_command_template.as_deref(),
+        false,
+    )?;
+    let pid = child.id();
+    let id = state.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+    let mut guard = state
+        .active
+        .lock()
+        .map_err(|_| "game state lock poisoned".to_string())?;
+    guard.push(ActiveGame {
+        id,
+        child,
+        version,
+        mode_label: "Vanilla".to_string(),
+        launch_options,
+        launch_command_template: launch_command_template_for_state,
+        // The guard restores winhttp.dll when this active game is removed.
+        _vanilla_winhttp_guard: Some(winhttp_guard),
+    });
     show_game_overlay(&app);
     Ok(pid)
 }
@@ -8839,6 +9170,7 @@ async fn launch_game_practice(
         .launch_lock
         .lock()
         .map_err(|_| "game launch lock poisoned".to_string())?;
+    ensure_launch_compatible_with_active_games(&app, &state, version, false)?;
     if !allow_multiple.unwrap_or(false) {
         ensure_game_not_running(&app, &state)?;
     }
@@ -8852,6 +9184,7 @@ async fn launch_game_practice(
         &exe_dir,
         &launch_options,
         launch_command_template.as_deref(),
+        true,
     )?;
     let pid = child.id();
     let id = state.next_id.fetch_add(1, Ordering::Relaxed) + 1;
@@ -8866,6 +9199,7 @@ async fn launch_game_practice(
         mode_label: "Practice".to_string(),
         launch_options,
         launch_command_template: launch_command_template_for_state,
+        _vanilla_winhttp_guard: None,
     });
     let lcstats_enabled = is_lcstats_enabled(&app)?;
     lcstats_autosheet::start_for_launch(app.clone(), lcstats_enabled, &lcstats_state);
@@ -8983,6 +9317,7 @@ async fn launch_game_preset(
         .launch_lock
         .lock()
         .map_err(|_| "game launch lock poisoned".to_string())?;
+    ensure_launch_compatible_with_active_games(&app, &state, version, false)?;
     if !allow_multiple.unwrap_or(false) {
         ensure_game_not_running(&app, &state)?;
     }
@@ -8996,6 +9331,7 @@ async fn launch_game_preset(
         &exe_dir,
         &launch_options,
         launch_command_template.as_deref(),
+        true,
     )?;
     let pid = child.id();
     let id = state.next_id.fetch_add(1, Ordering::Relaxed) + 1;
@@ -9015,6 +9351,7 @@ async fn launch_game_preset(
         mode_label,
         launch_options,
         launch_command_template: launch_command_template_for_state,
+        _vanilla_winhttp_guard: None,
     });
     let lcstats_enabled = is_lcstats_enabled(&app)?;
     lcstats_autosheet::start_for_launch(app.clone(), lcstats_enabled, &lcstats_state);
@@ -9531,6 +9868,12 @@ async fn set_mod_enabled(
         google_oauth::set_settings(app.clone(), settings)?;
     }
 
+    let switch_alternatives = if enabled {
+        mod_switch_alternatives(version, &dev, &name).await?
+    } else {
+        vec![]
+    };
+
     let mut list = read_disablemod(&app)?;
 
     // Use normalized ids in the file.
@@ -9538,11 +9881,26 @@ async fn set_mod_enabled(
     list.mods.retain(|m| m != &id);
     if !enabled {
         add_disabled_mod(&mut list, &dev, &name);
+    } else {
+        for (other_dev, other_name) in &switch_alternatives {
+            add_disabled_mod(&mut list, other_dev, other_name);
+        }
     }
     write_disablemod(&app, &list)?;
 
     let plugins = plugins_dir(&app, version)?;
     let patchers = patchers_dir(&app, version)?;
+
+    if enabled {
+        for (other_dev, other_name) in &switch_alternatives {
+            if let Some(dir) = mod_dir_for(&plugins, other_dev, other_name) {
+                set_mod_files_old_suffix(&dir, false)?;
+            }
+            if let Some(dir) = mod_dir_for(&patchers, other_dev, other_name) {
+                set_mod_files_old_suffix(&dir, false)?;
+            }
+        }
+    }
 
     if enabled
         && mod_dir_for(&plugins, &dev, &name).is_none()
@@ -10579,6 +10937,9 @@ pub fn run() {
         .setup(|app| {
             // File logging (AppDataDir/logs/hq-launcher.log)
             logger::init(&app.handle()).map_err(|e| tauri::Error::Setup(e.into()))?;
+            if let Err(e) = restore_stale_vanilla_winhttp_backups(app.handle()) {
+                log::warn!("Failed to restore a stale Vanilla Run winhttp.dll backup: {e}");
+            }
             release_channel::load(&app.handle()).map_err(|e| {
                 let err: Box<dyn std::error::Error> =
                     Box::new(std::io::Error::new(std::io::ErrorKind::Other, e));
@@ -10670,6 +11031,7 @@ pub fn run() {
             check_mod_updates,
             apply_mod_updates,
             launch_game,
+            launch_game_vanilla,
             launch_game_practice,
             launch_game_preset,
             get_game_status,

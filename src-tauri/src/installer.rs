@@ -1516,7 +1516,10 @@ pub async fn sync_install_from_manifest_for_version(
     let remote = ModsConfig::fetch_manifest(&client).await?;
     let (remote_manifest_version, mods_cfg, _chain_config, manifests, _preset_tag_constraints) =
         remote;
-    let mods_cfg = base_mods_config_for_version(mods_cfg, game_version);
+    let mods_cfg = crate::select_mod_switches_for_install(
+        app,
+        base_mods_config_for_version(mods_cfg, game_version),
+    )?;
 
     let mut local_state = read_manifest_state(&app)?;
     let needs_mod_sync = local_state.manifest_version != remote_manifest_version;
@@ -1872,7 +1875,10 @@ pub async fn download_and_setup(
         // Fetch remote manifest data (mods + per-game-version depots manifest ids).
         let (remote_manifest_version, mods_cfg, _chain_config, manifests, _preset_tag_constraints) =
             ModsConfig::fetch_manifest(&client).await?;
-        let mods_cfg = base_mods_config_for_version(mods_cfg, version);
+        let mods_cfg = crate::select_mod_switches_for_install(
+            &app,
+            base_mods_config_for_version(mods_cfg, version),
+        )?;
 
         // Step 2: Lethal Company 다운로드
         emit_progress(

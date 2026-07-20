@@ -43,6 +43,7 @@ The Rust schema lives in `src-tauri/src/mod_config.rs` (`RemoteManifest`, `ModEn
       "dev": "SomeAuthor",
       "name": "SomeMod",
       "enabled": true,
+      "switch_group": "save-ui",
       "low_cap": 56,
       "high_cap": 73,
       "version_config": {
@@ -127,6 +128,7 @@ The launcher resolves the package + version via Thunderstore’s package list en
   "dev": "AuthorOrNamespace",
   "name": "PackageName",
   "enabled": true,
+  "switch_group": "save-ui",
   "low_cap": 56,
   "high_cap": 73,
   "tag_constraints": {
@@ -151,6 +153,27 @@ Thunderstore package identity.
 ### `enabled` (boolean, default: `true`)
 
 If `false`, the mod is ignored by installer/update-check/update.
+
+### `switch_group` (optional string)
+
+Mods with the same non-empty `switch_group` share one row in the launcher. Enabling or switching to one member disables the other compatible members, and disabled alternatives are excluded from update checks.
+
+Only the saved active member is installed when downloading or syncing a game version. For a new group with no saved selection, the first compatible mod in manifest order becomes the default; alternatives are downloaded on demand when selected.
+
+Example:
+
+```json
+{
+  "mods": [
+    { "dev": "Pooble", "name": "LCBetterSaves", "switch_group": "save-ui" },
+    { "dev": "timewaste", "name": "OverworkedUI", "switch_group": "save-ui" },
+    { "dev": "HQHQTeam", "name": "HQoL", "switch_group": "scrap-selling" },
+    { "dev": "Zehs", "name": "SellMyScrap", "switch_group": "scrap-selling" }
+  ]
+}
+```
+
+Group names are case-insensitive. A group should normally contain two mods, although the backend supports more than two compatible alternatives.
 
 ### `low_cap` / `high_cap` (optional integers)
 

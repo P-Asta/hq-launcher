@@ -65,6 +65,11 @@ pub struct ModEntry {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
+    /// Optional mutually-exclusive UI group. Enabling one mod disables the
+    /// other compatible mods that use the same non-empty group name.
+    #[serde(default)]
+    pub switch_group: Option<String>,
+
     /// Inclusive installation range.
     #[serde(default)]
     pub low_cap: Option<u32>,

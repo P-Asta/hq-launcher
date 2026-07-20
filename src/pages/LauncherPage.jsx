@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
+  ArrowLeftRight,
   Check,
   CheckCircle2,
   ChevronDown,
   Download,
+  FileCog,
   FolderOpen,
   Globe2,
   Info,
@@ -1000,6 +1003,12 @@ function getInitialLaunchOptionsConfig() {
 }
 
 function getLaunchRequestForRunMode(mode, version) {
+  if (mode === "vanilla") {
+    return {
+      command: "launch_game_vanilla",
+      args: { version },
+    };
+  }
   if (mode === "practice") {
     return {
       command: "launch_game_practice",
@@ -2447,7 +2456,55 @@ export default function LauncherPage({
 
   const filteredMods = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const mods = modsForList;
+    const switchDisabledSet = new Set(
+      disabledMods.map(
+        (mod) =>
+          `${String(mod?.dev ?? "").toLowerCase()}::${String(
+            mod?.name ?? ""
+          ).toLowerCase()}`
+      )
+    );
+    const switchRepresentativeByKey = new Map();
+    const switchGroups = new Map();
+    for (const mod of modsForList) {
+      const group = String(mod?.switch_group ?? "").trim().toLowerCase();
+      if (!group) continue;
+      switchGroups.set(group, [...(switchGroups.get(group) ?? []), mod]);
+    }
+    for (const [group, pairMods] of switchGroups) {
+      if (pairMods.length < 2) continue;
+      const enabledMod = pairMods.find(
+        (mod) => !switchDisabledSet.has(modKeyLower(mod))
+      );
+      const selectedPairMod = pairMods.find(
+        (mod) => selectedMod && modKeyLower(mod) === modKeyLower(selectedMod)
+      );
+      const installedMod = pairMods.find((mod) => !!installedModVersions[modKeyLower(mod)]);
+      const representative = enabledMod ?? selectedPairMod ?? installedMod ?? pairMods[0];
+      const entry = {
+        ...representative,
+        _modSwitchPair: pairMods,
+        _modSwitchGroup: group,
+      };
+      for (const mod of pairMods) {
+        switchRepresentativeByKey.set(modKeyLower(mod), entry);
+      }
+    }
+
+    const mods = [];
+    const addedSwitchPairs = new Set();
+    for (const mod of modsForList) {
+      const key = modKeyLower(mod);
+      const representative = switchRepresentativeByKey.get(key);
+      if (!representative) {
+        mods.push(mod);
+        continue;
+      }
+      const pairId = representative._modSwitchGroup;
+      if (addedSwitchPairs.has(pairId)) continue;
+      addedSwitchPairs.add(pairId);
+      mods.push(representative);
+    }
 
     const selectedKeyLower = selectedMod
       ? modKeyLower(selectedMod)
@@ -2492,7 +2549,10 @@ export default function LauncherPage({
       // Preserve existing special-case exclusion
       if (String(m?.name ?? "") === "ShipLootCruiser") return false;
       if (!q) return true;
-      const hay = `${m.dev} ${m.name}`.toLowerCase();
+      const hay = (Array.isArray(m?._modSwitchPair) ? m._modSwitchPair : [m])
+        .map((entry) => `${entry.dev} ${entry.name}`)
+        .join(" ")
+        .toLowerCase();
       return hay.includes(q);
     };
 
@@ -2585,6 +2645,7 @@ export default function LauncherPage({
     selectedVersion,
     modCfgFilesByKey,
     installedModVersions,
+    disabledMods,
   ]);
 
   const displayedMods = useMemo(() => {
@@ -5318,7 +5379,6 @@ export default function LauncherPage({
     const toggledKeys = modsToToggle.map(
       (m) => `${String(m.dev).toLowerCase()}::${String(m.name).toLowerCase()}`
     );
-    for (const k of toggledKeys) forgetInstalledModIcon(k);
     for (const k of toggledKeys) markModBusy(k, true);
 
     const selectedKey =
@@ -5343,10 +5403,17 @@ export default function LauncherPage({
       // refresh disabled list (source of truth)
       const dm = await invoke("get_disabled_mods");
       setDisabledMods(Array.isArray(dm) ? dm : []);
+      await refreshInstalledModVersions(selectedVersion, {
+        retries: nextEnabled ? 3 : 0,
+        delayMs: 180,
+        expectedKeys: nextEnabled ? toggledKeys : [],
+      });
       if (affectsSelected) setModEnabled(!!nextEnabled);
+      return true;
     } catch (e) {
       console.error(e);
       setCfgError(e?.message ?? String(e));
+      return false;
     } finally {
       for (const k of toggledKeys) markModBusy(k, false);
       if (affectsSelected) setModToggleBusy(false);
@@ -5357,6 +5424,13 @@ export default function LauncherPage({
     if (!selectedMod) return;
     if (isPresetSummaryMod(selectedMod)) return;
     return toggleModEnabledForMod(selectedMod, nextEnabled);
+  }
+
+  async function switchModVariant(currentMod, targetMod) {
+    if (!currentMod || !targetMod) return;
+    await toggleModEnabledForMod(targetMod, true, {
+      propagateChain: false,
+    });
   }
 
   async function refreshLcstatsAutosheetTracking() {
@@ -5582,12 +5656,21 @@ export default function LauncherPage({
     ).toLowerCase()}`;
     let configPath = "";
 
+    const selectedKeyLower = selectedMod ? modKeyLower(selectedMod) : "";
+    if (
+      selectedKeyLower === keyLower &&
+      String(activeConfigPath ?? "").toLowerCase().endsWith(".cfg")
+    ) {
+      configPath = String(activeConfigPath);
+    }
+
     const cachedFiles = modCfgFilesByKey[`${version}::${keyLower}`];
-    if (Array.isArray(cachedFiles)) {
+    if (!configPath && Array.isArray(cachedFiles)) {
       configPath = cachedFiles.find((p) =>
         String(p).toLowerCase().endsWith(".cfg")
       ) ?? "";
-    } else if (Number.isFinite(version) && mod?.dev && mod?.name) {
+    }
+    if (!configPath && Number.isFinite(version) && mod?.dev && mod?.name) {
       try {
         const files = await invoke("list_config_files_for_mod_for_version", {
           version,
@@ -5666,6 +5749,20 @@ export default function LauncherPage({
         dev: mod.dev,
         name: mod.name,
       });
+    } catch (e) {
+      window.alert(e?.message ?? String(e));
+    } finally {
+      closeModContextMenu();
+    }
+  }
+
+  async function openSelectedModThunderstore(mod) {
+    if (!mod?.dev || !mod?.name) return;
+    const url = `https://thunderstore.io/c/lethal-company/p/${encodeURIComponent(
+      mod.dev
+    )}/${encodeURIComponent(mod.name)}`;
+    try {
+      await openUrl(url);
     } catch (e) {
       window.alert(e?.message ?? String(e));
     } finally {
@@ -5825,6 +5922,19 @@ export default function LauncherPage({
         practice: true,
         title: "C.Moons preset: installs C.Moons-tagged mods + practice mods",
       },
+      {
+        type: "separator",
+        key: "run-group-vanilla",
+      },
+      {
+        value: "vanilla",
+        label: "Vanilla Run",
+        buttonLabel: "Vanilla Run",
+        preset: "hq",
+        practice: false,
+        vanilla: true,
+        title: "Vanilla run: launches without BepInEx or mods",
+      },
     ],
     [],
   );
@@ -5848,6 +5958,7 @@ export default function LauncherPage({
     const value = selectedRunOption?.value;
     if (!value) return "High Quota Run";
     if (value === "hq") return "High Quota Run";
+    if (value === "vanilla") return "Vanilla Run";
     if (value === "practice") return "High Quota Practice";
     if (value === "c_moons") return "Classic Moons Run";
     if (value === "c_moons_smhq") return "Classic Moons SMHQ";
@@ -5970,6 +6081,12 @@ export default function LauncherPage({
     setPracticeCancelBusy(false);
 
     try {
+      if (opt?.vanilla) {
+        await refreshInstalledModVersions(nextVersion);
+        await refreshConfigLinkState(nextVersion);
+        setPreparedUpdateContext(key);
+        return;
+      }
       if (eventId) {
         await invoke("prepare_event", {
           version: nextVersion,
@@ -6877,22 +6994,49 @@ export default function LauncherPage({
                     m.name?.[0] ?? "M"
                   }`.toUpperCase();
                   const keyLower = modKeyLower(m);
+                  const modSwitchMods = Array.isArray(m?._modSwitchPair)
+                    ? m._modSwitchPair
+                    : null;
+                  const modSwitchIndex = modSwitchMods?.findIndex(
+                    (entry) => modKeyLower(entry) === keyLower
+                  );
+                  const modSwitchTarget =
+                    modSwitchMods && modSwitchMods.length > 1
+                      ? modSwitchMods[
+                          ((modSwitchIndex >= 0 ? modSwitchIndex : 0) + 1) %
+                            modSwitchMods.length
+                        ]
+                      : null;
                   const coverSrc = presetSummary ? m.iconSrc : installedModIconUrls[keyLower];
-                  const description = presetSummary
+                  const baseDescription = presetSummary
                     ? m.description
                     : installedModDescriptions[keyLower] || "Click to edit config";
+                  const description = baseDescription;
                   const smhqEnableLocked =
                     isSmhqRunMode(runMode) && smhqForcedModKeys.has(keyLower);
                   const eclipsedEnableLocked =
                     isEclipsedRunMode(runMode) && eclipsedForcedModKeys.has(keyLower);
                   const eventEnableLocked = eventForcedModKeys.has(keyLower);
+                  const modSwitchLocked = modSwitchMods?.some((entry) => {
+                    const entryKey = modKeyLower(entry);
+                    return (
+                      (isPracticeRunMode(runMode) && practiceLockedModKeys.has(entryKey)) ||
+                      (isSmhqRunMode(runMode) && smhqForcedModKeys.has(entryKey)) ||
+                      (isEclipsedRunMode(runMode) && eclipsedForcedModKeys.has(entryKey)) ||
+                      eventForcedModKeys.has(entryKey)
+                    );
+                  });
                   const enabled =
                     smhqEnableLocked ||
                     eclipsedEnableLocked ||
                     eventEnableLocked ||
                     (!disabledSet.has(keyLower) && !practiceLockedModKeys.has(keyLower));
                   const installedVer = installedModVersions[keyLower];
-                  const busy = modToggleBusyKeys.has(keyLower);
+                  const busy = modSwitchMods
+                    ? modSwitchMods.some((entry) =>
+                        modToggleBusyKeys.has(modKeyLower(entry))
+                      )
+                    : modToggleBusyKeys.has(keyLower);
                   const isPracticeMod =
                     isPracticeRunMode(runMode) && practiceModKeys.has(keyLower);
                   const practiceEnableLocked =
@@ -6935,6 +7079,33 @@ export default function LauncherPage({
                           <div className="truncate text-sm text-white/40">
                             {m.dev}
                           </div>
+                          {modSwitchTarget ? (
+                            <button
+                              type="button"
+                              className="inline-flex min-w-0 max-w-[170px] shrink items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.05] px-2 py-0.5 text-[11px] font-medium text-white/60 transition hover:border-white/20 hover:bg-white/[0.09] hover:text-white/85 disabled:cursor-not-allowed disabled:opacity-40"
+                              disabled={
+                                busy ||
+                                modSwitchLocked ||
+                                practiceEnableLocked ||
+                                smhqEnableLocked ||
+                                eclipsedEnableLocked ||
+                                eventEnableLocked
+                              }
+                              title={`Switch to ${modSwitchTarget.dev}-${modSwitchTarget.name}`}
+                              aria-label={`Switch to ${modSwitchTarget.dev}-${modSwitchTarget.name}`}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                switchModVariant(m, modSwitchTarget).catch(console.error);
+                              }}
+                            >
+                              {busy ? (
+                                <LoaderCircle className="h-3 w-3 shrink-0 animate-spin" />
+                              ) : (
+                                <ArrowLeftRight className="h-3 w-3 shrink-0" />
+                              )}
+                              <span className="truncate">{modSwitchTarget.name}</span>
+                            </button>
+                          ) : null}
                           {/* {presetSummary ? (
                             <div className="rounded-full border border-sky-400/30 bg-sky-400/10 px-2 py-0.5 text-[11px] font-medium text-sky-100">
                               Locked
@@ -6994,13 +7165,16 @@ export default function LauncherPage({
                               checked={enabled}
                               disabled={
                                 busy ||
+                                modSwitchLocked ||
                                 practiceEnableLocked ||
                                 smhqEnableLocked ||
                                 eclipsedEnableLocked ||
                                 eventEnableLocked
                               }
                               onCheckedChange={(v) =>
-                                toggleModEnabledForMod(m, !!v)
+                                toggleModEnabledForMod(m, !!v, {
+                                  propagateChain: !modSwitchTarget,
+                                })
                               }
                             />
                           </div>
@@ -7600,19 +7774,27 @@ export default function LauncherPage({
           }}
         >
           <button
-            className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/[0.07]"
+            className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/[0.07]"
             onClick={() => openSelectedModFolder(modContextMenu.mod)}
           >
+            <FolderOpen className="h-4 w-4 text-white/50" />
             Open Mod Folder
           </button>
-          {modContextMenu.configPath ? (
-            <button
-              className="flex w-full items-center rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/[0.07]"
-              onClick={() => openSelectedConfigFile(modContextMenu.configPath)}
-            >
-              Open Config File
-            </button>
-          ) : null}
+          <button
+            className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/[0.07] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent"
+            disabled={!modContextMenu.configPath}
+            onClick={() => openSelectedConfigFile(modContextMenu.configPath)}
+          >
+            <FileCog className="h-4 w-4 text-white/50" />
+            Open Config File
+          </button>
+          <button
+            className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-white/85 transition hover:bg-white/[0.07]"
+            onClick={() => openSelectedModThunderstore(modContextMenu.mod)}
+          >
+            <Globe2 className="h-4 w-4 text-white/50" />
+            Open Thunderstore
+          </button>
         </div>
       )}
 
