@@ -307,6 +307,8 @@ const DEFAULT_CUSTOM_LCSTATS_LAYOUT = {
   writeZeroForMissingHives: false,
   eggColumn: "L",
   eggNotesEnabled: false,
+  availableEggValueColumn: "",
+  availableOutdoorValueColumn: "",
   collectedEggColumn: "",
   collectedEggNotesEnabled: true,
   nutColumn: "M",
@@ -689,6 +691,11 @@ function normalizeCustomLcstatsLayout(layout = {}) {
     writeZeroForMissingHives: source.writeZeroForMissingHives === true,
     eggColumn: normalizeSheetColumn(source.eggColumn, ""),
     eggNotesEnabled: source.eggNotesEnabled === true,
+    availableEggValueColumn: normalizeSheetColumn(source.availableEggValueColumn, ""),
+    availableOutdoorValueColumn: normalizeSheetColumn(
+      source.availableOutdoorValueColumn,
+      "",
+    ),
     collectedEggColumn: normalizeSheetColumn(source.collectedEggColumn, ""),
     collectedEggNotesEnabled: source.collectedEggNotesEnabled !== false,
     nutColumn: normalizeSheetColumn(source.nutColumn, ""),
@@ -4612,6 +4619,8 @@ export default function LauncherPage({
           [
             ["Egg", "eggColumn", "L"],
             ["Egg price note", "eggNotesEnabled", "", "checkbox", "Add note"],
+            ["Available egg value", "availableEggValueColumn", ""],
+            ["Total outdoor value", "availableOutdoorValueColumn", ""],
           ],
           [
             ["Collected egg value", "collectedEggColumn", ""],

@@ -96,6 +96,8 @@ struct ResolvedCustomLayout {
     write_zero_for_missing_hives: bool,
     egg_column: Option<String>,
     egg_notes_enabled: bool,
+    available_egg_value_column: Option<String>,
+    available_outdoor_value_column: Option<String>,
     collected_egg_column: Option<String>,
     collected_egg_notes_enabled: bool,
     nut_column: Option<String>,
@@ -183,6 +185,12 @@ impl ResolvedCustomLayout {
             write_zero_for_missing_hives: settings.write_zero_for_missing_hives,
             egg_column: normalize_optional_column(&settings.egg_column),
             egg_notes_enabled: settings.egg_notes_enabled,
+            available_egg_value_column: normalize_optional_column(
+                &settings.available_egg_value_column,
+            ),
+            available_outdoor_value_column: normalize_optional_column(
+                &settings.available_outdoor_value_column,
+            ),
             collected_egg_column: normalize_optional_column(&settings.collected_egg_column),
             collected_egg_notes_enabled: settings.collected_egg_notes_enabled,
             nut_column: normalize_optional_column(&settings.nut_column),
@@ -470,6 +478,8 @@ struct NormalizedStats {
     cheap_hive_value: Option<i64>,
     expensive_hive_value: Option<i64>,
     egg_available: NoteCell,
+    available_egg_value: i64,
+    available_outdoor_value: i64,
     collected_egg: NoteCell,
     nutcracker_count: usize,
     nutcracker_collected: i64,
@@ -524,6 +534,8 @@ impl NormalizedStats {
             cheap_hive_value: cheap_hive_value(stats),
             expensive_hive_value: expensive_hive_value(stats),
             egg_available: egg_available_cell(stats),
+            available_egg_value: available_egg_value(stats),
+            available_outdoor_value: available_outdoor_value(stats),
             collected_egg: collected_egg_cell(stats),
             nutcracker_count: enemy_count(stats, "Nutcracker"),
             nutcracker_collected: collected_count_or_legacy_int(
@@ -670,6 +682,18 @@ fn build_value_updates(
             stats.egg_available.value.clone(),
         );
     }
+    push_value(
+        &mut updates,
+        &layout.available_egg_value_column,
+        row,
+        json!(stats.available_egg_value),
+    );
+    push_value(
+        &mut updates,
+        &layout.available_outdoor_value_column,
+        row,
+        json!(stats.available_outdoor_value),
+    );
     if layout.collected_egg_column.is_some() && !layout.collected_egg_notes_enabled {
         push_value(
             &mut updates,
@@ -1349,6 +1373,28 @@ fn egg_available_cell(stats: &Value) -> NoteCell {
     }
 }
 
+fn available_egg_value(stats: &Value) -> i64 {
+    int_values_any(
+        stats,
+        &[
+            &["EggInfo", "Available"][..],
+            &["BirdInfo", "EggValues"][..],
+        ],
+    )
+    .iter()
+    .sum()
+}
+
+fn available_outdoor_value(stats: &Value) -> i64 {
+    let bee_total = int_values_any(
+        stats,
+        &[&["BeeInfo", "Available"][..], &["BeeInfo", "Values"][..]],
+    )
+    .iter()
+    .sum::<i64>();
+    bee_total + available_egg_value(stats)
+}
+
 fn collected_egg_cell(stats: &Value) -> NoteCell {
     let mut values = array_at_any(
         stats,
@@ -1554,7 +1600,7 @@ fn missing_items_cell(stats: &Value, filter_collected_gift_scrap: bool) -> NoteC
         .join("\n");
     NoteCell {
         column: String::new(),
-        value: json!(missing.len().to_string()),
+        value: json!(missing.len()),
         note: Some(note),
     }
 }
@@ -2019,6 +2065,8 @@ mod tests {
             write_zero_for_missing_hives: false,
             egg_column: "L".to_string(),
             egg_notes_enabled: false,
+            available_egg_value_column: "BA".to_string(),
+            available_outdoor_value_column: "BB".to_string(),
             collected_egg_column: "AF".to_string(),
             collected_egg_notes_enabled: false,
             nut_column: "M".to_string(),
@@ -2079,6 +2127,8 @@ mod tests {
         assert_eq!(cell_value(&updates, "AE"), Some(&json!(132)));
         assert_eq!(cell_value(&updates, "AV"), Some(&json!(64)));
         assert_eq!(cell_value(&updates, "L"), Some(&json!("12|18")));
+        assert_eq!(cell_value(&updates, "BA"), Some(&json!(30)));
+        assert_eq!(cell_value(&updates, "BB"), Some(&json!(226)));
         assert_eq!(cell_value(&updates, "M"), Some(&json!(1)));
         assert_eq!(cell_value(&updates, "AG"), Some(&json!(0)));
         assert_eq!(cell_value(&updates, "AH"), Some(&json!(0)));
@@ -2478,7 +2528,7 @@ mod tests {
             normalized.outside_items.note.as_deref(),
             Some("Missing: Bee (0|1) Egg (18, 30)")
         );
-        assert_eq!(normalized.missing.value, json!("1"));
+        assert_eq!(normalized.missing.value, json!(1));
         assert_eq!(
             normalized.missing.note.as_deref(),
             Some("Cash register: 80")

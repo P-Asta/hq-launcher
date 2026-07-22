@@ -105,6 +105,10 @@ pub struct CustomLcStatsLayoutSettings {
     pub egg_column: String,
     #[serde(default = "default_custom_egg_notes_enabled")]
     pub egg_notes_enabled: bool,
+    #[serde(default = "default_custom_available_egg_value_column")]
+    pub available_egg_value_column: String,
+    #[serde(default = "default_custom_available_outdoor_value_column")]
+    pub available_outdoor_value_column: String,
     #[serde(default = "default_custom_collected_egg_column")]
     pub collected_egg_column: String,
     #[serde(default = "default_custom_collected_egg_notes_enabled")]
@@ -280,6 +284,8 @@ impl Default for CustomLcStatsLayoutSettings {
             write_zero_for_missing_hives: false,
             egg_column: default_custom_egg_column(),
             egg_notes_enabled: default_custom_egg_notes_enabled(),
+            available_egg_value_column: default_custom_available_egg_value_column(),
+            available_outdoor_value_column: default_custom_available_outdoor_value_column(),
             collected_egg_column: default_custom_collected_egg_column(),
             collected_egg_notes_enabled: default_custom_collected_egg_notes_enabled(),
             nut_column: default_custom_nut_column(),
@@ -414,6 +420,12 @@ fn default_custom_egg_column() -> String {
 }
 fn default_custom_egg_notes_enabled() -> bool {
     false
+}
+fn default_custom_available_egg_value_column() -> String {
+    String::new()
+}
+fn default_custom_available_outdoor_value_column() -> String {
+    String::new()
 }
 fn default_custom_collected_egg_column() -> String {
     String::new()

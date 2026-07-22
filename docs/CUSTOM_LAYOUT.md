@@ -123,6 +123,8 @@ If `SID note` is on, the `Y` cell can also have a note like `Cash register`.
 | `hive zero` | Writes `0` for missing hive fields instead of leaving them blank. |
 | `Egg` | Available egg values joined by `|`, for example `12|18|30`. |
 | `Egg price note` | Adds a note listing available egg values. |
+| `Available egg value` | Total value of all available Sapsucker eggs. |
+| `Total outdoor value` | Total available hive and Sapsucker egg value. |
 | `Collected egg value` | Total collected egg value. |
 | `Collected egg note` | Adds a note listing collected egg values. |
 | `Collected` | Collected total value. |
@@ -343,6 +345,8 @@ Adjust the columns to match your sheet.
   "writeZeroForMissingHives": false,
   "eggColumn": "L",
   "eggNotesEnabled": false,
+  "availableEggValueColumn": "",
+  "availableOutdoorValueColumn": "",
   "collectedEggColumn": "",
   "collectedEggNotesEnabled": true,
   "nutColumn": "M",

@@ -6582,6 +6582,104 @@ pub(crate) fn select_mod_switches_for_install(
     Ok(cfg)
 }
 
+fn reconcile_mod_switch_groups(
+    disabled: &mut DisableModFile,
+    cfg: &ModsConfig,
+) -> bool {
+    let mut groups: BTreeMap<String, Vec<(&str, &str)>> = BTreeMap::new();
+    for spec in &cfg.mods {
+        if !spec.enabled {
+            continue;
+        }
+        let Some(group) = spec
+            .switch_group
+            .as_deref()
+            .map(str::trim)
+            .filter(|group| !group.is_empty())
+        else {
+            continue;
+        };
+        groups
+            .entry(group.to_lowercase())
+            .or_default()
+            .push((&spec.dev, &spec.name));
+    }
+
+    let mut disabled_keys = disabled_mod_keys(&disabled.mods);
+    let mut changed = false;
+    for members in groups.values().filter(|members| members.len() > 1) {
+        let enabled_members = members
+            .iter()
+            .filter(|(dev, name)| !disabled_keys.contains(&normalize_mod_key(dev, name)))
+            .copied()
+            .collect::<Vec<_>>();
+        if enabled_members.len() <= 1 {
+            continue;
+        }
+
+        // Manifest order defines the default when the group has never been configured.
+        let selected_key = normalize_mod_key(enabled_members[0].0, enabled_members[0].1);
+        for (dev, name) in members {
+            let key = normalize_mod_key(dev, name);
+            if key == selected_key || disabled_keys.contains(&key) {
+                continue;
+            }
+            if add_disabled_mod(disabled, dev, name) {
+                disabled_keys.insert(key);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+#[cfg(test)]
+mod mod_switch_group_tests {
+    use super::*;
+
+    fn switch_config() -> ModsConfig {
+        serde_json::from_value(serde_json::json!({
+            "mods": [
+                { "dev": "Pooble", "name": "LCBetterSaves", "switch_group": "save-ui" },
+                { "dev": "timewaste", "name": "OverworkedUI", "switch_group": "save-ui" },
+                { "dev": "HQHQTeam", "name": "HQoL", "switch_group": "scrap-selling" },
+                { "dev": "Zehs", "name": "SellMyScrap", "switch_group": "scrap-selling" }
+            ]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn unconfigured_switch_groups_keep_manifest_first_and_disable_the_rest() {
+        let mut disabled = DisableModFile {
+            version: DISABLEMOD_FILE_VERSION,
+            mods: vec![],
+        };
+
+        assert!(reconcile_mod_switch_groups(&mut disabled, &switch_config()));
+        let keys = disabled_mod_keys(&disabled.mods);
+        assert!(!keys.contains(&normalize_mod_key("Pooble", "LCBetterSaves")));
+        assert!(keys.contains(&normalize_mod_key("timewaste", "OverworkedUI")));
+        assert!(!keys.contains(&normalize_mod_key("HQHQTeam", "HQoL")));
+        assert!(keys.contains(&normalize_mod_key("Zehs", "SellMyScrap")));
+    }
+
+    #[test]
+    fn configured_non_default_switch_choice_is_preserved() {
+        let mut disabled = DisableModFile {
+            version: DISABLEMOD_FILE_VERSION,
+            mods: vec![normalize_mod_id("Pooble", "LCBetterSaves")],
+        };
+
+        assert!(reconcile_mod_switch_groups(&mut disabled, &switch_config()));
+        let keys = disabled_mod_keys(&disabled.mods);
+        assert!(keys.contains(&normalize_mod_key("Pooble", "LCBetterSaves")));
+        assert!(!keys.contains(&normalize_mod_key("timewaste", "OverworkedUI")));
+        assert!(!keys.contains(&normalize_mod_key("HQHQTeam", "HQoL")));
+        assert!(keys.contains(&normalize_mod_key("Zehs", "SellMyScrap")));
+    }
+}
+
 fn event_vlog_mod_entry() -> mod_config::ModEntry {
     mod_config::ModEntry {
         dev: "asta".to_string(),
@@ -9683,9 +9781,21 @@ fn stop_game(
 }
 
 #[tauri::command]
-fn get_disabled_mods(app: tauri::AppHandle) -> Result<Vec<DisabledMod>, String> {
+async fn get_disabled_mods(app: tauri::AppHandle) -> Result<Vec<DisabledMod>, String> {
     ensure_lcstats_disabled_without_google_auth(&app)?;
-    Ok(read_disablemod(&app)?.mods)
+    let mut disabled = read_disablemod(&app)?;
+    let client = reqwest::Client::new();
+    match ModsConfig::fetch_manifest(&client).await {
+        Ok((_version, cfg, _chains, _manifests, _preset_constraints)) => {
+            if reconcile_mod_switch_groups(&mut disabled, &cfg) {
+                write_disablemod(&app, &disabled)?;
+            }
+        }
+        Err(error) => {
+            log::warn!("Failed to reconcile mod switch defaults: {error}");
+        }
+    }
+    Ok(disabled.mods)
 }
 
 fn is_lcstats_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
