@@ -77,6 +77,7 @@ export function LoginDialog({ open, onOpenChange, onLoggedIn }) {
           if (p.data?.session_id != null) {
             setSessionId(Number(p.data.session_id));
           }
+          setNeeds2fa(true);
           setHint("");
           return;
         }
