@@ -7406,6 +7406,80 @@ fn spawn_open_command(program: &str, path: &Path) -> bool {
 }
 
 #[cfg(target_os = "linux")]
+fn spawn_url_command(program: &str, url: &str) -> bool {
+    host_open_command(program).arg(url).spawn().is_ok()
+}
+
+#[cfg(target_os = "linux")]
+fn url_command_status_ok(program: &str, args: &[&std::ffi::OsStr]) -> bool {
+    let mut command = host_open_command(program);
+    command.args(args);
+    match command.status() {
+        Ok(status) if status.success() => {
+            log::info!("Opened browser URL with {program}");
+            true
+        }
+        Ok(status) => {
+            log::warn!("Browser opener {program} exited with {status}");
+            false
+        }
+        Err(error) => {
+            log::warn!("Browser opener {program} could not start: {error}");
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn open_url_with_fallbacks(url: &str) -> Result<(), String> {
+    let url_arg = std::ffi::OsStr::new(url);
+    if url_command_status_ok("xdg-open", &[url_arg])
+        || url_command_status_ok("gio", &[std::ffi::OsStr::new("open"), url_arg])
+        || url_command_status_ok("kioclient6", &[std::ffi::OsStr::new("exec"), url_arg])
+        || url_command_status_ok("kioclient5", &[std::ffi::OsStr::new("exec"), url_arg])
+    {
+        return Ok(());
+    }
+
+    if let Some(browser) = std::env::var_os("BROWSER").and_then(|value| {
+        value
+            .to_string_lossy()
+            .split(':')
+            .find_map(|command| shlex::split(command).and_then(|parts| parts.into_iter().next()))
+    }) {
+        if spawn_url_command(&browser, url) {
+            log::info!("Opened browser URL with BROWSER={browser}");
+            return Ok(());
+        }
+        log::warn!("Browser from BROWSER could not start: {browser}");
+    }
+
+    for browser in [
+        "firefox",
+        "google-chrome-stable",
+        "google-chrome",
+        "chromium",
+        "chromium-browser",
+        "brave",
+        "brave-browser",
+        "vivaldi",
+        "vivaldi-stable",
+    ] {
+        if spawn_url_command(browser, url) {
+            log::info!("Opened browser URL with {browser}");
+            return Ok(());
+        }
+    }
+
+    Err("no working system browser opener was found".to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn open_url_with_fallbacks(url: &str) -> Result<(), String> {
+    opener::open(url).map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "linux")]
 fn open_path_with_fallbacks(path: &Path, is_folder: bool) -> Result<(), String> {
     if command_status_ok("xdg-open", &[path.as_os_str()])
         || command_status_ok("gio", &[std::ffi::OsStr::new("open"), path.as_os_str()])

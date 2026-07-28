@@ -212,6 +212,11 @@ impl LcStats {
             .unwrap_or_else(|| self.knife_info.collected.clone())
     }
 
+    pub fn knife_available_values(&self) -> Vec<i64> {
+        self.fallback_int_array_any(&[&["KnifeInfo", "Available"][..]])
+            .unwrap_or_else(|| self.knife_info.available.clone())
+    }
+
     pub fn shotgun_available_values(&self) -> Vec<i64> {
         self.fallback_int_array_any(&[&["ShotgunInfo", "Available"][..]])
             .unwrap_or_else(|| self.shotgun_info.available.clone())
@@ -231,6 +236,49 @@ impl LcStats {
                     .map(|gifts| gifts.iter().map(GiftBoxInfo::from_value).collect())
             })
             .unwrap_or_else(|| self.gift_boxes_opened.clone())
+    }
+
+    pub fn shop_sales_in_source_order(&self) -> Vec<(String, i64)> {
+        self.fallback_source
+            .as_ref()
+            .and_then(|stats| value_at(stats, &["ShopSales"]))
+            .and_then(Value::as_object)
+            .map(|sales| {
+                sales
+                    .iter()
+                    .map(|(name, value)| (name.clone(), intish_value(value)))
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                self.shop_sales
+                    .iter()
+                    .map(|(name, value)| (name.clone(), *value))
+                    .collect()
+            })
+    }
+
+    pub fn furniture_info_in_source_order(&self) -> Vec<(String, FurnitureInfo)> {
+        self.fallback_source
+            .as_ref()
+            .and_then(|stats| value_at(stats, &["FurnitureInfo"]))
+            .and_then(Value::as_object)
+            .map(|furniture| {
+                furniture
+                    .iter()
+                    .map(|(name, value)| {
+                        (
+                            name.clone(),
+                            serde_json::from_value(value.clone()).unwrap_or_default(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                self.furniture_info
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect()
+            })
     }
 
     pub fn active_missed_items(&self) -> impl Iterator<Item = &MissingItemInfo> {
@@ -962,6 +1010,39 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(names, vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn ordered_sheet_maps_keep_lcstats_source_order() {
+        let stats = json!({
+            "ShopSales": {
+                "Walkie-talkie": 20,
+                "Flashlight": 30,
+                "Shovel": 40
+            },
+            "FurnitureInfo": {
+                "Cozy lights": { "RealPrice": 100 },
+                "Television": { "RealPrice": 200 }
+            }
+        });
+        let lc_stats = lcstats(&stats);
+
+        assert_eq!(
+            lc_stats
+                .shop_sales_in_source_order()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            vec!["Walkie-talkie", "Flashlight", "Shovel"]
+        );
+        assert_eq!(
+            lc_stats
+                .furniture_info_in_source_order()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            vec!["Cozy lights", "Television"]
+        );
     }
 
     #[test]

@@ -912,12 +912,21 @@ fn code_challenge(verifier: &str) -> String {
 
 fn oauth_credentials(app: &tauri::AppHandle) -> Result<OAuthCredentials, String> {
     let settings = get_settings(app.clone())?;
+    oauth_credentials_from_settings(
+        &settings,
+        BUNDLED_OAUTH_CLIENT_ID,
+        BUNDLED_OAUTH_CLIENT_SECRET,
+    )
+}
+
+fn oauth_credentials_from_settings(
+    settings: &LcStatsSettings,
+    bundled_client_id: Option<&str>,
+    bundled_client_secret: Option<&str>,
+) -> Result<OAuthCredentials, String> {
     let custom_client_id = settings.google_client_id.trim().to_string();
     let client_id = if custom_client_id.is_empty() {
-        BUNDLED_OAUTH_CLIENT_ID
-            .unwrap_or_default()
-            .trim()
-            .to_string()
+        bundled_client_id.unwrap_or_default().trim().to_string()
     } else {
         custom_client_id
     };
@@ -930,7 +939,7 @@ fn oauth_credentials(app: &tauri::AppHandle) -> Result<OAuthCredentials, String>
     let client_secret = if !custom_client_secret.is_empty() {
         Some(custom_client_secret)
     } else if settings.google_client_id.trim().is_empty() {
-        BUNDLED_OAUTH_CLIENT_SECRET
+        bundled_client_secret
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned)
@@ -1326,7 +1335,8 @@ async fn open_spreadsheet_picker_ui(
         std::process::id(),
         now_epoch_secs()
     );
-    opener::open(format!("http://127.0.0.1:{port}/"))
+    log::info!("Opening the Google spreadsheet picker in the system browser");
+    crate::open_url_with_fallbacks(&format!("http://127.0.0.1:{port}/"))
         .map_err(|e| format!("failed to open Google Picker: {e}"))?;
 
     tauri::async_runtime::spawn_blocking(move || listen_for_picker_selection(listener, ui, state))
@@ -1601,7 +1611,10 @@ pub async fn start_oauth(app: tauri::AppHandle) -> Result<GoogleLcStatsAuthState
         url_encode(&state),
         url_encode(&challenge)
     );
-    opener::open(auth_url).map_err(|e| format!("failed to open Google login: {e}"))?;
+    log::info!("Opening Google login in the system browser");
+    crate::open_url_with_fallbacks(&auth_url)
+        .map_err(|e| format!("failed to open Google login: {e}"))?;
+    log::info!("Waiting for the Google OAuth redirect");
 
     let expected_state = state.clone();
     let code = tauri::async_runtime::spawn_blocking(move || {
@@ -1609,6 +1622,7 @@ pub async fn start_oauth(app: tauri::AppHandle) -> Result<GoogleLcStatsAuthState
     })
     .await
     .map_err(|e| e.to_string())??;
+    log::info!("Received the Google OAuth redirect");
 
     let mut token_params = vec![
         ("client_id", credentials.client_id.as_str()),
@@ -1815,4 +1829,49 @@ pub async fn list_sheet_infos(
             })
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_oauth_is_used_when_custom_oauth_is_off() {
+        let settings = LcStatsSettings::default();
+
+        let credentials = oauth_credentials_from_settings(
+            &settings,
+            Some("launcher-default.apps.googleusercontent.com"),
+            Some("launcher-default-secret"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            credentials.client_id,
+            "launcher-default.apps.googleusercontent.com"
+        );
+        assert_eq!(
+            credentials.client_secret.as_deref(),
+            Some("launcher-default-secret")
+        );
+    }
+
+    #[test]
+    fn custom_oauth_overrides_the_bundled_default() {
+        let settings = LcStatsSettings {
+            google_client_id: "custom.apps.googleusercontent.com".to_string(),
+            google_client_secret: String::new(),
+            ..LcStatsSettings::default()
+        };
+
+        let credentials = oauth_credentials_from_settings(
+            &settings,
+            Some("launcher-default.apps.googleusercontent.com"),
+            Some("launcher-default-secret"),
+        )
+        .unwrap();
+
+        assert_eq!(credentials.client_id, "custom.apps.googleusercontent.com");
+        assert_eq!(credentials.client_secret, None);
+    }
 }

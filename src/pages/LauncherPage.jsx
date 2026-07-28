@@ -275,6 +275,7 @@ const LCSTATS_LAYOUTS = [
   "WafrodyAutoSheet",
   // "SerenadeSheet",
   "CharlyAutoSheet",
+  "EvieAutoSheet",
   "Evilsheet",
   "MakuSheet 1.0",
   "ModdedSheet",

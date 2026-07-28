@@ -2,6 +2,7 @@ pub mod autosheetmodel;
 pub mod breadsheet;
 pub mod charlyautosheet;
 pub mod customlayout;
+pub mod evieautosheet;
 pub mod evilsheet;
 pub mod makusheet;
 pub mod moddedsheet;
@@ -17,6 +18,7 @@ pub const AUTOSHEETMODEL_LAYOUT: &str = "AutoSheetModel";
 pub const BREADSHEET_LAYOUT: &str = "BreadSheet";
 pub const CHARLY_AUTOSHEET_LAYOUT: &str = "CharlyAutoSheet";
 pub const CUSTOM_LAYOUT: &str = "Custom Layout";
+pub const EVIE_AUTOSHEET_LAYOUT: &str = "EvieAutoSheet";
 pub const EVILSHEET_LAYOUT: &str = "Evilsheet";
 pub const MAKUSHEET_LAYOUT: &str = "MakuSheet 1.0";
 pub const MODDEDSHEET_LAYOUT: &str = "ModdedSheet";
@@ -28,6 +30,7 @@ pub fn is_supported_layout(layout: &str) -> bool {
         || layout.eq_ignore_ascii_case(BREADSHEET_LAYOUT)
         || layout.eq_ignore_ascii_case(CHARLY_AUTOSHEET_LAYOUT)
         || layout.eq_ignore_ascii_case(CUSTOM_LAYOUT)
+        || layout.eq_ignore_ascii_case(EVIE_AUTOSHEET_LAYOUT)
         || layout.eq_ignore_ascii_case(EVILSHEET_LAYOUT)
         || layout.eq_ignore_ascii_case(MAKUSHEET_LAYOUT)
         || layout.eq_ignore_ascii_case(MODDEDSHEET_LAYOUT)
@@ -94,6 +97,8 @@ async fn write_stats_for_layout(
         charlyautosheet::write(client, token, settings, stats).await
     } else if settings.layout.eq_ignore_ascii_case(CUSTOM_LAYOUT) {
         customlayout::write(client, token, settings, stats).await
+    } else if settings.layout.eq_ignore_ascii_case(EVIE_AUTOSHEET_LAYOUT) {
+        evieautosheet::write(client, token, settings, stats).await
     } else if settings.layout.eq_ignore_ascii_case(EVILSHEET_LAYOUT) {
         evilsheet::write(client, token, settings, stats).await
     } else if settings.layout.eq_ignore_ascii_case(MODDEDSHEET_LAYOUT) {
