@@ -414,7 +414,7 @@ fn build_note_requests(sheet_id: i64, stats: &LcStats, row: usize) -> Vec<Value>
                 23 + offset,
                 row,
                 &format!(
-                    "{} ??{}",
+                    "{} — {}",
                     strip_apostrophe(&player.stats.cause_of_death),
                     strip_apostrophe(&player.stats.time_of_death)
                 ),

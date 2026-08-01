@@ -60,12 +60,13 @@ use windows_sys::Win32::System::Threading::{
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, EnumWindows, GetForegroundWindow, GetMessageW, GetWindowLongPtrW,
-    GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
-    SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowsHookExW, GWL_EXSTYLE,
-    HC_ACTION, HWND_TOPMOST, KBDLLHOOKSTRUCT, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WS_EX_APPWINDOW,
-    WS_EX_TOOLWINDOW,
+    CallNextHookEx, EnumWindows, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect,
+    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+    MsgWaitForMultipleObjectsEx, PeekMessageW, SetForegroundWindow, SetWindowLongPtrW,
+    SetWindowPos, SetWindowsHookExW, UnhookWindowsHookEx, GWL_EXSTYLE, HC_ACTION, HHOOK, HWND_TOPMOST,
+    KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLKHF_LOWER_IL_INJECTED, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE,
+    QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP,
+    WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
 #[cfg(target_os = "windows")]
 use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY};
@@ -5545,6 +5546,21 @@ fn game_overlay_should_ignore_window_management_shortcut() -> bool {
 }
 
 #[cfg(target_os = "windows")]
+fn game_overlay_should_bypass_input_hook(vk_code: u32) -> bool {
+    fn key_down(vkey: i32) -> bool {
+        unsafe { GetAsyncKeyState(vkey) < 0 }
+    }
+
+    let alt_tab = vk_code == VK_TAB_KEY as u32 && key_down(VK_ALT_KEY);
+    let win_arrow = matches!(
+        vk_code as i32,
+        VK_LEFT_KEY | VK_RIGHT_KEY | VK_UP_KEY | VK_DOWN_KEY
+    ) && (key_down(VK_LWIN_KEY) || key_down(VK_RWIN_KEY));
+
+    alt_tab || win_arrow
+}
+
+#[cfg(target_os = "windows")]
 fn start_game_overlay_monitor(app: &tauri::AppHandle) {
     let overlay_state = app.state::<GameOverlayState>();
     if overlay_state.monitor_running.swap(true, Ordering::Relaxed) {
@@ -5778,16 +5794,6 @@ fn handle_game_overlay_input_hook_event(vk_code: u32, message: u32) {
     };
 
     let state = app.state::<GameOverlayState>();
-    if !should_emit_game_overlay_input(app) {
-        if let Ok(mut down) = state.overlay_shortcut_down.lock() {
-            down.clear();
-        }
-        if let Ok(mut down) = state.overlay_input_down_shortcuts.lock() {
-            down.clear();
-        }
-        return;
-    }
-
     let shortcut_state = match message {
         WM_KEYDOWN | WM_SYSKEYDOWN => ShortcutState::Pressed,
         WM_KEYUP | WM_SYSKEYUP => ShortcutState::Released,
@@ -5799,6 +5805,62 @@ fn handle_game_overlay_input_hook_event(vk_code: u32, message: u32) {
         .lock()
         .ok()
         .and_then(|shortcut| shortcut.clone());
+    let watched: Vec<String> = state
+        .registered_overlay_input_shortcuts
+        .lock()
+        .map(|shortcuts| shortcuts.iter().cloned().collect())
+        .unwrap_or_default();
+
+    let overlay_key_relevant =
+        overlay_shortcut
+            .as_ref()
+            .is_some_and(|shortcut| match shortcut_state {
+                ShortcutState::Pressed => {
+                    overlay_shortcut_matches_hook_press(shortcut, vk_code)
+                        && state
+                            .overlay_shortcut_down
+                            .lock()
+                            .map(|down| !down.contains(shortcut))
+                            .unwrap_or(false)
+                }
+                ShortcutState::Released => {
+                    overlay_shortcut_uses_vk(shortcut, vk_code)
+                        && state
+                            .overlay_shortcut_down
+                            .lock()
+                            .map(|down| down.contains(shortcut))
+                            .unwrap_or(false)
+                }
+            });
+    let module_key_relevant = state
+        .overlay_input_down_shortcuts
+        .lock()
+        .map(|down| {
+            watched.iter().any(|shortcut| match shortcut_state {
+                ShortcutState::Pressed => {
+                    overlay_shortcut_matches_hook_press(shortcut, vk_code)
+                        && !down.contains(shortcut)
+                }
+                ShortcutState::Released => {
+                    overlay_shortcut_uses_vk(shortcut, vk_code) && down.contains(shortcut)
+                }
+            })
+        })
+        .unwrap_or(false);
+    if !overlay_key_relevant && !module_key_relevant {
+        return;
+    }
+
+    if !should_emit_game_overlay_input(app) {
+        if let Ok(mut down) = state.overlay_shortcut_down.lock() {
+            down.clear();
+        }
+        if let Ok(mut down) = state.overlay_input_down_shortcuts.lock() {
+            down.clear();
+        }
+        return;
+    }
+
     if let Some(shortcut) = overlay_shortcut {
         let matched = {
             let Ok(mut down) = state.overlay_shortcut_down.lock() else {
@@ -5806,7 +5868,8 @@ fn handle_game_overlay_input_hook_event(vk_code: u32, message: u32) {
             };
             match shortcut_state {
                 ShortcutState::Pressed => {
-                    overlay_shortcut_matches_hook_press(&shortcut, vk_code) && down.insert(shortcut.clone())
+                    overlay_shortcut_matches_hook_press(&shortcut, vk_code)
+                        && down.insert(shortcut.clone())
                 }
                 ShortcutState::Released => {
                     overlay_shortcut_uses_vk(&shortcut, vk_code) && down.remove(&shortcut)
@@ -5821,11 +5884,6 @@ fn handle_game_overlay_input_hook_event(vk_code: u32, message: u32) {
         }
     }
 
-    let watched: Vec<String> = state
-        .registered_overlay_input_shortcuts
-        .lock()
-        .map(|shortcuts| shortcuts.iter().cloned().collect())
-        .unwrap_or_default();
     if watched.is_empty() {
         return;
     }
@@ -5868,10 +5926,55 @@ unsafe extern "system" fn game_overlay_input_keyboard_hook(
         let message = wparam as u32;
         if matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP) {
             let keyboard = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
-            handle_game_overlay_input_hook_event(keyboard.vkCode, message);
+            // AutoHotkey Send/SendInput events must pass through without overlay processing.
+            let injected = keyboard.flags & (LLKHF_INJECTED | LLKHF_LOWER_IL_INJECTED) != 0;
+            if !injected {
+                let pressed = matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN);
+                if !pressed || !game_overlay_should_bypass_input_hook(keyboard.vkCode) {
+                    handle_game_overlay_input_hook_event(keyboard.vkCode, message);
+                }
+            }
         }
     }
     unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
+}
+
+#[cfg(target_os = "windows")]
+fn game_overlay_input_hook_needed(app: &tauri::AppHandle) -> bool {
+    let foreground_hwnd = unsafe { GetForegroundWindow() };
+    if foreground_hwnd.is_null() {
+        return false;
+    }
+
+    if app
+        .get_webview_window(GAME_OVERLAY_WINDOW_LABEL)
+        .and_then(|window| window.hwnd().ok())
+        .map(|hwnd| hwnd.0 as HWND == foreground_hwnd)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    let mut foreground_pid = 0u32;
+    unsafe {
+        GetWindowThreadProcessId(foreground_hwnd, &mut foreground_pid);
+    }
+    if foreground_pid == 0 {
+        return false;
+    }
+
+    let active_game = app
+        .state::<GameState>()
+        .active
+        .lock()
+        .map(|active_games| {
+            active_games
+                .iter()
+                .any(|active| active.child.id() == foreground_pid)
+        })
+        .unwrap_or(false);
+
+    active_game || is_lethal_company_window_title(&windows_window_title(foreground_hwnd))
 }
 
 #[cfg(target_os = "windows")]
@@ -5885,26 +5988,70 @@ fn start_game_overlay_input_hook(app: &tauri::AppHandle) {
     let app_handle = app.clone();
     std::thread::spawn(move || {
         let module = unsafe { GetModuleHandleW(std::ptr::null()) };
-        let hook = unsafe {
-            SetWindowsHookExW(
-                WH_KEYBOARD_LL,
-                Some(game_overlay_input_keyboard_hook),
-                module,
-                0,
-            )
-        };
-        if hook.is_null() {
-            app_handle
-                .state::<GameOverlayState>()
-                .input_hook_running
-                .store(false, Ordering::Relaxed);
-            set_game_overlay_error(&app_handle, "failed to install overlay module input hook");
-            return;
-        }
-        set_game_overlay_debug(&app_handle, "overlay module input hook installed");
-
+        let mut hook: HHOOK = std::ptr::null_mut();
+        let mut install_failed = false;
         let mut message: MSG = unsafe { std::mem::zeroed() };
-        while unsafe { GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) } > 0 {}
+        loop {
+            let mut should_exit = false;
+            while unsafe { PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0
+            {
+                if message.message == WM_QUIT {
+                    should_exit = true;
+                    break;
+                }
+            }
+            if should_exit {
+                break;
+            }
+
+            let hook_needed = game_overlay_input_hook_needed(&app_handle);
+            if hook_needed && hook.is_null() {
+                hook = unsafe {
+                    SetWindowsHookExW(
+                        WH_KEYBOARD_LL,
+                        Some(game_overlay_input_keyboard_hook),
+                        module,
+                        0,
+                    )
+                };
+                if hook.is_null() {
+                    if !install_failed {
+                        set_game_overlay_error(
+                            &app_handle,
+                            "failed to install overlay module input hook",
+                        );
+                    }
+                    install_failed = true;
+                } else {
+                    install_failed = false;
+                    set_game_overlay_debug(&app_handle, "overlay module input hook installed");
+                }
+            } else if !hook_needed && !hook.is_null() {
+                unsafe {
+                    UnhookWindowsHookEx(hook);
+                }
+                hook = std::ptr::null_mut();
+                set_game_overlay_debug(
+                    &app_handle,
+                    "overlay module input hook suspended outside the game",
+                );
+            }
+
+            unsafe {
+                MsgWaitForMultipleObjectsEx(
+                    0,
+                    std::ptr::null(),
+                    25,
+                    QS_ALLINPUT,
+                    MWMO_INPUTAVAILABLE,
+                );
+            }
+        }
+        if !hook.is_null() {
+            unsafe {
+                UnhookWindowsHookEx(hook);
+            }
+        }
         app_handle
             .state::<GameOverlayState>()
             .input_hook_running
