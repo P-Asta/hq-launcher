@@ -54,8 +54,8 @@ use windows_sys::Win32::System::Memory::{
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, CreateRemoteThread, GetCurrentProcessId, GetExitCodeThread, OpenEventW,
-    OpenProcess, OpenThread, QueryFullProcessImageNameW, ResumeThread, SetEvent,
+    CreateEventW, CreateRemoteThread, GetCurrentProcessId, GetCurrentThreadId, GetExitCodeThread,
+    OpenEventW, OpenProcess, OpenThread, QueryFullProcessImageNameW, ResumeThread, SetEvent,
     WaitForSingleObject, EVENT_MODIFY_STATE, INFINITE, PROCESS_CREATE_THREAD,
     PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_OPERATION,
     PROCESS_VM_READ, PROCESS_VM_WRITE, THREAD_SUSPEND_RESUME,
@@ -66,12 +66,12 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, EnumWindows, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect,
     GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
-    MsgWaitForMultipleObjectsEx, PeekMessageW, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, SetWindowsHookExW, UnhookWindowsHookEx, GWL_EXSTYLE, HC_ACTION, HHOOK,
-    HWND_TOPMOST, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLKHF_LOWER_IL_INJECTED, MSG,
+    MsgWaitForMultipleObjectsEx, PeekMessageW, PostThreadMessageW, SetForegroundWindow,
+    SetWindowLongPtrW, SetWindowPos, SetWindowsHookExW, UnhookWindowsHookEx, GWL_EXSTYLE,
+    HC_ACTION, HHOOK, HWND_TOPMOST, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLKHF_LOWER_IL_INJECTED, MSG,
     MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WS_EX_APPWINDOW,
-    WS_EX_TOOLWINDOW,
+    WH_KEYBOARD_LL, WM_APP, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
 #[cfg(target_os = "windows")]
 use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY};
@@ -94,6 +94,8 @@ const GAME_OVERLAY_OPEN_HINT_DURATION_MS: u64 = 10_000;
 const GAME_OVERLAY_MONITOR_INTERVAL_DEFAULT_MS: u64 = 1_000;
 const GAME_OVERLAY_MONITOR_INTERVAL_MIN_MS: u64 = 500;
 const GAME_OVERLAY_MONITOR_INTERVAL_MAX_MS: u64 = 5_000;
+#[cfg(target_os = "windows")]
+const GAME_OVERLAY_INPUT_HOOK_EVENT_MESSAGE: u32 = WM_APP + 0x48;
 const GAME_OVERLAY_NATIVE_BACKEND_MIGRATION_VERSION: u32 = 1;
 const NATIVE_OVERLAY_RELEASE_MANIFEST_URL: &str =
     "https://github.com/P-Asta/hq-overlay/releases/latest/download/latest.json";
@@ -4715,6 +4717,15 @@ mod game_overlay_backend_tests {
         );
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn overlay_hook_modifier_mask_round_trips() {
+        for mask in 0..=0x0f {
+            let state = overlay_shortcut_modifier_state_from_mask(mask);
+            assert_eq!(overlay_shortcut_modifier_mask(state), mask);
+        }
+    }
+
     #[test]
     fn native_overlay_uses_app_data_root() {
         let app_data = Path::new("app-data");
@@ -5967,8 +5978,29 @@ fn current_overlay_shortcut_modifier_state() -> OverlayShortcutModifierState {
 }
 
 #[cfg(target_os = "windows")]
-fn overlay_shortcut_matches_hook_press(shortcut: &str, vk_code: u32) -> bool {
-    let current = current_overlay_shortcut_modifier_state();
+fn overlay_shortcut_modifier_mask(state: OverlayShortcutModifierState) -> u8 {
+    u8::from(state.ctrl)
+        | (u8::from(state.shift) << 1)
+        | (u8::from(state.alt) << 2)
+        | (u8::from(state.meta) << 3)
+}
+
+#[cfg(target_os = "windows")]
+fn overlay_shortcut_modifier_state_from_mask(mask: u8) -> OverlayShortcutModifierState {
+    OverlayShortcutModifierState {
+        ctrl: mask & 0x01 != 0,
+        shift: mask & 0x02 != 0,
+        alt: mask & 0x04 != 0,
+        meta: mask & 0x08 != 0,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn overlay_shortcut_matches_hook_press(
+    shortcut: &str,
+    vk_code: u32,
+    current: OverlayShortcutModifierState,
+) -> bool {
     overlay_shortcut_specs_for_key(shortcut)
         .into_iter()
         .any(|spec| spec.vk_code == vk_code && spec.modifiers == current)
@@ -7407,7 +7439,11 @@ fn should_emit_game_overlay_input(app: &tauri::AppHandle) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn handle_game_overlay_input_hook_event(vk_code: u32, message: u32) {
+fn handle_game_overlay_input_hook_event(
+    vk_code: u32,
+    message: u32,
+    modifiers: OverlayShortcutModifierState,
+) {
     let Some(app) = GAME_OVERLAY_INPUT_HOOK_APP.get() else {
         return;
     };
@@ -7435,7 +7471,7 @@ fn handle_game_overlay_input_hook_event(vk_code: u32, message: u32) {
             .as_ref()
             .is_some_and(|shortcut| match shortcut_state {
                 ShortcutState::Pressed => {
-                    overlay_shortcut_matches_hook_press(shortcut, vk_code)
+                    overlay_shortcut_matches_hook_press(shortcut, vk_code, modifiers)
                         && state
                             .overlay_shortcut_down
                             .lock()
@@ -7457,7 +7493,7 @@ fn handle_game_overlay_input_hook_event(vk_code: u32, message: u32) {
         .map(|down| {
             watched.iter().any(|shortcut| match shortcut_state {
                 ShortcutState::Pressed => {
-                    overlay_shortcut_matches_hook_press(shortcut, vk_code)
+                    overlay_shortcut_matches_hook_press(shortcut, vk_code, modifiers)
                         && !down.contains(shortcut)
                 }
                 ShortcutState::Released => {
@@ -7487,7 +7523,7 @@ fn handle_game_overlay_input_hook_event(vk_code: u32, message: u32) {
             };
             match shortcut_state {
                 ShortcutState::Pressed => {
-                    overlay_shortcut_matches_hook_press(&shortcut, vk_code)
+                    overlay_shortcut_matches_hook_press(&shortcut, vk_code, modifiers)
                         && down.insert(shortcut.clone())
                 }
                 ShortcutState::Released => {
@@ -7515,7 +7551,7 @@ fn handle_game_overlay_input_hook_event(vk_code: u32, message: u32) {
         for shortcut in watched {
             match shortcut_state {
                 ShortcutState::Pressed => {
-                    if overlay_shortcut_matches_hook_press(&shortcut, vk_code)
+                    if overlay_shortcut_matches_hook_press(&shortcut, vk_code, modifiers)
                         && down.insert(shortcut.clone())
                     {
                         matched.push(shortcut);
@@ -7550,7 +7586,20 @@ unsafe extern "system" fn game_overlay_input_keyboard_hook(
             if !injected {
                 let pressed = matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN);
                 if !pressed || !game_overlay_should_bypass_input_hook(keyboard.vkCode) {
-                    handle_game_overlay_input_hook_event(keyboard.vkCode, message);
+                    // A WH_KEYBOARD_LL callback runs on the system input path.
+                    // Queue all overlay work so this callback always returns
+                    // immediately and can never stall or drop a game key.
+                    let modifier_mask =
+                        overlay_shortcut_modifier_mask(current_overlay_shortcut_modifier_state());
+                    let payload = (message & 0xffff) | (u32::from(modifier_mask) << 16);
+                    unsafe {
+                        PostThreadMessageW(
+                            GetCurrentThreadId(),
+                            GAME_OVERLAY_INPUT_HOOK_EVENT_MESSAGE,
+                            keyboard.vkCode as WPARAM,
+                            payload as LPARAM,
+                        );
+                    }
                 }
             }
         }
@@ -7623,6 +7672,14 @@ fn start_game_overlay_input_hook(app: &tauri::AppHandle) {
                 if message.message == WM_QUIT {
                     should_exit = true;
                     break;
+                }
+                if message.message == GAME_OVERLAY_INPUT_HOOK_EVENT_MESSAGE {
+                    let payload = message.lParam as u32;
+                    handle_game_overlay_input_hook_event(
+                        message.wParam as u32,
+                        payload & 0xffff,
+                        overlay_shortcut_modifier_state_from_mask((payload >> 16) as u8),
+                    );
                 }
             }
             if should_exit {
