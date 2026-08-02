@@ -1672,6 +1672,9 @@ export default function LauncherPage({
     checked: 0,
     total: 0,
   });
+  const [nativeOverlayUpdate, setNativeOverlayUpdate] = useState(null);
+  const [nativeOverlayInstalling, setNativeOverlayInstalling] = useState(false);
+  const [nativeOverlayUpdateError, setNativeOverlayUpdateError] = useState("");
 
   const [gameStatus, setGameStatus] = useState({ running: false, pid: null });
   const [runningGamesDialogOpen, setRunningGamesDialogOpen] = useState(false);
@@ -3476,6 +3479,10 @@ export default function LauncherPage({
     };
   }, []);
 
+  useEffect(() => {
+    void refreshNativeOverlayUpdate();
+  }, []);
+
   // If link/unlink is triggered from the Titlebar while config UI is open,
   // force-refresh config lists + active file immediately.
   useEffect(() => {
@@ -3685,6 +3692,31 @@ export default function LauncherPage({
         version: v,
         error: e?.message ?? String(e),
       }));
+    }
+  }
+
+  async function refreshNativeOverlayUpdate() {
+    try {
+      const info = await invoke("check_native_overlay_update");
+      setNativeOverlayUpdate(info ?? null);
+      return info;
+    } catch (error) {
+      console.warn("Failed to check the HQ Overlay version", error);
+      return null;
+    }
+  }
+
+  async function installNativeOverlayUpdate() {
+    if (nativeOverlayInstalling) return;
+    setNativeOverlayInstalling(true);
+    setNativeOverlayUpdateError("");
+    try {
+      const info = await invoke("install_native_overlay_update");
+      setNativeOverlayUpdate(info ?? null);
+    } catch (error) {
+      setNativeOverlayUpdateError(error?.message ?? String(error));
+    } finally {
+      setNativeOverlayInstalling(false);
     }
   }
 
@@ -6849,6 +6881,28 @@ export default function LauncherPage({
               ) : null}
             </span>
           </Button>}
+          {nativeOverlayUpdate?.supported !== false && nativeOverlayUpdate?.available === true && (
+            <Button
+              variant="secondary"
+              className="h-11 shrink-0 bg-[var(--theme-surface)] hover:bg-white/[0.07]"
+              disabled={nativeOverlayInstalling}
+              onClick={() => {
+                void installNativeOverlayUpdate();
+              }}
+              title={`HQ Overlay ${nativeOverlayUpdate.installed ? "update" : "install"}: ${nativeOverlayUpdate.current_version ?? "not installed"} → ${nativeOverlayUpdate.latest_version ?? "latest"}`}
+            >
+              {nativeOverlayInstalling ? (
+                <RefreshCw className="h-4 w-4 animate-spin" />
+              ) : (
+                <Download className="h-4 w-4" />
+              )}
+              {nativeOverlayInstalling
+                ? "Installing Overlay..."
+                : nativeOverlayUpdate.installed
+                  ? "Update Overlay"
+                  : "Install Overlay"}
+            </Button>
+          )}
           {loginState?.username != null && <div className="ml-2 flex items-center gap-2">
             <Button
               variant="ghost"
@@ -6862,6 +6916,21 @@ export default function LauncherPage({
             </Button>
           </div>}
         </div>
+
+        {nativeOverlayUpdateError && (
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+            <span>HQ Overlay update failed: {nativeOverlayUpdateError}</span>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 shrink-0"
+              onClick={() => setNativeOverlayUpdateError("")}
+            >
+              <X className="h-3.5 w-3.5" />
+              Dismiss
+            </Button>
+          </div>
+        )}
 
         {selectedEvent && (
           <div className="flex min-h-[76px] items-center gap-3 rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-3">

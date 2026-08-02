@@ -646,11 +646,11 @@ export default function Titlebar({ installedVersions, ...props }) {
                                         {settingsTab === "overlay" && (
                                             <span className="absolute left-0 top-2 h-7 w-0.5 rounded-r bg-[var(--theme-accent)]" />
                                         )}
-                                        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-white/5 text-white/55">
-                                            <Play size={16} />
-                                        </span>
-                                        Overlay
-                                    </button>
+                                         <span className="flex h-7 w-7 items-center justify-center rounded-md bg-white/5 text-white/55">
+                                             <Play size={16} />
+                                         </span>
+                                         Overlay
+                                     </button>
                                     {SHOW_THEME_SETTINGS && (
                                         <button
                                             className={cn(
@@ -821,9 +821,9 @@ export default function Titlebar({ installedVersions, ...props }) {
                                             </div>
                                         </div>
 
-                                        <div className="rounded-lg border border-panel-outline p-4">
-                                            <div className="flex items-start justify-between gap-4">
-                                                <div className="min-w-0">
+                                         <div className="rounded-lg border border-panel-outline p-4">
+                                             <div className="flex items-start justify-between gap-4">
+                                                 <div className="min-w-0">
                                                     <div className="text-sm font-semibold text-white">Enable HQLC Overlay</div>
                                                     <div className="mt-1 text-sm leading-5 text-white/55">
                                                         Shows the editable HQLC in-game overlay while Lethal Company is focused.
@@ -846,10 +846,10 @@ export default function Titlebar({ installedVersions, ...props }) {
                                                     }}
                                                     aria-label="Enable HQLC overlay"
                                                 />
-                                            </div>
-                                        </div>
+                                             </div>
+                                         </div>
 
-                                        <div className="rounded-lg border border-panel-outline p-4">
+                                         <div className="rounded-lg border border-panel-outline p-4">
                                             <div className="flex items-start justify-between gap-4">
                                                 <div className="min-w-0">
                                                     <div className="text-sm font-semibold text-white">Overlay Backend</div>
@@ -883,9 +883,9 @@ export default function Titlebar({ installedVersions, ...props }) {
                                                     </SelectContent>
                                                 </Select>
                                             </div>
-                                            <div className="mt-3 rounded-md bg-black/20 px-3 py-2 text-xs leading-5 text-white/45">
-                                                Native installs <span className="font-mono text-white/65">hq_overlay.dll</span> under <span className="font-mono text-white/65">AppData/Roaming/asta.hq-launcher/utils</span>, hosts the same HTML overlay UI inside the game, and loads <span className="font-mono text-white/65">overlayModule/*.js</span> without BepInEx.
-                                            </div>
+                                             <div className="mt-3 rounded-md bg-black/20 px-3 py-2 text-xs leading-5 text-white/45">
+                                                 Native uses <span className="font-mono text-white/65">hq_overlay.dll</span> under <span className="font-mono text-white/65">AppData/Roaming/asta.hq-launcher</span>, hosts the same HTML overlay UI inside the game, and loads <span className="font-mono text-white/65">overlayModule/*.js</span> without BepInEx.
+                                             </div>
                                         </div>
 
                                         <div className="rounded-lg border border-panel-outline p-4">
@@ -1393,7 +1393,7 @@ export default function Titlebar({ installedVersions, ...props }) {
                         aria-label="Open settings"
                     >
                         <img src="/icon.svg" alt="logo" className='h-6 w-6' />
-                    </button>
+                     </button>
                     <TitlebarMenu 
                         name="File" 
                         items={fileMenuItems} 

@@ -95,9 +95,11 @@ const GAME_OVERLAY_MONITOR_INTERVAL_DEFAULT_MS: u64 = 1_000;
 const GAME_OVERLAY_MONITOR_INTERVAL_MIN_MS: u64 = 500;
 const GAME_OVERLAY_MONITOR_INTERVAL_MAX_MS: u64 = 5_000;
 const GAME_OVERLAY_NATIVE_BACKEND_MIGRATION_VERSION: u32 = 1;
-#[cfg(target_os = "windows")]
-const NATIVE_OVERLAY_DOWNLOAD_URL: &str =
-    "https://github.com/P-Asta/hq-overlay/releases/download/v1.0.0/hq_overlay.dll";
+const NATIVE_OVERLAY_RELEASE_MANIFEST_URL: &str =
+    "https://github.com/P-Asta/hq-overlay/releases/latest/download/latest.json";
+const NATIVE_OVERLAY_RELEASE_DOWNLOAD_BASE_URL: &str =
+    "https://github.com/P-Asta/hq-overlay/releases/download";
+const NATIVE_OVERLAY_RELEASE_MANIFEST_MAX_DOWNLOAD_BYTES: u64 = 64 * 1024;
 #[cfg(target_os = "windows")]
 const NATIVE_OVERLAY_MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
 #[cfg(target_os = "windows")]
@@ -716,9 +718,111 @@ fn validate_x64_pe_dll(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
 fn native_overlay_dll_path_for_app_data(app_data: &Path) -> std::path::PathBuf {
     app_data.join("hq_overlay.dll")
+}
+
+fn native_overlay_version_path_for_app_data(app_data: &Path) -> std::path::PathBuf {
+    app_data.join("config").join("native_overlay_version.json")
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct NativeOverlayReleaseManifest {
+    version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NativeOverlayInstalledVersion {
+    version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeOverlayReleaseVersion {
+    normalized: String,
+    tag: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct NativeOverlayUpdateInfo {
+    supported: bool,
+    available: bool,
+    installed: bool,
+    current_version: Option<String>,
+    latest_version: Option<String>,
+    dll_path: Option<String>,
+}
+
+#[cfg(not(target_os = "windows"))]
+fn unsupported_native_overlay_update_info() -> NativeOverlayUpdateInfo {
+    NativeOverlayUpdateInfo {
+        supported: false,
+        available: false,
+        installed: false,
+        current_version: None,
+        latest_version: None,
+        dll_path: None,
+    }
+}
+
+fn parse_native_overlay_release_version(raw: &str) -> Result<NativeOverlayReleaseVersion, String> {
+    let version = raw.trim();
+    if version.is_empty() {
+        return Err("native overlay release version is empty".to_string());
+    }
+    if version.len() > 128 {
+        return Err("native overlay release version is unexpectedly long".to_string());
+    }
+    if !version.is_ascii() || version.contains('%') {
+        return Err("native overlay release version contains unsafe characters".to_string());
+    }
+
+    let unprefixed = version.strip_prefix('v').unwrap_or(version);
+    if unprefixed.is_empty()
+        || !unprefixed
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
+    {
+        return Err("native overlay release version contains unsafe characters".to_string());
+    }
+
+    let parsed = semver::Version::parse(unprefixed)
+        .map_err(|error| format!("invalid native overlay release version: {error}"))?;
+    Ok(NativeOverlayReleaseVersion {
+        normalized: parsed.to_string(),
+        tag: if version.starts_with('v') {
+            version.to_string()
+        } else {
+            format!("v{version}")
+        },
+    })
+}
+
+fn native_overlay_download_url_for_version(
+    release: &NativeOverlayReleaseVersion,
+) -> Result<String, String> {
+    let candidate = format!(
+        "{}/{}/hq_overlay.dll",
+        NATIVE_OVERLAY_RELEASE_DOWNLOAD_BASE_URL, release.tag
+    );
+    let parsed = reqwest::Url::parse(&candidate)
+        .map_err(|error| format!("failed to build native overlay download URL: {error}"))?;
+    if parsed.scheme() != "https" || parsed.host_str() != Some("github.com") {
+        return Err("native overlay download URL is not an allowed GitHub HTTPS URL".to_string());
+    }
+    Ok(candidate)
+}
+
+fn native_overlay_update_available(
+    installed: bool,
+    current_version: Option<&str>,
+    latest_version: &str,
+) -> bool {
+    !installed || current_version != Some(latest_version)
+}
+
+fn parse_installed_native_overlay_version(text: &str) -> Option<NativeOverlayReleaseVersion> {
+    let metadata = serde_json::from_str::<NativeOverlayInstalledVersion>(text).ok()?;
+    parse_native_overlay_release_version(&metadata.version).ok()
 }
 
 #[cfg(target_os = "windows")]
@@ -731,34 +835,206 @@ fn installed_native_overlay_dll_path(app: &tauri::AppHandle) -> Result<std::path
 }
 
 #[cfg(target_os = "windows")]
-fn ensure_native_overlay_dll_installed(
+fn installed_native_overlay_version_path(
     app: &tauri::AppHandle,
 ) -> Result<std::path::PathBuf, String> {
-    let _install_guard = NATIVE_OVERLAY_INSTALL_LOCK
-        .lock()
-        .map_err(|_| "native overlay install lock poisoned".to_string())?;
-    let destination = installed_native_overlay_dll_path(app)?;
-    if destination.is_file() && validate_x64_pe_dll(&destination).is_ok() {
-        return Ok(destination.canonicalize().unwrap_or(destination));
-    }
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("app data directory not found: {error}"))?;
+    Ok(native_overlay_version_path_for_app_data(&app_data))
+}
 
-    let parent = destination
-        .parent()
-        .ok_or_else(|| "native overlay install directory not found".to_string())?;
-    std::fs::create_dir_all(parent).map_err(|error| {
-        format!(
-            "failed to create native overlay install directory {}: {error}",
-            parent.display()
-        )
-    })?;
+#[cfg(target_os = "windows")]
+fn read_installed_native_overlay_version(path: &Path) -> Option<NativeOverlayReleaseVersion> {
+    let text = std::fs::read_to_string(path).ok()?;
+    parse_installed_native_overlay_version(&text)
+}
 
+#[cfg(target_os = "windows")]
+fn native_overlay_http_client() -> Result<reqwest::blocking::Client, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .user_agent(format!("hq-launcher/{}", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| format!("failed to create native overlay downloader: {error}"))?;
+    Ok(client)
+}
+
+#[cfg(target_os = "windows")]
+fn fetch_native_overlay_release(
+    client: &reqwest::blocking::Client,
+) -> Result<NativeOverlayReleaseVersion, String> {
     let response = client
-        .get(NATIVE_OVERLAY_DOWNLOAD_URL)
+        .get(NATIVE_OVERLAY_RELEASE_MANIFEST_URL)
+        .send()
+        .map_err(|error| format!("failed to fetch native overlay release manifest: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("native overlay release manifest returned an error: {error}"))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > NATIVE_OVERLAY_RELEASE_MANIFEST_MAX_DOWNLOAD_BYTES)
+    {
+        return Err("native overlay release manifest is unexpectedly large".to_string());
+    }
+    let bytes = response
+        .bytes()
+        .map_err(|error| format!("failed to read native overlay release manifest: {error}"))?;
+    if bytes.len() as u64 > NATIVE_OVERLAY_RELEASE_MANIFEST_MAX_DOWNLOAD_BYTES {
+        return Err("native overlay release manifest is unexpectedly large".to_string());
+    }
+    let manifest = serde_json::from_slice::<NativeOverlayReleaseManifest>(&bytes)
+        .map_err(|error| format!("failed to parse native overlay release manifest: {error}"))?;
+    parse_native_overlay_release_version(&manifest.version)
+}
+
+#[cfg(target_os = "windows")]
+fn native_overlay_update_info_for_release(
+    app: &tauri::AppHandle,
+    release: &NativeOverlayReleaseVersion,
+) -> Result<NativeOverlayUpdateInfo, String> {
+    let destination = installed_native_overlay_dll_path(app)?;
+    let version_path = installed_native_overlay_version_path(app)?;
+    let installed = destination.is_file() && validate_x64_pe_dll(&destination).is_ok();
+    let current_version =
+        read_installed_native_overlay_version(&version_path).map(|version| version.normalized);
+    let available =
+        native_overlay_update_available(installed, current_version.as_deref(), &release.normalized);
+    let dll_path = installed.then(|| {
+        destination
+            .canonicalize()
+            .unwrap_or(destination)
+            .to_string_lossy()
+            .into_owned()
+    });
+    Ok(NativeOverlayUpdateInfo {
+        supported: true,
+        available,
+        installed,
+        current_version,
+        latest_version: Some(release.normalized.clone()),
+        dll_path,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_native_overlay_not_running(app: &tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<GameOverlayState>();
+    let native_pid = state.native_pid.load(Ordering::Relaxed);
+    let has_managed_pids = !state
+        .native_managed_pids
+        .lock()
+        .map_err(|_| "native overlay managed process lock poisoned".to_string())?
+        .is_empty();
+    if native_pid != 0 || has_managed_pids {
+        return Err(
+            "HQ Overlay is active in a running game. Close the game, then retry the update."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+struct StagedFileReplacement {
+    destination: std::path::PathBuf,
+    backup: std::path::PathBuf,
+    had_existing: bool,
+}
+
+#[cfg(target_os = "windows")]
+fn replace_with_staged_file(
+    staged: &Path,
+    destination: &Path,
+    backup: &Path,
+    description: &str,
+) -> Result<StagedFileReplacement, String> {
+    if backup.exists() {
+        if destination.exists() {
+            std::fs::remove_file(backup)
+                .map_err(|error| format!("failed to clear stale {description} backup: {error}"))?;
+        } else {
+            std::fs::rename(backup, destination).map_err(|error| {
+                format!("failed to restore stale {description} backup: {error}")
+            })?;
+        }
+    }
+
+    let had_existing = destination.exists();
+    if had_existing {
+        std::fs::rename(destination, backup)
+            .map_err(|error| format!("failed to preserve existing {description}: {error}"))?;
+    }
+    if let Err(error) = std::fs::rename(staged, destination) {
+        let rollback_error = if had_existing {
+            std::fs::rename(backup, destination).err()
+        } else {
+            None
+        };
+        let _ = std::fs::remove_file(staged);
+        return Err(match rollback_error {
+            Some(rollback_error) => format!(
+                "failed to install staged {description}: {error}; failed to restore the previous file: {rollback_error}"
+            ),
+            None => format!("failed to install staged {description}: {error}"),
+        });
+    }
+
+    Ok(StagedFileReplacement {
+        destination: destination.to_path_buf(),
+        backup: backup.to_path_buf(),
+        had_existing,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn rollback_staged_file_replacement(replacement: &StagedFileReplacement) -> Result<(), String> {
+    if replacement.destination.exists() {
+        std::fs::remove_file(&replacement.destination).map_err(|error| {
+            format!(
+                "failed to remove replacement {} during rollback: {error}",
+                replacement.destination.display()
+            )
+        })?;
+    }
+    if replacement.had_existing {
+        std::fs::rename(&replacement.backup, &replacement.destination).map_err(|error| {
+            format!(
+                "failed to restore {} during rollback: {error}",
+                replacement.destination.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn commit_staged_file_replacement(replacement: &StagedFileReplacement) {
+    if replacement.had_existing && replacement.backup.exists() {
+        if let Err(error) = std::fs::remove_file(&replacement.backup) {
+            log::warn!(
+                "Failed to remove native overlay update backup {}: {error}",
+                replacement.backup.display()
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn install_native_overlay_update_blocking(
+    app: &tauri::AppHandle,
+) -> Result<NativeOverlayUpdateInfo, String> {
+    let _install_guard = NATIVE_OVERLAY_INSTALL_LOCK
+        .lock()
+        .map_err(|_| "native overlay install lock poisoned".to_string())?;
+    ensure_native_overlay_not_running(app)?;
+
+    let client = native_overlay_http_client()?;
+    let release = fetch_native_overlay_release(&client)?;
+    let download_url = native_overlay_download_url_for_version(&release)?;
+    let response = client
+        .get(&download_url)
         .send()
         .map_err(|error| format!("failed to download native overlay: {error}"))?
         .error_for_status()
@@ -776,42 +1052,153 @@ fn ensure_native_overlay_dll_installed(
         return Err("native overlay download is unexpectedly large".to_string());
     }
 
-    let temporary = parent.join("hq_overlay.dll.part");
-    std::fs::write(&temporary, &bytes).map_err(|error| {
+    let destination = installed_native_overlay_dll_path(app)?;
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "native overlay install directory not found".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "failed to create native overlay install directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let staged_dll = parent.join("hq_overlay.dll.part");
+    std::fs::write(&staged_dll, &bytes).map_err(|error| {
         format!(
             "failed to stage native overlay download {}: {error}",
-            temporary.display()
+            staged_dll.display()
         )
     })?;
-    if let Err(error) = validate_x64_pe_dll(&temporary) {
-        let _ = std::fs::remove_file(&temporary);
+    if let Err(error) = validate_x64_pe_dll(&staged_dll) {
+        let _ = std::fs::remove_file(&staged_dll);
         return Err(error);
     }
-    if destination.exists() {
-        std::fs::remove_file(&destination).map_err(|error| {
-            format!(
-                "failed to replace invalid native overlay {}: {error}",
-                destination.display()
-            )
-        })?;
-    }
-    std::fs::rename(&temporary, &destination).map_err(|error| {
+
+    let version_path = installed_native_overlay_version_path(app)?;
+    let version_parent = version_path
+        .parent()
+        .ok_or_else(|| "native overlay version directory not found".to_string())?;
+    std::fs::create_dir_all(version_parent).map_err(|error| {
         format!(
-            "failed to install native overlay to {}: {error}",
-            destination.display()
+            "failed to create native overlay version directory {}: {error}",
+            version_parent.display()
         )
     })?;
+    let staged_version = version_parent.join("native_overlay_version.json.part");
+    let version_json = serde_json::to_vec_pretty(&NativeOverlayInstalledVersion {
+        version: release.normalized.clone(),
+    })
+    .map_err(|error| format!("failed to serialize native overlay version: {error}"))?;
+    std::fs::write(&staged_version, version_json).map_err(|error| {
+        format!(
+            "failed to stage native overlay version {}: {error}",
+            staged_version.display()
+        )
+    })?;
+
+    // A game may have started while the network transfer was in progress.
+    // Check again immediately before replacing the on-disk DLL.
+    if let Err(error) = ensure_native_overlay_not_running(app) {
+        let _ = std::fs::remove_file(&staged_dll);
+        let _ = std::fs::remove_file(&staged_version);
+        return Err(error);
+    }
+
+    let dll_backup = parent.join("hq_overlay.dll.previous");
+    let dll_replacement =
+        replace_with_staged_file(&staged_dll, &destination, &dll_backup, "native overlay DLL")?;
+    let version_backup = version_parent.join("native_overlay_version.json.previous");
+    let version_replacement = match replace_with_staged_file(
+        &staged_version,
+        &version_path,
+        &version_backup,
+        "native overlay version metadata",
+    ) {
+        Ok(replacement) => replacement,
+        Err(error) => {
+            let rollback = rollback_staged_file_replacement(&dll_replacement);
+            return Err(match rollback {
+                Ok(()) => error,
+                Err(rollback_error) => {
+                    format!("{error}; failed to restore the previous DLL: {rollback_error}")
+                }
+            });
+        }
+    };
+
+    commit_staged_file_replacement(&version_replacement);
+    commit_staged_file_replacement(&dll_replacement);
     log::info!(
         "Installed native overlay from {} to {}",
-        NATIVE_OVERLAY_DOWNLOAD_URL,
+        download_url,
         destination.display()
     );
-    Ok(destination.canonicalize().unwrap_or(destination))
+    native_overlay_update_info_for_release(app, &release)
 }
 
 #[cfg(target_os = "windows")]
 fn resolve_native_overlay_dll(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    ensure_native_overlay_dll_installed(app)
+    let _install_guard = NATIVE_OVERLAY_INSTALL_LOCK
+        .lock()
+        .map_err(|_| "native overlay install lock poisoned".to_string())?;
+    let destination = installed_native_overlay_dll_path(app)?;
+    if !destination.is_file() {
+        return Err("HQ Overlay is not installed. Install it from Overlay settings.".to_string());
+    }
+    validate_x64_pe_dll(&destination)?;
+    Ok(destination.canonicalize().unwrap_or(destination))
+}
+
+#[cfg(target_os = "windows")]
+fn check_native_overlay_update_blocking(
+    app: &tauri::AppHandle,
+) -> Result<NativeOverlayUpdateInfo, String> {
+    let client = native_overlay_http_client()?;
+    let release = fetch_native_overlay_release(&client)?;
+    let _install_guard = NATIVE_OVERLAY_INSTALL_LOCK
+        .lock()
+        .map_err(|_| "native overlay install lock poisoned".to_string())?;
+    native_overlay_update_info_for_release(app, &release)
+}
+
+#[tauri::command]
+async fn check_native_overlay_update(
+    app: tauri::AppHandle,
+) -> Result<NativeOverlayUpdateInfo, String> {
+    #[cfg(target_os = "windows")]
+    {
+        return tauri::async_runtime::spawn_blocking(move || {
+            check_native_overlay_update_blocking(&app)
+        })
+        .await
+        .map_err(|error| format!("native overlay update check worker failed: {error}"))?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        Ok(unsupported_native_overlay_update_info())
+    }
+}
+
+#[tauri::command]
+async fn install_native_overlay_update(
+    app: tauri::AppHandle,
+) -> Result<NativeOverlayUpdateInfo, String> {
+    #[cfg(target_os = "windows")]
+    {
+        return tauri::async_runtime::spawn_blocking(move || {
+            install_native_overlay_update_blocking(&app)
+        })
+        .await
+        .map_err(|error| format!("native overlay update install worker failed: {error}"))?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        Ok(unsupported_native_overlay_update_info())
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -4328,17 +4715,84 @@ mod game_overlay_backend_tests {
         );
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
     fn native_overlay_uses_app_data_root() {
+        let app_data = Path::new("app-data");
         assert_eq!(
-            native_overlay_dll_path_for_app_data(Path::new(
-                r"C:\Users\tester\AppData\Roaming\asta.hq-launcher",
-            )),
-            std::path::PathBuf::from(
-                r"C:\Users\tester\AppData\Roaming\asta.hq-launcher\hq_overlay.dll"
-            )
+            native_overlay_dll_path_for_app_data(app_data),
+            app_data.join("hq_overlay.dll")
         );
+        assert_eq!(
+            native_overlay_version_path_for_app_data(app_data),
+            app_data.join("config").join("native_overlay_version.json")
+        );
+    }
+
+    #[test]
+    fn native_overlay_update_status_handles_missing_same_and_different_versions() {
+        assert!(native_overlay_update_available(true, None, "1.0.0"));
+        assert!(!native_overlay_update_available(
+            true,
+            Some("1.0.0"),
+            "1.0.0"
+        ));
+        assert!(native_overlay_update_available(
+            true,
+            Some("0.9.0"),
+            "1.0.0"
+        ));
+        assert!(native_overlay_update_available(
+            true,
+            Some("2.0.0"),
+            "1.0.0"
+        ));
+        assert!(native_overlay_update_available(
+            false,
+            Some("1.0.0"),
+            "1.0.0"
+        ));
+    }
+
+    #[test]
+    fn corrupt_native_overlay_version_metadata_is_treated_as_missing() {
+        for metadata in ["", "{}", r#"{"version":""}"#, r#"{"version":"not-semver"}"#] {
+            assert!(parse_installed_native_overlay_version(metadata).is_none());
+        }
+    }
+
+    #[test]
+    fn native_overlay_release_version_builds_version_specific_url() {
+        let release = parse_native_overlay_release_version("1.2.3-beta.1+build.7").unwrap();
+        assert_eq!(release.normalized, "1.2.3-beta.1+build.7");
+        assert_eq!(release.tag, "v1.2.3-beta.1+build.7");
+        assert_eq!(
+            native_overlay_download_url_for_version(&release).unwrap(),
+            "https://github.com/P-Asta/hq-overlay/releases/download/v1.2.3-beta.1+build.7/hq_overlay.dll"
+        );
+
+        let prefixed = parse_native_overlay_release_version("v1.2.3").unwrap();
+        assert_eq!(prefixed.normalized, "1.2.3");
+        assert_eq!(prefixed.tag, "v1.2.3");
+    }
+
+    #[test]
+    fn native_overlay_release_version_rejects_unsafe_or_invalid_values() {
+        for version in [
+            "",
+            "   ",
+            "v",
+            "V1.0.0",
+            "1.0.0%2F..",
+            "1.0.0/other",
+            "1.0.0\\other",
+            "1.0.0?asset=other",
+            "https://example.com/1.0.0",
+        ] {
+            assert!(
+                parse_native_overlay_release_version(version).is_err(),
+                "expected {version:?} to be rejected"
+            );
+        }
     }
 }
 
@@ -12900,15 +13354,6 @@ pub fn run() {
         .setup(|app| {
             // File logging (AppDataDir/logs/hq-launcher.log)
             logger::init(&app.handle()).map_err(|e| tauri::Error::Setup(e.into()))?;
-            #[cfg(target_os = "windows")]
-            {
-                let native_overlay_app = app.handle().clone();
-                std::thread::spawn(move || {
-                    if let Err(error) = resolve_native_overlay_dll(&native_overlay_app) {
-                        log::warn!("Failed to resolve native overlay on startup: {error}");
-                    }
-                });
-            }
             if let Err(e) = restore_stale_vanilla_winhttp_backups(app.handle()) {
                 log::warn!("Failed to restore a stale Vanilla Run winhttp.dll backup: {e}");
             }
@@ -13086,6 +13531,8 @@ pub fn run() {
             check_app_update,
             download_app_update,
             install_app_update,
+            check_native_overlay_update,
+            install_native_overlay_update,
             get_app_version,
             get_release_channel,
             set_release_channel,
