@@ -10,6 +10,13 @@ import { Dialog, DialogContent } from './components/ui/dialog';
 import { Button } from './components/ui/button';
 import { Switch } from './components/ui/switch';
 import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from './components/ui/select';
+import {
     DEFAULT_THEME_HUE,
     DEFAULT_THEME_BRIGHTNESS,
     DEFAULT_THEME_MODE,
@@ -58,6 +65,9 @@ export default function Titlebar({ installedVersions, ...props }) {
     const [gameOverlayConfig, setGameOverlayConfig] = useState({
         general: {
             enabled: true,
+            backend: "native",
+            backend_migration_version: 1,
+            inject_all_processes: false,
             use_stream_overlays_api: false,
             obs_capture_armed: false,
             overlay_key: "Insert",
@@ -70,6 +80,7 @@ export default function Titlebar({ installedVersions, ...props }) {
     const [obsOverlayBusy, setObsOverlayBusy] = useState(false);
     const [steamOverlayError, setSteamOverlayError] = useState("");
     const [steamOverlaySaved, setSteamOverlaySaved] = useState("");
+    const [gameOverlayDebug, setGameOverlayDebug] = useState(null);
     const [latestLcstatsPayload, setLatestLcstatsPayload] = useState(null);
     const [latestLcstatsBusy, setLatestLcstatsBusy] = useState(false);
     const [latestLcstatsError, setLatestLcstatsError] = useState("");
@@ -155,9 +166,10 @@ export default function Titlebar({ installedVersions, ...props }) {
 
     async function refreshOverlaySettings() {
         try {
-            const [cfg, overlayCfg] = await Promise.all([
+            const [cfg, overlayCfg, overlayDebug] = await Promise.all([
                 invoke('get_steam_overlay_config'),
                 invoke('get_game_overlay_config'),
+                invoke('get_game_overlay_debug_status').catch(() => null),
             ]);
             setSteamOverlayResolvedPath(String(cfg?.resolved_steam_path ?? ""));
             setSteamOverlayConfig({
@@ -171,8 +183,12 @@ export default function Titlebar({ installedVersions, ...props }) {
                     ...(prev.general ?? {}),
                     ...(overlayCfg?.general ?? {}),
                     enabled: overlayCfg?.general?.enabled !== false,
+                    backend: ["native", "legacy", "off"].includes(overlayCfg?.general?.backend)
+                        ? overlayCfg.general.backend
+                        : "native",
                 },
             }));
+            if (overlayDebug) setGameOverlayDebug(overlayDebug);
             setSteamOverlayError("");
         } catch (e) {
             console.warn('Failed to read overlay settings', e);
@@ -333,6 +349,18 @@ export default function Titlebar({ installedVersions, ...props }) {
     useEffect(() => {
         if (!settingsOpen || settingsTab !== "overlay") return;
         refreshOverlaySettings();
+        let disposed = false;
+        const interval = window.setInterval(() => {
+            invoke('get_game_overlay_debug_status')
+                .then((status) => {
+                    if (!disposed) setGameOverlayDebug(status ?? null);
+                })
+                .catch(() => {});
+        }, 1000);
+        return () => {
+            disposed = true;
+            window.clearInterval(interval);
+        };
     }, [settingsOpen, settingsTab]);
 
     function handleSettingsOpenChange(open) {
@@ -364,6 +392,9 @@ export default function Titlebar({ installedVersions, ...props }) {
                         general: {
                             ...(nextGameOverlayConfig.general ?? {}),
                             enabled: nextGameOverlayConfig.general?.enabled !== false,
+                            backend: ["native", "legacy", "off"].includes(nextGameOverlayConfig.general?.backend)
+                                ? nextGameOverlayConfig.general.backend
+                                : "native",
                         },
                     },
                 }),
@@ -380,6 +411,9 @@ export default function Titlebar({ installedVersions, ...props }) {
                     ...(prev.general ?? {}),
                     ...(savedGameOverlay?.general ?? {}),
                     enabled: savedGameOverlay?.general?.enabled !== false,
+                    backend: ["native", "legacy", "off"].includes(savedGameOverlay?.general?.backend)
+                        ? savedGameOverlay.general.backend
+                        : "native",
                 },
             }));
             if (showSaved) setSteamOverlaySaved("Saved");
@@ -818,6 +852,79 @@ export default function Titlebar({ installedVersions, ...props }) {
                                         <div className="rounded-lg border border-panel-outline p-4">
                                             <div className="flex items-start justify-between gap-4">
                                                 <div className="min-w-0">
+                                                    <div className="text-sm font-semibold text-white">Overlay Backend</div>
+                                                    <div className="mt-1 text-sm leading-5 text-white/55">
+                                                        Choose how the in-game overlay is rendered. Changes are applied safely to an active native session and fully take effect on the next launch.
+                                                    </div>
+                                                </div>
+                                                <Select
+                                                    value={gameOverlayConfig.general?.backend ?? "native"}
+                                                    disabled={steamOverlayBusy || gameOverlayConfig.general?.enabled === false}
+                                                    onValueChange={(backend) => {
+                                                        const nextGameOverlayConfig = {
+                                                            ...gameOverlayConfig,
+                                                            general: {
+                                                                ...(gameOverlayConfig.general ?? {}),
+                                                                backend,
+                                                            },
+                                                        };
+                                                        setGameOverlayConfig(nextGameOverlayConfig);
+                                                        setSteamOverlaySaved("");
+                                                        void persistOverlaySettings(steamOverlayConfig, nextGameOverlayConfig);
+                                                    }}
+                                                >
+                                                    <SelectTrigger aria-label="Overlay backend" className="h-11 min-w-[12rem] px-3">
+                                                        <SelectValue />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="native">Native HTML</SelectItem>
+                                                        <SelectItem value="legacy">Legacy WebView</SelectItem>
+                                                        <SelectItem value="off">Off</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                            <div className="mt-3 rounded-md bg-black/20 px-3 py-2 text-xs leading-5 text-white/45">
+                                                Native installs <span className="font-mono text-white/65">hq_overlay.dll</span> under <span className="font-mono text-white/65">AppData/Roaming/asta.hq-launcher/utils</span>, hosts the same HTML overlay UI inside the game, and loads <span className="font-mono text-white/65">overlayModule/*.js</span> without BepInEx.
+                                            </div>
+                                        </div>
+
+                                        <div className="rounded-lg border border-panel-outline p-4">
+                                            <div className="flex items-start justify-between gap-4">
+                                                <div className="min-w-0">
+                                                    <div className="text-sm font-semibold text-white">Inject All Lethal Company Processes</div>
+                                                    <div className="mt-1 text-sm leading-5 text-white/55">
+                                                        Watches for every running Lethal Company process and injects the Native overlay, including games started outside HQLC. Off by default.
+                                                    </div>
+                                                </div>
+                                                <Switch
+                                                    checked={gameOverlayConfig.general?.inject_all_processes === true}
+                                                    disabled={steamOverlayBusy
+                                                        || gameOverlayConfig.general?.enabled === false
+                                                        || gameOverlayConfig.general?.backend !== "native"}
+                                                    onCheckedChange={(checked) => {
+                                                        const nextGameOverlayConfig = {
+                                                            ...gameOverlayConfig,
+                                                            general: {
+                                                                ...(gameOverlayConfig.general ?? {}),
+                                                                inject_all_processes: checked,
+                                                            },
+                                                        };
+                                                        setGameOverlayConfig(nextGameOverlayConfig);
+                                                        setSteamOverlaySaved("");
+                                                        void persistOverlaySettings(steamOverlayConfig, nextGameOverlayConfig);
+                                                    }}
+                                                    aria-label="Inject all Lethal Company processes"
+                                                />
+                                            </div>
+                                            <div className="mt-3 rounded-md bg-black/20 px-3 py-2 text-xs leading-5 text-white/45">
+                                                Turning this off disables overlays already managed by the watcher. Relaunch the game before enabling Native again in that process.
+                                            </div>
+                                        </div>
+
+                                        {gameOverlayConfig.general?.backend === "legacy" ? (
+                                        <div className="rounded-lg border border-panel-outline p-4">
+                                            <div className="flex items-start justify-between gap-4">
+                                                <div className="min-w-0">
                                                     <div className="text-sm font-semibold text-white">Focus Check Interval</div>
                                                     <div className="mt-1 text-sm leading-5 text-white/55">
                                                         How often HQLC checks whether Lethal Company is focused.
@@ -887,6 +994,7 @@ export default function Titlebar({ installedVersions, ...props }) {
                                                 <span>5s</span>
                                             </div>
                                         </div>
+                                        ) : null}
 
                                         <div className="rounded-lg border border-panel-outline p-4">
                                             <div className="flex items-start justify-between gap-4">
@@ -916,6 +1024,7 @@ export default function Titlebar({ installedVersions, ...props }) {
                                             </div>
                                         </div>
 
+                                        {gameOverlayConfig.general?.backend === "legacy" ? (
                                         <div className="rounded-lg border border-panel-outline p-4">
                                             <div className="flex items-start justify-between gap-4">
                                                 <div className="min-w-0">
@@ -938,6 +1047,37 @@ export default function Titlebar({ installedVersions, ...props }) {
                                                     </Button>
                                                 </div>
                                             </div>
+                                        </div>
+                                        ) : null}
+
+                                        <div className="rounded-lg border border-panel-outline p-4">
+                                            <div className="text-sm font-semibold text-white">Overlay Runtime Status</div>
+                                            <div className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs">
+                                                <span className="text-white/40">Requested</span>
+                                                <span className="font-mono text-white/75">{gameOverlayDebug?.requestedBackend ?? gameOverlayConfig.general?.backend ?? "native"}</span>
+                                                <span className="text-white/40">Effective</span>
+                                                <span className="font-mono text-white/75">{gameOverlayDebug?.effectiveBackend ?? "unknown"}</span>
+                                                <span className="text-white/40">Native ready</span>
+                                                <span className="font-mono text-white/75">
+                                                    {gameOverlayDebug?.nativeReady ? "yes" : "no"}
+                                                    {gameOverlayDebug?.nativePid ? ` (pid ${gameOverlayDebug.nativePid})` : ""}
+                                                </span>
+                                                <span className="text-white/40">Managed processes</span>
+                                                <span className="font-mono text-white/75">
+                                                    {(gameOverlayDebug?.nativeManagedPids ?? []).length > 0
+                                                        ? gameOverlayDebug.nativeManagedPids.join(", ")
+                                                        : gameOverlayDebug?.nativeAllProcessesEnabled ? "watching" : "off"}
+                                                </span>
+                                                <span className="text-white/40">Native DLL</span>
+                                                <span className="break-all font-mono text-white/60">{gameOverlayDebug?.nativeDllPath ?? "not resolved"}</span>
+                                                <span className="text-white/40">Last status</span>
+                                                <span className="break-words text-white/60">{gameOverlayDebug?.lastMessage || "No runtime message yet."}</span>
+                                            </div>
+                                            {(gameOverlayDebug?.nativeError || gameOverlayDebug?.lastError) ? (
+                                                <div className="mt-3 rounded-md border border-red-400/25 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-100">
+                                                    {gameOverlayDebug?.nativeError || gameOverlayDebug?.lastError}
+                                                </div>
+                                            ) : null}
                                         </div>
 
                                         <div className="rounded-lg border border-panel-outline p-4">

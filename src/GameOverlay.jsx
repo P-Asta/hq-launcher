@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { createPortal } from "react-dom";
+import { invoke, listen } from "./lib/gameOverlayBridge";
 import { FolderOpen, ImageIcon, Keyboard, Pencil, RefreshCw, Trash2, Upload, X } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { Slider } from "./components/ui/slider";
@@ -9,6 +9,9 @@ import { cn } from "./lib/cn";
 const DEFAULT_CONFIG = {
   general: {
     enabled: true,
+    backend: "native",
+    backend_migration_version: 1,
+    inject_all_processes: false,
     use_stream_overlays_api: false,
     overlay_key: "Insert",
     end_summary_duration_ms: 10000,
@@ -2093,6 +2096,14 @@ export default function GameOverlay({ captureOnly = false }) {
   }, [config]);
 
   useEffect(() => {
+    const controlsVisible = overlayActive && controlsOpen;
+    document.documentElement.classList.toggle("hq-overlay-controls-open", controlsVisible);
+    return () => {
+      document.documentElement.classList.remove("hq-overlay-controls-open");
+    };
+  }, [overlayActive, controlsOpen]);
+
+  useEffect(() => {
     function reportFrontendError(message) {
       invoke("report_game_overlay_frontend_error", { message }).catch(console.error);
     }
@@ -2104,7 +2115,6 @@ export default function GameOverlay({ captureOnly = false }) {
     }
     window.addEventListener("error", handleError);
     window.addEventListener("unhandledrejection", handleRejection);
-    invoke("report_game_overlay_frontend_ready").catch(console.error);
     Promise.all([
       invoke("get_game_overlay_modules"),
       invoke("get_game_overlay_config"),
@@ -2141,6 +2151,10 @@ export default function GameOverlay({ captureOnly = false }) {
           setLcStatsAt(Date.now());
         }
         setSelectedModuleId("general");
+        // Native readiness means the embedded shell, persisted config, and
+        // user module sources have all crossed the bridge successfully. The
+        // legacy host also benefits from this more accurate debug milestone.
+        invoke("report_game_overlay_frontend_ready").catch(console.error);
       })
       .catch((error) => {
         console.error(error);
@@ -2878,8 +2892,12 @@ export default function GameOverlay({ captureOnly = false }) {
           ))
         : null}
 
-      {overlayActive
-        ? renderedModules.map((entry) => (
+      {overlayActive ? (
+        <div
+          data-overlay-module-layer
+          className="pointer-events-none fixed inset-0 z-[2147483000] isolate"
+        >
+          {renderedModules.map((entry) => (
             <OverlayModuleView
               key={entry.renderId}
               entry={entry}
@@ -2887,8 +2905,9 @@ export default function GameOverlay({ captureOnly = false }) {
               editMode={editMode}
               onDragStart={startDrag}
             />
-          ))
-        : null}
+          ))}
+        </div>
+      ) : null}
 
       {overlayActive && editMode ? (
         <div className="pointer-events-none fixed inset-0 border-2 border-[var(--theme-accent)]/55 bg-[var(--theme-accent)]/5" />
@@ -2909,8 +2928,12 @@ export default function GameOverlay({ captureOnly = false }) {
         </div>
       ) : null}
 
-      {overlayActive && controlsOpen ? (
-        <div className="pointer-events-none fixed inset-0 bg-black/35">
+      {overlayActive && controlsOpen && typeof document !== "undefined" ? createPortal(
+        <div
+          data-overlay-controls-layer
+          className="pointer-events-none fixed inset-0 isolate bg-black/35"
+          style={{ zIndex: 2147483647 }}
+        >
           <div
             data-overlay-controls
             className="pointer-events-auto absolute flex h-[min(560px,calc(100vh-3rem))] w-[min(760px,calc(100vw-3rem))] overflow-hidden rounded border border-white/15 bg-[#121318]/98 text-white shadow-2xl shadow-black/60 backdrop-blur"
@@ -3148,7 +3171,8 @@ export default function GameOverlay({ captureOnly = false }) {
               </div>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );

@@ -46,7 +46,7 @@ export function SelectContent({
         position="popper"
         sideOffset={8}
         className={cn(
-          "z-50 min-w-40 rounded-2xl border border-panel-outline bg-[var(--theme-surface)] shadow-2xl shadow-black/40",
+          "z-[80] min-w-40 rounded-2xl border border-panel-outline bg-[var(--theme-surface)] shadow-2xl shadow-black/40",
           className,
         )}
         {...props}

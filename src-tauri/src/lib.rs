@@ -30,16 +30,19 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Modifiers, Shortcut};
 #[cfg(target_os = "windows")]
 use std::ffi::CString;
 #[cfg(target_os = "windows")]
-use std::os::windows::ffi::OsStringExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM,
+    CloseHandle, GetLastError, HWND, INVALID_HANDLE_VALUE, LPARAM, LRESULT, RECT, WAIT_OBJECT_0,
+    WAIT_TIMEOUT, WPARAM,
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    CreateToolhelp32Snapshot, Module32FirstW, Module32NextW, Process32FirstW, Process32NextW,
+    Thread32First, Thread32Next, MODULEENTRY32W, PROCESSENTRY32W, TH32CS_SNAPMODULE,
+    TH32CS_SNAPMODULE32, TH32CS_SNAPPROCESS, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::LibraryLoader::{
@@ -51,10 +54,11 @@ use windows_sys::Win32::System::Memory::{
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Threading::{
-    CreateRemoteThread, OpenProcess, OpenThread, QueryFullProcessImageNameW, ResumeThread,
-    WaitForSingleObject, INFINITE, PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE,
-    THREAD_SUSPEND_RESUME,
+    CreateEventW, CreateRemoteThread, GetCurrentProcessId, GetExitCodeThread, OpenEventW,
+    OpenProcess, OpenThread, QueryFullProcessImageNameW, ResumeThread, SetEvent,
+    WaitForSingleObject, EVENT_MODIFY_STATE, INFINITE, PROCESS_CREATE_THREAD,
+    PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_OPERATION,
+    PROCESS_VM_READ, PROCESS_VM_WRITE, THREAD_SUSPEND_RESUME,
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
@@ -63,10 +67,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, EnumWindows, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect,
     GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
     MsgWaitForMultipleObjectsEx, PeekMessageW, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, SetWindowsHookExW, UnhookWindowsHookEx, GWL_EXSTYLE, HC_ACTION, HHOOK, HWND_TOPMOST,
-    KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLKHF_LOWER_IL_INJECTED, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE,
-    QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP,
-    WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    SetWindowPos, SetWindowsHookExW, UnhookWindowsHookEx, GWL_EXSTYLE, HC_ACTION, HHOOK,
+    HWND_TOPMOST, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLKHF_LOWER_IL_INJECTED, MSG,
+    MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WS_EX_APPWINDOW,
+    WS_EX_TOOLWINDOW,
 };
 #[cfg(target_os = "windows")]
 use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY};
@@ -89,6 +94,20 @@ const GAME_OVERLAY_OPEN_HINT_DURATION_MS: u64 = 10_000;
 const GAME_OVERLAY_MONITOR_INTERVAL_DEFAULT_MS: u64 = 1_000;
 const GAME_OVERLAY_MONITOR_INTERVAL_MIN_MS: u64 = 500;
 const GAME_OVERLAY_MONITOR_INTERVAL_MAX_MS: u64 = 5_000;
+const GAME_OVERLAY_NATIVE_BACKEND_MIGRATION_VERSION: u32 = 1;
+#[cfg(target_os = "windows")]
+const NATIVE_OVERLAY_DOWNLOAD_URL: &str =
+    "https://github.com/P-Asta/hq-overlay/releases/download/v0.0.1/hq_overlay.dll";
+#[cfg(target_os = "windows")]
+const NATIVE_OVERLAY_MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
+#[cfg(target_os = "windows")]
+// Injection starts while Unity's main thread is still suspended. On real
+// launches the first D3D11 Present can arrive well after the DLL has installed
+// its DXGI hooks, so the ready window must cover game startup as well as
+// WebView2 creation and the frontend/module handshake.
+const NATIVE_OVERLAY_READY_TIMEOUT_MS: u32 = 60_000;
+#[cfg(target_os = "windows")]
+const NATIVE_OVERLAY_LOAD_TIMEOUT_MS: u32 = 15_000;
 #[cfg(target_os = "windows")]
 const VK_CONTROL_KEY: i32 = 0x11;
 #[cfg(target_os = "windows")]
@@ -112,6 +131,8 @@ const VK_RWIN_KEY: i32 = 0x5C;
 
 #[cfg(target_os = "windows")]
 static GAME_OVERLAY_INPUT_HOOK_APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+#[cfg(target_os = "windows")]
+static NATIVE_OVERLAY_INSTALL_LOCK: Mutex<()> = Mutex::new(());
 
 fn manifest_state_has_version(app: &tauri::AppHandle, version: u32) -> bool {
     let Ok(app_data) = app.path().app_data_dir() else {
@@ -381,9 +402,577 @@ fn inject_dll_into_process(pid: u32, dll_path: &std::path::Path) -> Result<(), S
     result
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn relocate_address_within_module(
+    local_base: usize,
+    local_size: usize,
+    remote_base: usize,
+    local_address: usize,
+) -> Option<usize> {
+    let offset = local_address.checked_sub(local_base)?;
+    if offset >= local_size {
+        return None;
+    }
+    remote_base.checked_add(offset)
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+struct WindowsProcessModule {
+    name: String,
+    base: usize,
+    size: usize,
+}
+
+#[cfg(target_os = "windows")]
+fn windows_process_modules(pid: u32) -> Result<Vec<WindowsProcessModule>, String> {
+    let snapshot =
+        unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid) };
+    if snapshot == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return Err(format!(
+            "failed to enumerate modules for process {pid} (Win32 error {})",
+            unsafe { GetLastError() }
+        ));
+    }
+
+    let result = (|| {
+        let mut entry = MODULEENTRY32W {
+            dwSize: std::mem::size_of::<MODULEENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if unsafe { Module32FirstW(snapshot, &mut entry) } == 0 {
+            return Err(format!(
+                "failed to read the first module for process {pid} (Win32 error {})",
+                unsafe { GetLastError() }
+            ));
+        }
+
+        let mut modules = Vec::new();
+        loop {
+            let name_len = entry
+                .szModule
+                .iter()
+                .position(|value| *value == 0)
+                .unwrap_or(entry.szModule.len());
+            modules.push(WindowsProcessModule {
+                name: String::from_utf16_lossy(&entry.szModule[..name_len]),
+                base: entry.modBaseAddr as usize,
+                size: entry.modBaseSize as usize,
+            });
+            if unsafe { Module32NextW(snapshot, &mut entry) } == 0 {
+                break;
+            }
+        }
+        Ok(modules)
+    })();
+
+    unsafe { CloseHandle(snapshot) };
+    result
+}
+
+#[cfg(target_os = "windows")]
+fn remote_address_for_local_function(pid: u32, local_address: usize) -> Result<usize, String> {
+    let local_modules = windows_process_modules(unsafe { GetCurrentProcessId() })?;
+    let local_module = local_modules
+        .iter()
+        .find(|module| {
+            local_address >= module.base
+                && local_address - module.base < module.size
+        })
+        .ok_or_else(|| {
+            format!(
+                "could not identify the local module containing function address 0x{local_address:x}"
+            )
+        })?;
+    let remote_modules = windows_process_modules(pid)?;
+    let remote_module = remote_modules
+        .iter()
+        .find(|module| module.name.eq_ignore_ascii_case(&local_module.name))
+        .ok_or_else(|| {
+            format!(
+                "target process {pid} does not contain required module {}",
+                local_module.name
+            )
+        })?;
+
+    relocate_address_within_module(
+        local_module.base,
+        local_module.size,
+        remote_module.base,
+        local_address,
+    )
+    .ok_or_else(|| {
+        format!(
+            "failed to relocate function address from {} into process {pid}",
+            local_module.name
+        )
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn inject_native_overlay_dll_into_process(
+    pid: u32,
+    dll_path: &std::path::Path,
+) -> Result<(), String> {
+    use std::ptr::{null, null_mut};
+
+    // Keep the legacy Steam/BepInEx injector above byte-compatible and use a
+    // dedicated wide-character path for hq_overlay.dll. Windows user/profile
+    // paths are not guaranteed to be representable by LoadLibraryA.
+    let dll_path_wide: Vec<u16> = dll_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let process = unsafe {
+        OpenProcess(
+            PROCESS_CREATE_THREAD
+                | PROCESS_QUERY_INFORMATION
+                | PROCESS_VM_OPERATION
+                | PROCESS_VM_WRITE
+                | PROCESS_VM_READ,
+            0,
+            pid,
+        )
+    };
+    if process.is_null() {
+        return Err(format!(
+            "failed to open process {pid} for native overlay injection (Win32 error {})",
+            unsafe { GetLastError() }
+        ));
+    }
+
+    let result = (|| {
+        let alloc_size = dll_path_wide.len() * std::mem::size_of::<u16>();
+        let remote_memory = unsafe {
+            VirtualAllocEx(
+                process,
+                null_mut(),
+                alloc_size,
+                MEM_COMMIT | MEM_RESERVE,
+                PAGE_READWRITE,
+            )
+        };
+        if remote_memory.is_null() {
+            return Err(format!(
+                "failed to allocate remote memory for native overlay injection (Win32 error {})",
+                unsafe { GetLastError() }
+            ));
+        }
+
+        let write_ok = unsafe {
+            WriteProcessMemory(
+                process,
+                remote_memory,
+                dll_path_wide.as_ptr().cast(),
+                alloc_size,
+                null_mut(),
+            )
+        };
+        if write_ok == 0 {
+            unsafe {
+                VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
+            }
+            return Err(format!(
+                "failed to write the native overlay DLL path into the target process (Win32 error {})",
+                unsafe { GetLastError() }
+            ));
+        }
+
+        let kernel32 = unsafe { GetModuleHandleA(c"kernel32.dll".as_ptr().cast()) };
+        if kernel32.is_null() {
+            unsafe {
+                VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
+            }
+            return Err(format!(
+                "failed to resolve kernel32.dll for native overlay injection (Win32 error {})",
+                unsafe { GetLastError() }
+            ));
+        }
+
+        let Some(load_library_w) =
+            (unsafe { GetProcAddress(kernel32, c"LoadLibraryW".as_ptr().cast()) })
+        else {
+            unsafe {
+                VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
+            }
+            return Err(format!(
+                "failed to resolve LoadLibraryW for native overlay injection (Win32 error {})",
+                unsafe { GetLastError() }
+            ));
+        };
+        let remote_load_library_w =
+            match remote_address_for_local_function(pid, load_library_w as usize) {
+                Ok(address) => address,
+                Err(error) => {
+                    unsafe {
+                        VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
+                    }
+                    return Err(format!(
+                        "failed to resolve LoadLibraryW inside process {pid}: {error}"
+                    ));
+                }
+            };
+
+        let remote_thread = unsafe {
+            CreateRemoteThread(
+                process,
+                null(),
+                0,
+                Some(std::mem::transmute(remote_load_library_w)),
+                remote_memory,
+                0,
+                null_mut(),
+            )
+        };
+        if remote_thread.is_null() {
+            unsafe {
+                VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
+            }
+            return Err(format!(
+                "failed to create the native overlay loader thread (Win32 error {})",
+                unsafe { GetLastError() }
+            ));
+        }
+
+        let wait_result =
+            unsafe { WaitForSingleObject(remote_thread, NATIVE_OVERLAY_LOAD_TIMEOUT_MS) };
+        if wait_result != WAIT_OBJECT_0 {
+            unsafe {
+                CloseHandle(remote_thread);
+            }
+            return Err(format!(
+                "LoadLibraryW did not complete in process {pid} within {} ms (wait result {wait_result}); the remote path buffer was retained because loader thread completion is unknown",
+                NATIVE_OVERLAY_LOAD_TIMEOUT_MS
+            ));
+        }
+
+        let mut load_result = 0u32;
+        let exit_code_ok = unsafe { GetExitCodeThread(remote_thread, &mut load_result) };
+        let exit_code_error = if exit_code_ok == 0 {
+            unsafe { GetLastError() }
+        } else {
+            0
+        };
+        unsafe {
+            CloseHandle(remote_thread);
+            VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
+        }
+        if exit_code_ok == 0 {
+            return Err(format!(
+                "failed to read LoadLibraryW result for {} (Win32 error {})",
+                dll_path.display(),
+                exit_code_error
+            ));
+        }
+        if load_result == 0 {
+            return Err(format!(
+                "LoadLibraryW rejected {} in process {pid}; verify that it is a valid x64 DLL and all native dependencies are present",
+                dll_path.display()
+            ));
+        }
+        Ok(())
+    })();
+
+    unsafe {
+        CloseHandle(process);
+    }
+    result
+}
+
 #[cfg(not(target_os = "windows"))]
 fn inject_dll_into_process(_pid: u32, _dll_path: &std::path::Path) -> Result<(), String> {
     Err("DLL injection is only supported on Windows".to_string())
+}
+
+fn validate_x64_pe_dll(path: &Path) -> Result<(), String> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("failed to read native overlay DLL {}: {e}", path.display()))?;
+    if bytes.len() < 0x40 || &bytes[0..2] != b"MZ" {
+        return Err(format!(
+            "native overlay is not a valid PE DLL: {}",
+            path.display()
+        ));
+    }
+    let pe_offset = u32::from_le_bytes(bytes[0x3c..0x40].try_into().unwrap()) as usize;
+    if pe_offset
+        .checked_add(6)
+        .filter(|end| *end <= bytes.len())
+        .is_none()
+        || &bytes[pe_offset..pe_offset + 4] != b"PE\0\0"
+    {
+        return Err(format!(
+            "native overlay has an invalid PE header: {}",
+            path.display()
+        ));
+    }
+    let machine = u16::from_le_bytes(bytes[pe_offset + 4..pe_offset + 6].try_into().unwrap());
+    if machine != 0x8664 {
+        return Err(format!(
+            "native overlay must be an x64 DLL (PE machine 0x8664, found 0x{machine:04x}): {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn native_overlay_dll_path_for_app_data(app_data: &Path) -> std::path::PathBuf {
+    app_data.join("hq_overlay.dll")
+}
+
+#[cfg(target_os = "windows")]
+fn installed_native_overlay_dll_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("app data directory not found: {error}"))?;
+    Ok(native_overlay_dll_path_for_app_data(&app_data))
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_native_overlay_dll_installed(
+    app: &tauri::AppHandle,
+) -> Result<std::path::PathBuf, String> {
+    let _install_guard = NATIVE_OVERLAY_INSTALL_LOCK
+        .lock()
+        .map_err(|_| "native overlay install lock poisoned".to_string())?;
+    let destination = installed_native_overlay_dll_path(app)?;
+    if destination.is_file() && validate_x64_pe_dll(&destination).is_ok() {
+        return Ok(destination.canonicalize().unwrap_or(destination));
+    }
+
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "native overlay install directory not found".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "failed to create native overlay install directory {}: {error}",
+            parent.display()
+        )
+    })?;
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .user_agent(format!("hq-launcher/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|error| format!("failed to create native overlay downloader: {error}"))?;
+    let response = client
+        .get(NATIVE_OVERLAY_DOWNLOAD_URL)
+        .send()
+        .map_err(|error| format!("failed to download native overlay: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("native overlay download returned an error: {error}"))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > NATIVE_OVERLAY_MAX_DOWNLOAD_BYTES)
+    {
+        return Err("native overlay download is unexpectedly large".to_string());
+    }
+    let bytes = response
+        .bytes()
+        .map_err(|error| format!("failed to read native overlay download: {error}"))?;
+    if bytes.len() as u64 > NATIVE_OVERLAY_MAX_DOWNLOAD_BYTES {
+        return Err("native overlay download is unexpectedly large".to_string());
+    }
+
+    let temporary = parent.join("hq_overlay.dll.part");
+    std::fs::write(&temporary, &bytes).map_err(|error| {
+        format!(
+            "failed to stage native overlay download {}: {error}",
+            temporary.display()
+        )
+    })?;
+    if let Err(error) = validate_x64_pe_dll(&temporary) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error);
+    }
+    if destination.exists() {
+        std::fs::remove_file(&destination).map_err(|error| {
+            format!(
+                "failed to replace invalid native overlay {}: {error}",
+                destination.display()
+            )
+        })?;
+    }
+    std::fs::rename(&temporary, &destination).map_err(|error| {
+        format!(
+            "failed to install native overlay to {}: {error}",
+            destination.display()
+        )
+    })?;
+    log::info!(
+        "Installed native overlay from {} to {}",
+        NATIVE_OVERLAY_DOWNLOAD_URL,
+        destination.display()
+    );
+    Ok(destination.canonicalize().unwrap_or(destination))
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_native_overlay_dll(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    ensure_native_overlay_dll_installed(app)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_program_matches_game(
+    program: &std::ffi::OsStr,
+    exe_path: &Path,
+    exe_dir: &Path,
+) -> bool {
+    let program_path = Path::new(program);
+    let program_path = if program_path.is_absolute() {
+        program_path.to_path_buf()
+    } else {
+        exe_dir.join(program_path)
+    };
+    let left = program_path.canonicalize().unwrap_or(program_path);
+    let right = exe_path
+        .canonicalize()
+        .unwrap_or_else(|_| exe_path.to_path_buf());
+    left.to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy())
+}
+
+#[cfg(target_os = "windows")]
+fn native_overlay_event_name(kind: &str, pid: u32) -> Vec<u16> {
+    std::ffi::OsStr::new(&format!(r"Local\HQOverlay{kind}_{pid}"))
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+struct NativeOverlayEvents {
+    ready: windows_sys::Win32::Foundation::HANDLE,
+    disable: windows_sys::Win32::Foundation::HANDLE,
+    shutdown: windows_sys::Win32::Foundation::HANDLE,
+}
+
+// Windows kernel handles may be waited/signalled from any thread. Ownership
+// remains unique and Drop closes all three handles after the readiness decision.
+#[cfg(target_os = "windows")]
+unsafe impl Send for NativeOverlayEvents {}
+
+#[cfg(target_os = "windows")]
+impl NativeOverlayEvents {
+    fn create(pid: u32) -> Result<Self, String> {
+        let ready_name = native_overlay_event_name("Ready", pid);
+        let disable_name = native_overlay_event_name("Disable", pid);
+        let shutdown_name = native_overlay_event_name("Shutdown", pid);
+        let ready = unsafe { CreateEventW(std::ptr::null(), 1, 0, ready_name.as_ptr()) };
+        if ready.is_null() {
+            return Err(format!(
+                "failed to create native overlay ready event for pid {pid} (Win32 error {})",
+                unsafe { GetLastError() }
+            ));
+        }
+        let disable = unsafe { CreateEventW(std::ptr::null(), 1, 0, disable_name.as_ptr()) };
+        if disable.is_null() {
+            let error = unsafe { GetLastError() };
+            unsafe { CloseHandle(ready) };
+            return Err(format!(
+                "failed to create native overlay disable event for pid {pid} (Win32 error {error})"
+            ));
+        }
+        let shutdown = unsafe { CreateEventW(std::ptr::null(), 1, 0, shutdown_name.as_ptr()) };
+        if shutdown.is_null() {
+            let error = unsafe { GetLastError() };
+            unsafe {
+                CloseHandle(ready);
+                CloseHandle(disable);
+            }
+            return Err(format!(
+                "failed to create native overlay shutdown event for pid {pid} (Win32 error {error})"
+            ));
+        }
+        Ok(Self {
+            ready,
+            disable,
+            shutdown,
+        })
+    }
+
+    fn wait_ready(&self, timeout_ms: u32) -> Result<bool, String> {
+        match unsafe { WaitForSingleObject(self.ready, timeout_ms) } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            result => Err(format!(
+                "failed while waiting for native overlay readiness (wait result {result}, Win32 error {})",
+                unsafe { GetLastError() }
+            )),
+        }
+    }
+
+    fn disable(&self) -> Result<(), String> {
+        if unsafe { SetEvent(self.disable) } == 0 {
+            return Err(format!(
+                "failed to signal native overlay disable event (Win32 error {})",
+                unsafe { GetLastError() }
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for NativeOverlayEvents {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.ready);
+            CloseHandle(self.disable);
+            CloseHandle(self.shutdown);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn retain_native_overlay_events_until_process_exit(events: NativeOverlayEvents, pid: u32) {
+    // A successfully injected DLL starts its bootstrap asynchronously. Keep
+    // the already-signalled Disable object alive until target exit so a late
+    // bootstrap cannot recreate the same name as a fresh unsignalled event.
+    std::thread::spawn(move || {
+        const PROCESS_SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
+        let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE_ACCESS, 0, pid) };
+        if !process.is_null() {
+            unsafe {
+                WaitForSingleObject(process, INFINITE);
+                CloseHandle(process);
+            }
+        } else {
+            // Process handles can be denied by policy. A bounded fallback is
+            // still longer than the launcher's native ready/bootstrap window.
+            std::thread::sleep(std::time::Duration::from_millis(
+                u64::from(NATIVE_OVERLAY_READY_TIMEOUT_MS) + 5_000,
+            ));
+        }
+        drop(events);
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn signal_native_overlay_event(kind: &str, pid: u32) -> Result<(), String> {
+    let name = native_overlay_event_name(kind, pid);
+    let event = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr()) };
+    if event.is_null() {
+        return Err(format!(
+            "failed to open Local\\HQOverlay{kind}_{pid} (Win32 error {})",
+            unsafe { GetLastError() }
+        ));
+    }
+    let result = unsafe { SetEvent(event) };
+    let error = if result == 0 {
+        unsafe { GetLastError() }
+    } else {
+        0
+    };
+    unsafe { CloseHandle(event) };
+    if result == 0 {
+        return Err(format!(
+            "failed to signal Local\\HQOverlay{kind}_{pid} (Win32 error {error})"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -846,7 +1435,10 @@ fn legacy_event_selection_state_path(
         .join(format!("event_state_v{version}.json")))
 }
 
-fn event_selection_state_path(app: &tauri::AppHandle, version: u32) -> Result<std::path::PathBuf, String> {
+fn event_selection_state_path(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<std::path::PathBuf, String> {
     Ok(app
         .path()
         .app_data_dir()
@@ -905,8 +1497,7 @@ fn mod_pairs_from_disabled(mods: &[DisabledMod]) -> Vec<(String, String)> {
 }
 
 fn mod_entry_pairs(mods: &[mod_config::ModEntry]) -> Vec<(String, String)> {
-    mods
-        .iter()
+    mods.iter()
         .filter(|m| m.enabled)
         .map(|m| (m.dev.clone(), m.name.clone()))
         .collect()
@@ -925,7 +1516,10 @@ fn disabled_mods_from_pairs(mods: &[(String, String)]) -> Vec<DisabledMod> {
     out
 }
 
-fn remove_mods_from_disablemod(app: &tauri::AppHandle, mods: &[(String, String)]) -> Result<(), String> {
+fn remove_mods_from_disablemod(
+    app: &tauri::AppHandle,
+    mods: &[(String, String)],
+) -> Result<(), String> {
     if mods.is_empty() {
         return Ok(());
     }
@@ -1047,8 +1641,10 @@ fn event_allows_current_tester(
         .as_deref()
         .map(normalized_tester_name)
         .unwrap_or_default();
-    Ok((!current_steam_id.is_empty() && tester_steam_ids.contains(&current_steam_id))
-        || (!current_name.is_empty() && tester_names.contains(&current_name)))
+    Ok(
+        (!current_steam_id.is_empty() && tester_steam_ids.contains(&current_steam_id))
+            || (!current_name.is_empty() && tester_names.contains(&current_name)),
+    )
 }
 
 async fn event_forced_enabled_mods_for_launch(
@@ -1071,21 +1667,20 @@ async fn event_forced_enabled_mods_for_launch(
         .ok_or_else(|| format!("event not found: {event_id}"))?;
 
     if !event.versions.is_empty() && !event.versions.contains(&version) {
-        return Err(format!(
-            "{} is not available for v{}",
-            event.name, version
-        ));
+        return Err(format!("{} is not available for v{}", event.name, version));
     }
 
     if !event_allows_current_tester(app, &event)? {
         return Err(format!("{} is only available to testers", event.name));
     }
 
-    let event_mods: Vec<mod_config::ModEntry> = with_default_event_mods(event
-        .mods
-        .into_iter()
-        .filter(|m| m.is_compatible(version))
-        .collect());
+    let event_mods: Vec<mod_config::ModEntry> = with_default_event_mods(
+        event
+            .mods
+            .into_iter()
+            .filter(|m| m.is_compatible(version))
+            .collect(),
+    );
     Ok(mod_entry_pairs(&event_mods))
 }
 
@@ -2765,11 +3360,81 @@ struct GameOverlayConfig {
 #[serde(default)]
 struct GameOverlayGeneralConfig {
     enabled: bool,
+    backend: GameOverlayBackend,
+    #[serde(default)]
+    backend_migration_version: u32,
+    inject_all_processes: bool,
     use_stream_overlays_api: bool,
     obs_capture_armed: bool,
     overlay_key: String,
     end_summary_duration_ms: u64,
     monitor_interval_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum GameOverlayBackend {
+    Auto,
+    Native,
+    Legacy,
+    Off,
+}
+
+impl GameOverlayBackend {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Native => "native",
+            Self::Legacy => "legacy",
+            Self::Off => "off",
+        }
+    }
+
+    fn requests_native(self) -> bool {
+        matches!(self, Self::Auto | Self::Native)
+    }
+
+    fn allows_legacy_fallback(self) -> bool {
+        matches!(self, Self::Auto | Self::Legacy)
+    }
+}
+
+impl Default for GameOverlayBackend {
+    fn default() -> Self {
+        Self::Native
+    }
+}
+
+fn migrate_game_overlay_native_backend(cfg: &mut GameOverlayConfig) -> bool {
+    if cfg.general.backend_migration_version >= GAME_OVERLAY_NATIVE_BACKEND_MIGRATION_VERSION {
+        return false;
+    }
+    // Configs written before the injected HTML renderer existed either lack a
+    // backend or were materialized as Legacy by the transitional build. Move
+    // both to Native exactly once; later explicit Legacy choices are kept.
+    cfg.general.backend = GameOverlayBackend::Native;
+    cfg.general.backend_migration_version = GAME_OVERLAY_NATIVE_BACKEND_MIGRATION_VERSION;
+    true
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn should_block_concurrent_native_overlay_launch(
+    has_active_game: bool,
+    active_native_or_pending: bool,
+    native_injection_will_be_attempted: bool,
+) -> bool {
+    has_active_game && (active_native_or_pending || native_injection_will_be_attempted)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn should_promote_native_overlay(
+    readiness_succeeded: bool,
+    keep_native: bool,
+    pid_matches: bool,
+    captured_epoch: u64,
+    current_epoch: u64,
+) -> bool {
+    readiness_succeeded && keep_native && pid_matches && captured_epoch == current_epoch
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3532,6 +4197,9 @@ impl Default for GameOverlayGeneralConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            backend: GameOverlayBackend::Native,
+            backend_migration_version: GAME_OVERLAY_NATIVE_BACKEND_MIGRATION_VERSION,
+            inject_all_processes: false,
             use_stream_overlays_api: false,
             obs_capture_armed: false,
             overlay_key: "Insert".to_string(),
@@ -3572,17 +4240,117 @@ impl Default for GameOverlayConfig {
     }
 }
 
+#[cfg(test)]
+mod game_overlay_backend_tests {
+    use super::*;
+
+    #[test]
+    fn missing_backend_migrates_to_native_defaults() {
+        let general: GameOverlayGeneralConfig = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "overlay_key": "Insert"
+        }))
+        .unwrap();
+
+        assert_eq!(general.backend, GameOverlayBackend::Native);
+        assert_eq!(general.backend_migration_version, 0);
+        assert!(!general.inject_all_processes);
+    }
+
+    #[test]
+    fn backend_values_use_the_public_lowercase_contract() {
+        for (backend, expected) in [
+            (GameOverlayBackend::Auto, "\"auto\""),
+            (GameOverlayBackend::Native, "\"native\""),
+            (GameOverlayBackend::Legacy, "\"legacy\""),
+            (GameOverlayBackend::Off, "\"off\""),
+        ] {
+            assert_eq!(serde_json::to_string(&backend).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn retired_auto_backend_is_sanitized_to_native() {
+        let mut config = GameOverlayConfig::default();
+        config.general.backend = GameOverlayBackend::Auto;
+        let sanitized = sanitize_game_overlay_config(config);
+        assert_eq!(sanitized.general.backend, GameOverlayBackend::Native);
+    }
+
+    #[test]
+    fn pre_native_backend_is_migrated_once_but_explicit_legacy_is_preserved() {
+        let mut old = GameOverlayConfig::default();
+        old.general.backend = GameOverlayBackend::Legacy;
+        old.general.backend_migration_version = 0;
+        assert!(migrate_game_overlay_native_backend(&mut old));
+        assert_eq!(old.general.backend, GameOverlayBackend::Native);
+        assert_eq!(old.general.backend_migration_version, 1);
+
+        old.general.backend = GameOverlayBackend::Legacy;
+        assert!(!migrate_game_overlay_native_backend(&mut old));
+        assert_eq!(old.general.backend, GameOverlayBackend::Legacy);
+    }
+
+    #[test]
+    fn native_overlay_blocks_only_unsafe_concurrent_launches() {
+        assert!(!should_block_concurrent_native_overlay_launch(
+            false, true, true
+        ));
+        assert!(!should_block_concurrent_native_overlay_launch(
+            true, false, false
+        ));
+        assert!(should_block_concurrent_native_overlay_launch(
+            true, false, true
+        ));
+        assert!(should_block_concurrent_native_overlay_launch(
+            true, true, false
+        ));
+    }
+
+    #[test]
+    fn native_ready_promotion_requires_the_same_transition_epoch() {
+        assert!(should_promote_native_overlay(true, true, true, 7, 7));
+        assert!(!should_promote_native_overlay(true, true, true, 7, 8));
+        assert!(!should_promote_native_overlay(true, false, true, 7, 7));
+        assert!(!should_promote_native_overlay(false, true, true, 7, 7));
+        assert!(!should_promote_native_overlay(true, true, false, 7, 7));
+    }
+
+    #[test]
+    fn remote_function_relocation_preserves_the_module_offset() {
+        assert_eq!(
+            relocate_address_within_module(0x1000, 0x500, 0x9000, 0x1234),
+            Some(0x9234)
+        );
+        assert_eq!(
+            relocate_address_within_module(0x1000, 0x200, 0x9000, 0x1234),
+            None
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn native_overlay_uses_app_data_root() {
+        assert_eq!(
+            native_overlay_dll_path_for_app_data(Path::new(
+                r"C:\Users\tester\AppData\Roaming\asta.hq-launcher",
+            )),
+            std::path::PathBuf::from(
+                r"C:\Users\tester\AppData\Roaming\asta.hq-launcher\hq_overlay.dll"
+            )
+        );
+    }
+}
+
 fn default_overlay_widget_positions() -> HashMap<String, OverlayWidgetPosition> {
-    HashMap::from([
-        (
-            "crosshair".to_string(),
-            OverlayWidgetPosition {
-                x: 50.0,
-                y: 50.0,
-                snap: false,
-            },
-        ),
-    ])
+    HashMap::from([(
+        "crosshair".to_string(),
+        OverlayWidgetPosition {
+            x: 50.0,
+            y: 50.0,
+            snap: false,
+        },
+    )])
 }
 
 struct GameOverlayState {
@@ -3603,6 +4371,12 @@ struct GameOverlayState {
     last_match: AtomicBool,
     show_count: AtomicU64,
     input_count: AtomicU64,
+    native_pid: AtomicU32,
+    native_ready: AtomicBool,
+    native_all_processes_enabled: AtomicBool,
+    native_process_monitor_running: AtomicBool,
+    native_transition_epoch: AtomicU64,
+    native_transition_lock: Mutex<()>,
     last_window_rect: Mutex<Option<GameOverlayWindowRect>>,
     open_hint_focus_started: Mutex<Option<(u32, std::time::Instant)>>,
     open_hint_shown_pids: Mutex<HashSet<u32>>,
@@ -3612,6 +4386,12 @@ struct GameOverlayState {
     overlay_input_down_shortcuts: Mutex<HashSet<String>>,
     last_message: Mutex<String>,
     last_error: Mutex<Option<String>>,
+    requested_backend: Mutex<String>,
+    effective_backend: Mutex<String>,
+    native_dll_path: Mutex<Option<String>>,
+    native_error: Mutex<Option<String>>,
+    native_managed_pids: Mutex<HashSet<u32>>,
+    native_retry_after: Mutex<HashMap<u32, std::time::Instant>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3642,6 +4422,12 @@ impl Default for GameOverlayState {
             last_match: AtomicBool::new(false),
             show_count: AtomicU64::new(0),
             input_count: AtomicU64::new(0),
+            native_pid: AtomicU32::new(0),
+            native_ready: AtomicBool::new(false),
+            native_all_processes_enabled: AtomicBool::new(false),
+            native_process_monitor_running: AtomicBool::new(false),
+            native_transition_epoch: AtomicU64::new(0),
+            native_transition_lock: Mutex::new(()),
             last_window_rect: Mutex::new(None),
             open_hint_focus_started: Mutex::new(None),
             open_hint_shown_pids: Mutex::new(HashSet::new()),
@@ -3651,6 +4437,12 @@ impl Default for GameOverlayState {
             overlay_input_down_shortcuts: Mutex::new(HashSet::new()),
             last_message: Mutex::new(String::new()),
             last_error: Mutex::new(None),
+            requested_backend: Mutex::new("native".to_string()),
+            effective_backend: Mutex::new("off".to_string()),
+            native_dll_path: Mutex::new(None),
+            native_error: Mutex::new(None),
+            native_managed_pids: Mutex::new(HashSet::new()),
+            native_retry_after: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -3665,6 +4457,14 @@ struct GameOverlayDebugStatus {
     show_count: u64,
     last_message: String,
     last_error: Option<String>,
+    requested_backend: String,
+    effective_backend: String,
+    native_pid: u32,
+    native_ready: bool,
+    native_all_processes_enabled: bool,
+    native_managed_pids: Vec<u32>,
+    native_dll_path: Option<String>,
+    native_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3991,7 +4791,8 @@ fn read_game_overlay_config(app: &tauri::AppHandle) -> Result<GameOverlayConfig,
         if legacy_path.exists() {
             let text = std::fs::read_to_string(&legacy_path).map_err(|e| e.to_string())?;
             match serde_json::from_str::<GameOverlayConfig>(&text) {
-                Ok(cfg) => {
+                Ok(mut cfg) => {
+                    migrate_game_overlay_native_backend(&mut cfg);
                     let cfg = sanitize_game_overlay_config(cfg);
                     let _ = write_game_overlay_config(app, &cfg);
                     return Ok(cfg);
@@ -4033,7 +4834,14 @@ fn read_game_overlay_config(app: &tauri::AppHandle) -> Result<GameOverlayConfig,
         }
     }
 
-    Ok(sanitize_game_overlay_config(cfg))
+    let retired_auto_backend = cfg.general.backend == GameOverlayBackend::Auto;
+    let mut cfg = sanitize_game_overlay_config(cfg);
+    if migrate_game_overlay_native_backend(&mut cfg) || retired_auto_backend {
+        // Persist only the migrated general section. Module files are user
+        // content and must not be rewritten by a backend preference upgrade.
+        write_json_file(&dir.join("general.json"), &cfg.general)?;
+    }
+    Ok(cfg)
 }
 
 fn write_game_overlay_config(
@@ -4060,11 +4868,20 @@ fn set_game_overlay_obs_capture_armed(
     app: &tauri::AppHandle,
     armed: bool,
 ) -> Result<GameOverlayConfig, String> {
+    #[cfg(target_os = "windows")]
+    let transition_state = app.state::<GameOverlayState>();
+    #[cfg(target_os = "windows")]
+    let transition_guard = transition_state
+        .native_transition_lock
+        .lock()
+        .map_err(|_| "native overlay transition lock poisoned".to_string())?;
     let mut cfg = read_game_overlay_config(app)?;
     cfg.general.obs_capture_armed = armed;
     let cfg = sanitize_game_overlay_config(cfg);
     write_game_overlay_config(app, &cfg)?;
     sync_game_overlay_runtime_state(app, &cfg);
+    #[cfg(target_os = "windows")]
+    drop(transition_guard);
     let _ = app.emit("overlay://config-changed", cfg.clone());
     Ok(cfg)
 }
@@ -4154,6 +4971,11 @@ fn read_game_overlay_modules(app: &tauri::AppHandle) -> Result<Vec<GameOverlayMo
 
 fn sanitize_game_overlay_config(mut cfg: GameOverlayConfig) -> GameOverlayConfig {
     let fallback = GameOverlayConfig::default();
+    // Auto remains deserializable for configs written by older builds, but it
+    // is no longer a user-facing/runtime mode.
+    if cfg.general.backend == GameOverlayBackend::Auto {
+        cfg.general.backend = GameOverlayBackend::Native;
+    }
     cfg.general.overlay_key = sanitize_overlay_key(&cfg.general.overlay_key);
     cfg.general.end_summary_duration_ms = cfg.general.end_summary_duration_ms.clamp(2_000, 30_000);
     cfg.general.monitor_interval_ms = cfg.general.monitor_interval_ms.clamp(
@@ -4193,15 +5015,97 @@ fn sanitize_game_overlay_config(mut cfg: GameOverlayConfig) -> GameOverlayConfig
 
 fn sync_game_overlay_runtime_state(app: &tauri::AppHandle, cfg: &GameOverlayConfig) {
     let state = app.state::<GameOverlayState>();
-    state
-        .overlay_enabled
-        .store(cfg.general.enabled, Ordering::Relaxed);
+    if let Ok(mut requested) = state.requested_backend.lock() {
+        *requested = cfg.general.backend.as_str().to_string();
+    }
+
+    #[cfg(target_os = "windows")]
+    let manage_all_native = cfg.general.enabled
+        && cfg.general.backend.requests_native()
+        && cfg.general.inject_all_processes;
+    #[cfg(target_os = "windows")]
+    let previously_managed_all = state
+        .native_all_processes_enabled
+        .swap(manage_all_native, Ordering::Relaxed);
+    #[cfg(target_os = "windows")]
+    if previously_managed_all && !manage_all_native {
+        signal_all_managed_native_overlays(app, "Disable");
+    }
+
+    // A launch decision owns the effective backend until that game exits. A
+    // settings refresh must not turn the WebView back on over a ready native
+    // overlay. Before a launch, Auto intentionally starts in legacy/fallback.
+    let launch_owns_effective_backend = state.native_pid.load(Ordering::Relaxed) != 0
+        && (state.native_ready.load(Ordering::Relaxed)
+            || state
+                .effective_backend
+                .lock()
+                .map(|backend| backend.as_str() == "pending")
+                .unwrap_or(false));
+    if !launch_owns_effective_backend {
+        let legacy_enabled = cfg.general.enabled && cfg.general.backend.allows_legacy_fallback();
+        let explicit_preview = cfg.general.enabled && state.preview_mode.load(Ordering::Relaxed);
+        state
+            .overlay_enabled
+            .store(legacy_enabled || explicit_preview, Ordering::Relaxed);
+        if let Ok(mut effective) = state.effective_backend.lock() {
+            *effective = if legacy_enabled {
+                "legacy".to_string()
+            } else if cfg!(target_os = "windows")
+                && cfg.general.enabled
+                && cfg.general.backend.requests_native()
+                && cfg.general.inject_all_processes
+            {
+                "native".to_string()
+            } else {
+                "off".to_string()
+            };
+        }
+        state.native_ready.store(false, Ordering::Relaxed);
+    }
     state
         .obs_capture_enabled
         .store(cfg.general.obs_capture_armed, Ordering::Relaxed);
     state
         .monitor_interval_ms
         .store(cfg.general.monitor_interval_ms, Ordering::Relaxed);
+}
+
+fn set_game_overlay_backend_runtime(
+    app: &tauri::AppHandle,
+    requested: GameOverlayBackend,
+    effective: &str,
+    pid: u32,
+    native_ready: bool,
+    native_dll_path: Option<&Path>,
+    native_error: Option<String>,
+) {
+    let state = app.state::<GameOverlayState>();
+    let explicit_preview = state.preview_mode.load(Ordering::Relaxed);
+    state
+        .overlay_enabled
+        .store(effective == "legacy" || explicit_preview, Ordering::Relaxed);
+    state.native_pid.store(pid, Ordering::Relaxed);
+    state.native_ready.store(native_ready, Ordering::Relaxed);
+    if let Ok(mut value) = state.requested_backend.lock() {
+        *value = requested.as_str().to_string();
+    }
+    if let Ok(mut value) = state.effective_backend.lock() {
+        *value = effective.to_string();
+    }
+    if let Ok(mut value) = state.native_dll_path.lock() {
+        *value = native_dll_path.map(|path| path.to_string_lossy().to_string());
+    }
+    if let Ok(mut value) = state.native_error.lock() {
+        *value = native_error;
+    }
+
+    // An explicitly opened OBS preview is allowed to keep using the legacy
+    // WebView even while the in-game backend is native or pending.
+    if effective != "legacy" && !explicit_preview {
+        state.controls_open.store(false, Ordering::Relaxed);
+        request_hide_game_overlay_window(app, true);
+    }
 }
 
 fn sanitize_widget_position(position: &mut OverlayWidgetPosition) {
@@ -4963,6 +5867,19 @@ fn request_hide_game_overlay_window(app: &tauri::AppHandle, close_controls: bool
 
 fn close_game_overlay_for_app_exit(app: &tauri::AppHandle) {
     let state = app.state::<GameOverlayState>();
+    #[cfg(target_os = "windows")]
+    {
+        state
+            .native_process_monitor_running
+            .store(false, Ordering::Relaxed);
+        signal_all_managed_native_overlays(app, "Shutdown");
+        let native_pid = state.native_pid.load(Ordering::Relaxed);
+        if native_pid != 0 {
+            if let Err(error) = signal_native_overlay_event("Shutdown", native_pid) {
+                log::warn!("Failed to shut down native overlay for pid {native_pid}: {error}");
+            }
+        }
+    }
     state.monitor_running.store(false, Ordering::Relaxed);
     state
         .stream_overlays_monitor_running
@@ -5036,6 +5953,12 @@ fn set_game_overlay_error(app: &tauri::AppHandle, message: impl Into<String>) {
 }
 
 fn game_overlay_debug_status(state: &GameOverlayState) -> GameOverlayDebugStatus {
+    let mut native_managed_pids = state
+        .native_managed_pids
+        .lock()
+        .map(|pids| pids.iter().copied().collect::<Vec<_>>())
+        .unwrap_or_default();
+    native_managed_pids.sort_unstable();
     GameOverlayDebugStatus {
         controls_open: state.controls_open.load(Ordering::Relaxed),
         monitor_running: state.monitor_running.load(Ordering::Relaxed),
@@ -5052,6 +5975,30 @@ fn game_overlay_debug_status(state: &GameOverlayState) -> GameOverlayDebugStatus
             .lock()
             .map(|error| error.clone())
             .unwrap_or_else(|_| Some("overlay debug lock failed".to_string())),
+        requested_backend: state
+            .requested_backend
+            .lock()
+            .map(|backend| backend.clone())
+            .unwrap_or_else(|_| "unknown".to_string()),
+        effective_backend: state
+            .effective_backend
+            .lock()
+            .map(|backend| backend.clone())
+            .unwrap_or_else(|_| "unknown".to_string()),
+        native_pid: state.native_pid.load(Ordering::Relaxed),
+        native_ready: state.native_ready.load(Ordering::Relaxed),
+        native_all_processes_enabled: state.native_all_processes_enabled.load(Ordering::Relaxed),
+        native_managed_pids,
+        native_dll_path: state
+            .native_dll_path
+            .lock()
+            .map(|path| path.clone())
+            .unwrap_or_default(),
+        native_error: state
+            .native_error
+            .lock()
+            .map(|error| error.clone())
+            .unwrap_or_else(|_| Some("native overlay debug lock failed".to_string())),
     }
 }
 
@@ -5155,6 +6102,221 @@ fn is_lethal_company_process(pid: u32) -> bool {
         })
         .map(|name| name.eq_ignore_ascii_case("Lethal Company.exe"))
         .unwrap_or(false)
+}
+
+#[cfg(target_os = "windows")]
+fn lethal_company_process_ids() -> Result<HashSet<u32>, String> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(format!(
+            "failed to enumerate Lethal Company processes (Win32 error {})",
+            unsafe { GetLastError() }
+        ));
+    }
+
+    let result = (|| {
+        let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut pids = HashSet::new();
+        if unsafe { Process32FirstW(snapshot, &mut entry) } == 0 {
+            return Ok(pids);
+        }
+        loop {
+            let end = entry
+                .szExeFile
+                .iter()
+                .position(|value| *value == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let name = String::from_utf16_lossy(&entry.szExeFile[..end]);
+            if name.eq_ignore_ascii_case("Lethal Company.exe") && entry.th32ProcessID != 0 {
+                pids.insert(entry.th32ProcessID);
+            }
+            if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
+                break;
+            }
+        }
+        Ok(pids)
+    })();
+    unsafe { CloseHandle(snapshot) };
+    result
+}
+
+#[cfg(target_os = "windows")]
+fn signal_all_managed_native_overlays(app: &tauri::AppHandle, kind: &str) {
+    let pids = app
+        .state::<GameOverlayState>()
+        .native_managed_pids
+        .lock()
+        .map(|pids| pids.iter().copied().collect::<Vec<_>>())
+        .unwrap_or_default();
+    for pid in pids {
+        if let Err(error) = signal_native_overlay_event(kind, pid) {
+            log::warn!("Failed to signal managed native overlay pid={pid}: {error}");
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn release_managed_native_injection_after_failure(app: &tauri::AppHandle, pid: u32, error: String) {
+    let state = app.state::<GameOverlayState>();
+    if let Ok(mut pids) = state.native_managed_pids.lock() {
+        pids.remove(&pid);
+    }
+    if let Ok(mut retry_after) = state.native_retry_after.lock() {
+        retry_after.insert(
+            pid,
+            std::time::Instant::now() + std::time::Duration::from_secs(10),
+        );
+    }
+    set_game_overlay_error(app, format!("Native process monitor pid={pid}: {error}"));
+}
+
+#[cfg(target_os = "windows")]
+fn inject_managed_native_overlay(app: tauri::AppHandle, pid: u32, dll_path: std::path::PathBuf) {
+    let events = match NativeOverlayEvents::create(pid) {
+        Ok(events) => events,
+        Err(error) => {
+            release_managed_native_injection_after_failure(&app, pid, error);
+            return;
+        }
+    };
+    if let Err(error) = inject_native_overlay_dll_into_process(pid, &dll_path) {
+        let _ = events.disable();
+        release_managed_native_injection_after_failure(&app, pid, error);
+        return;
+    }
+
+    if let Ok(mut path) = app.state::<GameOverlayState>().native_dll_path.lock() {
+        *path = Some(dll_path.to_string_lossy().to_string());
+    }
+    set_game_overlay_debug(
+        &app,
+        format!(
+            "native process monitor injected pid={pid}; waiting up to {}s for HTML readiness",
+            NATIVE_OVERLAY_READY_TIMEOUT_MS / 1_000
+        ),
+    );
+
+    let readiness = events.wait_ready(NATIVE_OVERLAY_READY_TIMEOUT_MS);
+    match readiness {
+        Ok(true) => set_game_overlay_debug(&app, format!("native process monitor ready pid={pid}")),
+        Ok(false) => {
+            let _ = events.disable();
+            set_game_overlay_error(
+                &app,
+                format!(
+                    "Native process monitor pid={pid} did not become ready within {} seconds",
+                    NATIVE_OVERLAY_READY_TIMEOUT_MS / 1_000
+                ),
+            );
+        }
+        Err(error) => {
+            let _ = events.disable();
+            set_game_overlay_error(
+                &app,
+                format!("Native process monitor pid={pid} readiness failed: {error}"),
+            );
+        }
+    }
+
+    const PROCESS_SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
+    let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE_ACCESS, 0, pid) };
+    if !process.is_null() {
+        unsafe {
+            WaitForSingleObject(process, INFINITE);
+            CloseHandle(process);
+        }
+    } else {
+        while is_lethal_company_process(pid) {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    }
+    drop(events);
+    let state = app.state::<GameOverlayState>();
+    if let Ok(mut pids) = state.native_managed_pids.lock() {
+        pids.remove(&pid);
+    }
+    if let Ok(mut retry_after) = state.native_retry_after.lock() {
+        retry_after.remove(&pid);
+    };
+}
+
+#[cfg(target_os = "windows")]
+fn start_native_overlay_process_monitor(app: &tauri::AppHandle) {
+    let state = app.state::<GameOverlayState>();
+    if state
+        .native_process_monitor_running
+        .swap(true, Ordering::Relaxed)
+    {
+        return;
+    }
+
+    let app_handle = app.clone();
+    std::thread::spawn(move || loop {
+        let interval_ms = app_handle
+            .state::<GameOverlayState>()
+            .monitor_interval_ms
+            .load(Ordering::Relaxed)
+            .clamp(
+                GAME_OVERLAY_MONITOR_INTERVAL_MIN_MS,
+                GAME_OVERLAY_MONITOR_INTERVAL_MAX_MS,
+            );
+        std::thread::sleep(std::time::Duration::from_millis(interval_ms));
+
+        let state = app_handle.state::<GameOverlayState>();
+        if !state.native_process_monitor_running.load(Ordering::Relaxed) {
+            break;
+        }
+        if !state.native_all_processes_enabled.load(Ordering::Relaxed) {
+            continue;
+        }
+
+        let active_pids = match lethal_company_process_ids() {
+            Ok(pids) => pids,
+            Err(error) => {
+                set_game_overlay_error(&app_handle, error);
+                continue;
+            }
+        };
+        if let Ok(mut retry_after) = state.native_retry_after.lock() {
+            retry_after.retain(|pid, _| active_pids.contains(pid));
+        }
+
+        for pid in active_pids {
+            if pid == state.native_pid.load(Ordering::Relaxed) {
+                continue;
+            }
+            let now = std::time::Instant::now();
+            let retry_blocked = state
+                .native_retry_after
+                .lock()
+                .map(|retry_after| retry_after.get(&pid).is_some_and(|at| *at > now))
+                .unwrap_or(true);
+            if retry_blocked {
+                continue;
+            }
+            let claimed = state
+                .native_managed_pids
+                .lock()
+                .map(|mut pids| pids.insert(pid))
+                .unwrap_or(false);
+            if !claimed {
+                continue;
+            }
+
+            let dll_path = match resolve_native_overlay_dll(&app_handle) {
+                Ok(path) => path,
+                Err(error) => {
+                    release_managed_native_injection_after_failure(&app_handle, pid, error);
+                    continue;
+                }
+            };
+            let injection_app = app_handle.clone();
+            std::thread::spawn(move || {
+                inject_managed_native_overlay(injection_app, pid, dll_path);
+            });
+        }
+    });
 }
 
 #[cfg(target_os = "windows")]
@@ -5763,6 +6925,9 @@ fn should_emit_game_overlay_input(app: &tauri::AppHandle) -> bool {
     if state.controls_open.load(Ordering::Relaxed) || state.preview_mode.load(Ordering::Relaxed) {
         return true;
     }
+    if !state.overlay_enabled.load(Ordering::Relaxed) {
+        return false;
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -5941,6 +7106,12 @@ unsafe extern "system" fn game_overlay_input_keyboard_hook(
 
 #[cfg(target_os = "windows")]
 fn game_overlay_input_hook_needed(app: &tauri::AppHandle) -> bool {
+    let overlay_state = app.state::<GameOverlayState>();
+    if !overlay_state.overlay_enabled.load(Ordering::Relaxed)
+        && !overlay_state.preview_mode.load(Ordering::Relaxed)
+    {
+        return false;
+    }
     let foreground_hwnd = unsafe { GetForegroundWindow() };
     if foreground_hwnd.is_null() {
         return false;
@@ -6264,7 +7435,10 @@ fn register_game_overlay_shortcut(app: &tauri::AppHandle) {
                 handle_game_overlay_shortcut(app, &shortcut_label_for_handler);
             }) {
             Ok(()) => {
-                set_game_overlay_debug(app, format!("registered overlay shortcut {shortcut_label}"));
+                set_game_overlay_debug(
+                    app,
+                    format!("registered overlay shortcut {shortcut_label}"),
+                );
                 *registered = Some(shortcut_label);
             }
             Err(e) => {
@@ -6386,15 +7560,7 @@ fn is_launcher_visible_mod_asset_name(name: &str) -> bool {
         .is_some_and(|ext| {
             matches!(
                 ext.to_ascii_lowercase().as_str(),
-                "png"
-                    | "jpg"
-                    | "jpeg"
-                    | "gif"
-                    | "webp"
-                    | "bmp"
-                    | "ico"
-                    | "svg"
-                    | "gpf"
+                "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "svg" | "gpf"
             )
         })
 }
@@ -6666,7 +7832,9 @@ fn exclude_disabled_mod_switches_from_updates(
 ) -> Result<ModsConfig, String> {
     let disabled_keys = disabled_mod_keys(&read_disablemod(app)?.mods);
     cfg.mods.retain(|spec| {
-        spec.switch_group.as_deref().is_none_or(|group| group.trim().is_empty())
+        spec.switch_group
+            .as_deref()
+            .is_none_or(|group| group.trim().is_empty())
             || !disabled_keys.contains(&normalize_mod_key(&spec.dev, &spec.name))
     });
     Ok(cfg)
@@ -6729,10 +7897,7 @@ pub(crate) fn select_mod_switches_for_install(
     Ok(cfg)
 }
 
-fn reconcile_mod_switch_groups(
-    disabled: &mut DisableModFile,
-    cfg: &ModsConfig,
-) -> bool {
+fn reconcile_mod_switch_groups(disabled: &mut DisableModFile, cfg: &ModsConfig) -> bool {
     let mut groups: BTreeMap<String, Vec<(&str, &str)>> = BTreeMap::new();
     for spec in &cfg.mods {
         if !spec.enabled {
@@ -6864,7 +8029,11 @@ fn with_default_event_mods(mut event_mods: Vec<mod_config::ModEntry>) -> Vec<mod
     event_mods
 }
 
-fn ensure_event_vlog_cfg(app: &tauri::AppHandle, version: u32, event_id: &str) -> Result<(), String> {
+fn ensure_event_vlog_cfg(
+    app: &tauri::AppHandle,
+    version: u32,
+    event_id: &str,
+) -> Result<(), String> {
     let cfg_dir = version_config_dir(app, version)?;
     std::fs::create_dir_all(&cfg_dir).map_err(|e| e.to_string())?;
     let cfg_path = cfg_dir.join("asta.evlog.cfg");
@@ -8317,8 +9486,7 @@ fn ensure_launch_compatible_with_active_games(
     });
     if conflict {
         return Err(
-            "Vanilla and modded runs cannot use the same game version at the same time"
-                .to_string(),
+            "Vanilla and modded runs cannot use the same game version at the same time".to_string(),
         );
     }
     Ok(())
@@ -8337,6 +9505,8 @@ fn cleanup_active_games(
                 if linux_lingering_game_pid(app, active.version).is_some() {
                     kept.push(active);
                 } else {
+                    let finished_pid = active.child.id();
+                    clear_native_overlay_runtime_for_pid(app, finished_pid)?;
                     any_finished = true;
                 }
             }
@@ -8344,6 +9514,32 @@ fn cleanup_active_games(
     }
     *active_games = kept;
     Ok(any_finished)
+}
+
+fn clear_native_overlay_runtime_for_pid(
+    app: &tauri::AppHandle,
+    finished_pid: u32,
+) -> Result<(), String> {
+    let overlay_state = app.state::<GameOverlayState>();
+    if overlay_state.native_pid.load(Ordering::Relaxed) != finished_pid {
+        return Ok(());
+    }
+    let _transition_guard = overlay_state
+        .native_transition_lock
+        .lock()
+        .map_err(|_| "native overlay transition lock poisoned".to_string())?;
+    if overlay_state.native_pid.load(Ordering::Relaxed) != finished_pid {
+        return Ok(());
+    }
+    overlay_state
+        .native_transition_epoch
+        .fetch_add(1, Ordering::AcqRel);
+    overlay_state.native_pid.store(0, Ordering::Relaxed);
+    overlay_state.native_ready.store(false, Ordering::Relaxed);
+    if let Ok(cfg) = read_game_overlay_config(app) {
+        sync_game_overlay_runtime_state(app, &cfg);
+    }
+    Ok(())
 }
 
 fn active_game_dto(order: usize, active: &ActiveGame) -> RunningGameDto {
@@ -8664,8 +9860,23 @@ fn spawn_game_process(
     #[cfg(target_os = "linux")]
     let overlay_config = read_steam_overlay_config(_app)?;
 
+    let game_overlay_config = read_game_overlay_config(_app)?;
+    let requested_backend = game_overlay_config.general.backend;
+    let native_requested =
+        game_overlay_config.general.enabled && requested_backend.requests_native();
     #[cfg(target_os = "windows")]
-    let mut command = {
+    let native_process_monitor_mode =
+        native_requested && game_overlay_config.general.inject_all_processes;
+
+    #[cfg(not(target_os = "windows"))]
+    if native_requested && requested_backend == GameOverlayBackend::Native {
+        return Err(
+            "Native HQ overlay injection is currently supported only on Windows x64".to_string(),
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    let (mut command, native_dll_path, native_preflight_error, needs_suspended_launch) = {
         use std::os::windows::process::CommandExt;
         use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
 
@@ -8674,14 +9885,75 @@ fn spawn_game_process(
         let default_args = Vec::new();
         let (program, args) =
             build_wrapped_launch_command(launch_command_template, &default_program, &default_args)?;
+        let launches_game_directly = windows_program_matches_game(&program, exe_path, exe_dir);
+        let (native_dll_path, native_preflight_error) = if !native_requested {
+            (None, None)
+        } else if !launches_game_directly && !native_process_monitor_mode {
+            let error = "Native HQ overlay injection requires a direct Lethal Company launch; the configured launch command template starts a wrapper process instead".to_string();
+            if requested_backend == GameOverlayBackend::Native {
+                return Err(error);
+            }
+            (None, Some(error))
+        } else {
+            match resolve_native_overlay_dll(_app) {
+                Ok(path) => (Some(path), None),
+                Err(error) if requested_backend == GameOverlayBackend::Native => return Err(error),
+                Err(error) => (None, Some(error)),
+            }
+        };
+
+        // All launch commands enter here while holding GameState::launch_lock.
+        // The native runtime state is currently process-wide, so allowing a
+        // second injected game would lose ownership of the first PID and make
+        // Disable/Shutdown targeting unsafe. Pure legacy fallback remains
+        // multi-instance compatible.
+        let has_active_game = {
+            let game_state = _app.state::<GameState>();
+            let mut active_games = game_state
+                .active
+                .lock()
+                .map_err(|_| "game state lock poisoned".to_string())?;
+            cleanup_active_games(_app, &mut active_games)?;
+            !active_games.is_empty()
+        };
+        let overlay_state = _app.state::<GameOverlayState>();
+        let native_pending = overlay_state
+            .effective_backend
+            .lock()
+            .map(|backend| backend.as_str() == "pending")
+            .unwrap_or(false);
+        let active_native_or_pending = !native_process_monitor_mode
+            && overlay_state.native_pid.load(Ordering::Relaxed) != 0
+            && (overlay_state.native_ready.load(Ordering::Relaxed) || native_pending);
+        if should_block_concurrent_native_overlay_launch(
+            has_active_game,
+            active_native_or_pending,
+            native_dll_path.is_some() && !native_process_monitor_mode,
+        ) {
+            return Err(
+                "Native HQ overlay currently supports one running game at a time. Close the existing game, or select Legacy/Off before launching another instance."
+                    .to_string(),
+            );
+        }
+
+        let needs_suspended_launch = overlay_config.enabled
+            || (native_requested && launches_game_directly && !native_process_monitor_mode);
+
         let mut cmd = std::process::Command::new(program);
         cmd.args(args);
-        if overlay_config.enabled {
+        if needs_suspended_launch {
             cmd.creation_flags(CREATE_SUSPENDED);
+        }
+        if overlay_config.enabled {
             cmd.env("SteamGameId", LETHAL_COMPANY_STEAM_APP_ID);
             cmd.env("SteamAppId", LETHAL_COMPANY_STEAM_APP_ID);
         }
-        cmd
+        (
+            cmd,
+            native_dll_path,
+            native_preflight_error,
+            needs_suspended_launch,
+        )
     };
 
     #[cfg(target_os = "macos")]
@@ -8759,33 +10031,338 @@ fn spawn_game_process(
 
     #[cfg(target_os = "windows")]
     {
+        let pid = child.id();
+        let mut native_events: Option<NativeOverlayEvents> = None;
+        let mut native_injected = false;
+        let mut native_error = native_preflight_error;
+
         if overlay_config.enabled {
             if let Err(e) = inject_launch_dlls(
-                child.id(),
+                pid,
                 _version_dir,
                 overlay_config.steam_path.as_deref(),
                 load_bepinex,
             ) {
-                log::error!(
-                    "failed to inject launch DLLs into pid {}: {}",
-                    child.id(),
-                    e
-                );
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(e);
-            }
-            if let Err(e) = resume_main_thread(child.id()) {
-                log::error!(
-                    "failed to resume suspended game process {}: {}",
-                    child.id(),
-                    e
-                );
+                log::error!("failed to inject launch DLLs into pid {}: {}", pid, e);
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(e);
             }
         }
+
+        if !native_process_monitor_mode {
+            if let Some(dll_path) = native_dll_path.as_deref() {
+                match NativeOverlayEvents::create(pid) {
+                    Ok(events) => match inject_native_overlay_dll_into_process(pid, dll_path) {
+                        Ok(()) => {
+                            native_injected = true;
+                            native_events = Some(events);
+                        }
+                        Err(error) => {
+                            let _ = events.disable();
+                            retain_native_overlay_events_until_process_exit(events, pid);
+                            native_error = Some(format!(
+                                "Failed to inject native HQ overlay from {}: {error}",
+                                dll_path.display()
+                            ));
+                        }
+                    },
+                    Err(error) => native_error = Some(error),
+                }
+            }
+        }
+
+        // Settings writes use the same lock, so the injection result is
+        // interpreted against one current, persisted backend decision. If a
+        // settings write won the race, we observe it here; otherwise it waits
+        // and applies cleanly after this launch transition is published.
+        let transition_state = _app.state::<GameOverlayState>();
+        let transition_guard = transition_state
+            .native_transition_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let launch_cfg =
+            read_game_overlay_config(_app).unwrap_or_else(|_| game_overlay_config.clone());
+        let launch_backend = launch_cfg.general.backend;
+        let keep_native = launch_cfg.general.enabled && launch_backend.requests_native();
+        let strict_native = keep_native
+            && launch_backend == GameOverlayBackend::Native
+            && !native_process_monitor_mode;
+
+        if strict_native && !native_injected {
+            let error = native_error.unwrap_or_else(|| {
+                "Native HQ overlay injection did not start for an unknown reason".to_string()
+            });
+            set_game_overlay_backend_runtime(
+                _app,
+                launch_backend,
+                "off",
+                0,
+                false,
+                native_dll_path.as_deref(),
+                Some(error.clone()),
+            );
+            drop(transition_guard);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+
+        if needs_suspended_launch {
+            if let Err(e) = resume_main_thread(pid) {
+                log::error!("failed to resume suspended game process {}: {}", pid, e);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
+        }
+
+        if native_injected {
+            let events = native_events
+                .take()
+                .expect("native events exist after successful injection");
+            let app_handle = _app.clone();
+            let dll_path = native_dll_path.clone();
+            if !keep_native {
+                let _ = events.disable();
+                retain_native_overlay_events_until_process_exit(events, pid);
+                let effective_backend =
+                    if launch_cfg.general.enabled && launch_backend.allows_legacy_fallback() {
+                        "legacy"
+                    } else {
+                        "off"
+                    };
+                let message =
+                    "Native overlay disabled because its backend changed during launch".to_string();
+                set_game_overlay_backend_runtime(
+                    _app,
+                    launch_backend,
+                    effective_backend,
+                    pid,
+                    false,
+                    dll_path.as_deref(),
+                    Some(message.clone()),
+                );
+                set_game_overlay_debug(_app, message);
+                drop(transition_guard);
+                if effective_backend == "legacy" {
+                    show_game_overlay(_app);
+                }
+            } else {
+                let transition_epoch = transition_state
+                    .native_transition_epoch
+                    .load(Ordering::Acquire);
+                set_game_overlay_backend_runtime(
+                    _app,
+                    launch_backend,
+                    "pending",
+                    pid,
+                    false,
+                    dll_path.as_deref(),
+                    None,
+                );
+                drop(transition_guard);
+                set_game_overlay_debug(
+                    _app,
+                    format!(
+                        "waiting for native overlay readiness pid={pid} timeout={}s",
+                        NATIVE_OVERLAY_READY_TIMEOUT_MS / 1_000
+                    ),
+                );
+                std::thread::spawn(move || {
+                    let readiness = events.wait_ready(NATIVE_OVERLAY_READY_TIMEOUT_MS);
+                    let pid_matches = app_handle
+                        .state::<GameOverlayState>()
+                        .native_pid
+                        .load(Ordering::Relaxed)
+                        == pid;
+                    if !pid_matches {
+                        let _ = events.disable();
+                        retain_native_overlay_events_until_process_exit(events, pid);
+                        return;
+                    }
+
+                    if matches!(readiness, Ok(true)) {
+                        let overlay_state = app_handle.state::<GameOverlayState>();
+                        let transition_guard = overlay_state.native_transition_lock.lock();
+                        if let Ok(_transition_guard) = transition_guard {
+                            let promotion_cfg = read_game_overlay_config(&app_handle).ok();
+                            let promotion_backend = promotion_cfg
+                                .as_ref()
+                                .map(|cfg| cfg.general.backend)
+                                .unwrap_or(launch_backend);
+                            let keep_native = promotion_cfg
+                                .as_ref()
+                                .map(|cfg| {
+                                    cfg.general.enabled && cfg.general.backend.requests_native()
+                                })
+                                .unwrap_or(true);
+                            let current_epoch = overlay_state
+                                .native_transition_epoch
+                                .load(Ordering::Acquire);
+                            let pid_still_matches =
+                                overlay_state.native_pid.load(Ordering::Relaxed) == pid;
+                            if should_promote_native_overlay(
+                                true,
+                                keep_native,
+                                pid_still_matches,
+                                transition_epoch,
+                                current_epoch,
+                            ) {
+                                set_game_overlay_backend_runtime(
+                                    &app_handle,
+                                    promotion_backend,
+                                    "native",
+                                    pid,
+                                    true,
+                                    dll_path.as_deref(),
+                                    None,
+                                );
+                                set_game_overlay_debug(
+                                    &app_handle,
+                                    format!(
+                                        "native overlay ready pid={pid} dll={}",
+                                        dll_path
+                                            .as_deref()
+                                            .map(|path| path.display().to_string())
+                                            .unwrap_or_else(|| "unknown".to_string())
+                                    ),
+                                );
+                                return;
+                            }
+                        }
+                    }
+
+                    let mut error = match readiness {
+                        Ok(true) => "Native overlay became ready after its launch transition or backend was changed; it was disabled".to_string(),
+                        Ok(false) => format!(
+                            "Native HQ overlay did not signal Local\\HQOverlayReady_{pid} within {} seconds",
+                            NATIVE_OVERLAY_READY_TIMEOUT_MS / 1_000
+                        ),
+                        Err(error) => error,
+                    };
+                    if let Err(disable_error) = events.disable() {
+                        error = format!("{error}; {disable_error}");
+                    }
+                    retain_native_overlay_events_until_process_exit(events, pid);
+                    // Serialize fallback with settings persistence, then refresh
+                    // config so an epoch mismatch cannot restore a stale backend.
+                    let fallback_state = app_handle.state::<GameOverlayState>();
+                    let fallback_guard = fallback_state
+                        .native_transition_lock
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let fallback_cfg = read_game_overlay_config(&app_handle).ok();
+                    let fallback_backend = fallback_cfg
+                        .as_ref()
+                        .map(|cfg| cfg.general.backend)
+                        .unwrap_or(launch_backend);
+                    let fallback_allowed = fallback_cfg
+                        .as_ref()
+                        .map(|cfg| {
+                            cfg.general.enabled && cfg.general.backend.allows_legacy_fallback()
+                        })
+                        .unwrap_or(fallback_backend == GameOverlayBackend::Auto);
+                    let effective_backend = if fallback_allowed { "legacy" } else { "off" };
+                    set_game_overlay_backend_runtime(
+                        &app_handle,
+                        fallback_backend,
+                        effective_backend,
+                        pid,
+                        false,
+                        dll_path.as_deref(),
+                        Some(error.clone()),
+                    );
+                    if fallback_backend == GameOverlayBackend::Native {
+                        set_game_overlay_error(&app_handle, error);
+                    } else {
+                        log::warn!("Native HQ overlay fallback for pid {pid}: {error}");
+                        set_game_overlay_debug(
+                            &app_handle,
+                            format!(
+                                "native overlay unavailable; effective backend={effective_backend}"
+                            ),
+                        );
+                        drop(fallback_guard);
+                        if effective_backend == "legacy" {
+                            show_game_overlay(&app_handle);
+                        }
+                        return;
+                    }
+                    drop(fallback_guard);
+                });
+            }
+        } else if native_process_monitor_mode && keep_native {
+            set_game_overlay_backend_runtime(
+                _app,
+                launch_backend,
+                "native",
+                0,
+                false,
+                native_dll_path.as_deref(),
+                None,
+            );
+            set_game_overlay_debug(
+                _app,
+                "native process monitor will inject every Lethal Company process",
+            );
+            drop(transition_guard);
+        } else {
+            let effective_backend =
+                if !launch_cfg.general.enabled || launch_backend == GameOverlayBackend::Off {
+                    "off"
+                } else if launch_backend.allows_legacy_fallback() {
+                    "legacy"
+                } else {
+                    "off"
+                };
+            let reported_native_error = if keep_native {
+                native_error.clone()
+            } else {
+                None
+            };
+            set_game_overlay_backend_runtime(
+                _app,
+                launch_backend,
+                effective_backend,
+                0,
+                false,
+                native_dll_path.as_deref(),
+                reported_native_error.clone(),
+            );
+            drop(transition_guard);
+            if let Some(error) = reported_native_error {
+                log::warn!("Native HQ overlay fallback for pid {pid}: {error}");
+                set_game_overlay_debug(
+                    _app,
+                    format!("native overlay unavailable; effective backend={effective_backend}"),
+                );
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let effective_backend = if !game_overlay_config.general.enabled
+            || requested_backend == GameOverlayBackend::Off
+        {
+            "off"
+        } else {
+            "legacy"
+        };
+        set_game_overlay_backend_runtime(
+            _app,
+            requested_backend,
+            effective_backend,
+            0,
+            false,
+            None,
+            if native_requested {
+                Some("Native HQ overlay is unavailable on this platform; using legacy".to_string())
+            } else {
+                None
+            },
+        );
     }
 
     Ok(child)
@@ -9001,15 +10578,74 @@ fn set_game_overlay_config(
     app: tauri::AppHandle,
     mut config: GameOverlayConfig,
 ) -> Result<GameOverlayConfig, String> {
-    if read_game_overlay_config(&app)
-        .map(|current| current.general.obs_capture_armed)
-        .unwrap_or(false)
-    {
+    #[cfg(target_os = "windows")]
+    let native_transition_state = app.state::<GameOverlayState>();
+    #[cfg(target_os = "windows")]
+    let native_transition_guard = native_transition_state
+        .native_transition_lock
+        .lock()
+        .map_err(|_| "native overlay transition lock poisoned".to_string())?;
+
+    // Serialize the full read/write/sync transaction with launch readiness and
+    // injection-result decisions. This makes the persisted config the single
+    // source of truth even when settings are changed while a game is launching.
+    let current_cfg = read_game_overlay_config(&app)?;
+    if current_cfg.general.obs_capture_armed {
         config.general.obs_capture_armed = true;
     }
     let cfg = sanitize_game_overlay_config(config);
+
+    #[cfg(target_os = "windows")]
+    {
+        let state = &native_transition_state;
+        let pid = state.native_pid.load(Ordering::Relaxed);
+        let native_ready = state.native_ready.load(Ordering::Relaxed);
+        let native_pending = state
+            .effective_backend
+            .lock()
+            .map(|backend| backend.as_str() == "pending")
+            .unwrap_or(false);
+        let keep_native = cfg.general.enabled && cfg.general.backend.requests_native();
+        let transitioning_away = current_cfg.general.enabled
+            && current_cfg.general.backend.requests_native()
+            && !keep_native;
+        let active_native_transition = pid != 0 && (native_ready || native_pending);
+        if !keep_native && (transitioning_away || active_native_transition) {
+            // Invalidate an in-flight Ready decision before signalling the
+            // DLL. The waiter must never promote a native renderer after this
+            // settings transition has started.
+            state.native_transition_epoch.fetch_add(1, Ordering::AcqRel);
+            if active_native_transition {
+                signal_native_overlay_event("Disable", pid).map_err(|error| {
+                    format!(
+                        "Could not switch away from the active native overlay without risking a double overlay: {error}"
+                    )
+                })?;
+                state.native_ready.store(false, Ordering::Relaxed);
+                if let Ok(mut effective) = state.effective_backend.lock() {
+                    *effective =
+                        if cfg.general.enabled && cfg.general.backend.allows_legacy_fallback() {
+                            "legacy".to_string()
+                        } else {
+                            "off".to_string()
+                        };
+                }
+                if let Ok(mut error) = state.native_error.lock() {
+                    *error = Some(
+                        "Native overlay disabled by settings; relaunch to enable it again"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+    }
+
     write_game_overlay_config(&app, &cfg)?;
     sync_game_overlay_runtime_state(&app, &cfg);
+    #[cfg(target_os = "windows")]
+    drop(native_transition_guard);
+    #[cfg(target_os = "windows")]
+    start_native_overlay_process_monitor(&app);
     if !cfg.general.enabled {
         app.state::<GameOverlayState>()
             .preview_mode
@@ -9031,13 +10667,14 @@ fn open_obs_overlay_window(
     app: tauri::AppHandle,
     state: State<'_, GameOverlayState>,
 ) -> Result<GameOverlayConfig, String> {
-    if !state.overlay_enabled.load(Ordering::Relaxed) {
+    let current_cfg = read_game_overlay_config(&app)?;
+    if !current_cfg.general.enabled {
         request_hide_game_overlay_window(&app, true);
         set_game_overlay_debug(
             &app,
             "OBS selector ignored because HQLC overlay is disabled",
         );
-        return read_game_overlay_config(&app);
+        return Ok(current_cfg);
     }
     let owned_preview = !state.preview_mode.load(Ordering::Relaxed)
         && !state.window_visible.load(Ordering::Relaxed);
@@ -9046,6 +10683,9 @@ fn open_obs_overlay_window(
         .obs_capture_owned_preview
         .store(owned_preview, Ordering::Relaxed);
     state.preview_mode.store(true, Ordering::Relaxed);
+    // OBS preview is an explicit legacy-only action and is allowed even while
+    // the in-game effective backend is native.
+    state.overlay_enabled.store(true, Ordering::Relaxed);
     state.controls_open.store(false, Ordering::Relaxed);
     let _ = app.emit_to(
         GAME_OVERLAY_WINDOW_LABEL,
@@ -9089,6 +10729,14 @@ fn close_obs_overlay_window_if_owned(app: tauri::AppHandle) -> Result<bool, Stri
         return Ok(false);
     }
     state.preview_mode.store(false, Ordering::Relaxed);
+    let restore_legacy = state
+        .effective_backend
+        .lock()
+        .map(|backend| backend.as_str() == "legacy")
+        .unwrap_or(false);
+    state
+        .overlay_enabled
+        .store(restore_legacy, Ordering::Relaxed);
     state.controls_open.store(false, Ordering::Relaxed);
     state.window_visible.store(false, Ordering::Relaxed);
     if let Ok(mut last_rect) = state.last_window_rect.lock() {
@@ -9136,6 +10784,14 @@ fn close_obs_overlay_window(app: tauri::AppHandle) -> Result<bool, String> {
         .obs_capture_owned_preview
         .store(false, Ordering::Relaxed);
     state.preview_mode.store(false, Ordering::Relaxed);
+    let restore_legacy = state
+        .effective_backend
+        .lock()
+        .map(|backend| backend.as_str() == "legacy")
+        .unwrap_or(false);
+    state
+        .overlay_enabled
+        .store(restore_legacy, Ordering::Relaxed);
     state.controls_open.store(false, Ordering::Relaxed);
     state.window_visible.store(false, Ordering::Relaxed);
     if let Ok(mut last_rect) = state.last_window_rect.lock() {
@@ -9322,12 +10978,9 @@ async fn launch_game(
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
     wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
-    let has_event = event_id
-        .as_deref()
-        .is_some_and(|id| !id.trim().is_empty());
+    let has_event = event_id.as_deref().is_some_and(|id| !id.trim().is_empty());
     let event_id_for_cfg = event_id.as_deref().unwrap_or_default().trim().to_string();
-    let event_forced_ids =
-        event_forced_enabled_mods_for_launch(&app, version, event_id).await?;
+    let event_forced_ids = event_forced_enabled_mods_for_launch(&app, version, event_id).await?;
     let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
     if has_event {
         ensure_event_vlog_cfg(&app, version, &event_id_for_cfg)?;
@@ -9541,12 +11194,9 @@ async fn launch_game_preset(
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
     wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
-    let has_event = event_id
-        .as_deref()
-        .is_some_and(|id| !id.trim().is_empty());
+    let has_event = event_id.as_deref().is_some_and(|id| !id.trim().is_empty());
     let event_id_for_cfg = event_id.as_deref().unwrap_or_default().trim().to_string();
-    let event_forced_ids =
-        event_forced_enabled_mods_for_launch(&app, version, event_id).await?;
+    let event_forced_ids = event_forced_enabled_mods_for_launch(&app, version, event_id).await?;
     // Normalize preset and map to manifest tags.
     let tags = preset_tags_for_name(&preset);
 
@@ -9852,25 +11502,10 @@ fn get_game_status(
         .active
         .lock()
         .map_err(|_| "game state lock poisoned".to_string())?;
-    let mut running_pid = None;
-    let mut any_finished = false;
-    let mut kept = Vec::with_capacity(guard.len());
-    for mut active in guard.drain(..) {
-        match active.child.try_wait().map_err(|e| e.to_string())? {
-            None => {
-                running_pid.get_or_insert_with(|| active.child.id());
-                kept.push(active);
-            }
-            Some(_) => {
-                any_finished = true;
-                if let Some(pid) = linux_lingering_game_pid(&app, active.version) {
-                    running_pid.get_or_insert(pid);
-                    kept.push(active);
-                }
-            }
-        }
-    }
-    *guard = kept;
+    let any_finished = cleanup_active_games(&app, &mut guard)?;
+    let running_pid = guard.first().map(|active| {
+        linux_lingering_game_pid(&app, active.version).unwrap_or_else(|| active.child.id())
+    });
 
     if let Some(pid) = running_pid {
         return Ok(GameStatus {
@@ -9943,6 +11578,7 @@ fn stop_game_instance(
     let mut active = guard.remove(index);
     terminate_child_process_tree(&mut active.child);
     let _ = active.child.wait();
+    clear_native_overlay_runtime_for_pid(&app, active.child.id())?;
 
     if guard.is_empty() {
         lcstats_autosheet::stop(&lcstats_state);
@@ -9981,6 +11617,7 @@ fn stop_game(
         }
         for mut active in active_games {
             let _ = active.child.wait();
+            clear_native_overlay_runtime_for_pid(&app, active.child.id())?;
         }
         versions.sort_unstable();
         versions.dedup();
@@ -10446,10 +12083,7 @@ async fn prepare_event(
         .ok_or_else(|| format!("event not found: {event_id}"))?;
 
     if !event.versions.is_empty() && !event.versions.contains(&version) {
-        return Err(format!(
-            "{} is not available for v{}",
-            event.name, version
-        ));
+        return Err(format!("{} is not available for v{}", event.name, version));
     }
 
     if !event_allows_current_tester(&app, &event)? {
@@ -10501,12 +12135,8 @@ async fn prepare_event(
             return Err("Cancelled".to_string());
         }
 
-        let event_mods: Vec<mod_config::ModEntry> = with_default_event_mods(event
-            .mods
-            .iter()
-            .filter(|m| m.enabled)
-            .cloned()
-            .collect());
+        let event_mods: Vec<mod_config::ModEntry> =
+            with_default_event_mods(event.mods.iter().filter(|m| m.enabled).cloned().collect());
         let selected_pairs = mod_entry_pairs(&event_mods);
         let selected_keys = mod_keys_from_pairs(&selected_pairs);
         let previous_pairs = mod_pairs_from_disabled(&previous_state.mods);
@@ -10528,9 +12158,11 @@ async fn prepare_event(
         force_disable_mods_for_version(&app, version, &previous_only)?;
         remove_event_installed_mods_for_version(&app, version, &previous_installed_only)?;
 
-        let newly_installed_pairs = mod_entry_pairs(
-            &filter_missing_mods_for_version(&app, version, &event_mods)?
-        );
+        let newly_installed_pairs = mod_entry_pairs(&filter_missing_mods_for_version(
+            &app,
+            version,
+            &event_mods,
+        )?);
 
         if !event_mods.is_empty() {
             let cfg = ModsConfig {
@@ -10558,9 +12190,9 @@ async fn prepare_event(
                             step_name: "Event Mods".to_string(),
                             step_progress,
                             overall_percent: overall_from_step(1, step_progress, 1),
-                            detail: progress_info
-                                .detail
-                                .or_else(|| Some(format!("Installing {} event mods...", event.name))),
+                            detail: progress_info.detail.or_else(|| {
+                                Some(format!("Installing {} event mods...", event.name))
+                            }),
                             downloaded_bytes: progress_info.downloaded_bytes,
                             total_bytes: progress_info.total_bytes,
                             extracted_files: progress_info.extracted_files.or(Some(done)),
@@ -11268,6 +12900,15 @@ pub fn run() {
         .setup(|app| {
             // File logging (AppDataDir/logs/hq-launcher.log)
             logger::init(&app.handle()).map_err(|e| tauri::Error::Setup(e.into()))?;
+            #[cfg(target_os = "windows")]
+            {
+                let native_overlay_app = app.handle().clone();
+                std::thread::spawn(move || {
+                    if let Err(error) = resolve_native_overlay_dll(&native_overlay_app) {
+                        log::warn!("Failed to resolve native overlay on startup: {error}");
+                    }
+                });
+            }
             if let Err(e) = restore_stale_vanilla_winhttp_backups(app.handle()) {
                 log::warn!("Failed to restore a stale Vanilla Run winhttp.dll backup: {e}");
             }
@@ -11302,6 +12943,8 @@ pub fn run() {
             start_game_overlay_input_hook(app.handle());
             #[cfg(target_os = "windows")]
             start_game_overlay_monitor(app.handle());
+            #[cfg(target_os = "windows")]
+            start_native_overlay_process_monitor(app.handle());
 
             // Startup housekeeping (best-effort, won't block UI):
             // - Disable installed base mods that remote manifest marks as enabled=false

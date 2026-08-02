@@ -39,6 +39,12 @@ html.overlay-window #root {
   background: transparent;
 }
 
+/* Overlay modules may create body-level iframe portals outside React's root.
+   Keep those surfaces below the body-level controls portal while settings are open. */
+html.hq-overlay-controls-open body > iframe {
+  z-index: 2147483000 !important;
+}
+
 .overlay-window .overlay-title {
   margin-bottom: 0.375rem;
   font-size: 0.72rem;

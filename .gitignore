@@ -12,6 +12,7 @@ lerna-debug.log*
 thunderstore/downloads/*
 node_modules
 dist
+dist-embedded-overlay
 dist-ssr
 *.local
 lc-launcher-cache.json
