@@ -97,7 +97,7 @@ const GAME_OVERLAY_MONITOR_INTERVAL_MAX_MS: u64 = 5_000;
 const GAME_OVERLAY_NATIVE_BACKEND_MIGRATION_VERSION: u32 = 1;
 #[cfg(target_os = "windows")]
 const NATIVE_OVERLAY_DOWNLOAD_URL: &str =
-    "https://github.com/P-Asta/hq-overlay/releases/download/v0.0.1/hq_overlay.dll";
+    "https://github.com/P-Asta/hq-overlay/releases/download/v1.0.0/hq_overlay.dll";
 #[cfg(target_os = "windows")]
 const NATIVE_OVERLAY_MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
 #[cfg(target_os = "windows")]

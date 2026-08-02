@@ -2913,8 +2913,11 @@ export default function GameOverlay({ captureOnly = false }) {
         <div className="pointer-events-none fixed inset-0 border-2 border-[var(--theme-accent)]/55 bg-[var(--theme-accent)]/5" />
       ) : null}
 
-      {overlayActive && !captureOnly && openConfigHint && !controlsOpen ? (
-        <div className="pointer-events-none fixed left-1/2 top-8 z-[2147483000] -translate-x-1/2">
+      {overlayActive && !captureOnly && openConfigHint && !controlsOpen && typeof document !== "undefined" ? createPortal(
+        <div
+          className="pointer-events-none fixed left-1/2 top-8 -translate-x-1/2"
+          style={{ zIndex: 2147483646 }}
+        >
           <div className="flex max-w-[min(420px,calc(100vw-2rem))] items-center gap-3 rounded border border-white/15 bg-[#121318]/95 px-4 py-3 text-sm text-white shadow-2xl shadow-black/50 backdrop-blur">
             <Keyboard className="h-4 w-4 shrink-0 text-[var(--theme-accent)]" />
             <div className="min-w-0">
@@ -2925,7 +2928,8 @@ export default function GameOverlay({ captureOnly = false }) {
               <span className="text-white/75"> to open overlay settings</span>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       ) : null}
 
       {overlayActive && controlsOpen && typeof document !== "undefined" ? createPortal(
