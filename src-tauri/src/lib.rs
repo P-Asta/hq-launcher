@@ -1018,12 +1018,10 @@ fn commit_staged_file_replacement(replacement: &StagedFileReplacement) {
 }
 
 #[cfg(target_os = "windows")]
-fn install_native_overlay_update_blocking(
+fn install_native_overlay_update_locked(
     app: &tauri::AppHandle,
+    _install_guard: &std::sync::MutexGuard<'_, ()>,
 ) -> Result<NativeOverlayUpdateInfo, String> {
-    let _install_guard = NATIVE_OVERLAY_INSTALL_LOCK
-        .lock()
-        .map_err(|_| "native overlay install lock poisoned".to_string())?;
     ensure_native_overlay_not_running(app)?;
 
     let client = native_overlay_http_client()?;
@@ -1133,14 +1131,41 @@ fn install_native_overlay_update_blocking(
 }
 
 #[cfg(target_os = "windows")]
+fn install_native_overlay_update_blocking(
+    app: &tauri::AppHandle,
+) -> Result<NativeOverlayUpdateInfo, String> {
+    let install_guard = NATIVE_OVERLAY_INSTALL_LOCK
+        .lock()
+        .map_err(|_| "native overlay install lock poisoned".to_string())?;
+    install_native_overlay_update_locked(app, &install_guard)
+}
+
+#[cfg(target_os = "windows")]
 fn resolve_native_overlay_dll(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let _install_guard = NATIVE_OVERLAY_INSTALL_LOCK
+    let install_guard = NATIVE_OVERLAY_INSTALL_LOCK
         .lock()
         .map_err(|_| "native overlay install lock poisoned".to_string())?;
     let destination = installed_native_overlay_dll_path(app)?;
-    if !destination.is_file() {
-        return Err("HQ Overlay is not installed. Install it from Overlay settings.".to_string());
+    let install_reason = if !destination.is_file() {
+        Some("missing".to_string())
+    } else {
+        validate_x64_pe_dll(&destination)
+            .err()
+            .map(|error| format!("invalid ({error})"))
+    };
+
+    if let Some(reason) = install_reason {
+        set_game_overlay_debug(
+            app,
+            format!("native overlay DLL is {reason}; installing the latest release"),
+        );
+        install_native_overlay_update_locked(app, &install_guard).map_err(|error| {
+            format!(
+                "HQ Overlay DLL is {reason}, and automatic installation of the latest release failed: {error}"
+            )
+        })?;
     }
+
     validate_x64_pe_dll(&destination)?;
     Ok(destination.canonicalize().unwrap_or(destination))
 }
