@@ -17,7 +17,10 @@ const LCSTATS_SSE_URL: &str = "http://localhost:2145/";
 const LCSTATS_RETRY_DELAY: Duration = Duration::from_secs(3);
 const LCSTATS_WRITE_TIMEOUT: Duration = Duration::from_secs(90);
 const LCSTATS_CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
-const LCSTATS_FLUSH_MAX_ATTEMPTS: u32 = 5;
+/// Upper bound for the exponential retry backoff. Once the delay grows past
+/// this it stays capped here, so a persistently failing write is retried
+/// indefinitely at a steady cadence instead of being dropped.
+const LCSTATS_RETRY_BACKOFF_CAP: Duration = Duration::from_secs(300);
 const RECENT_WRITTEN_PAYLOAD_LIMIT: usize = 64;
 const LCSTATS_WRITE_TIMEOUT_ERROR: &str = "Timed out writing LCStatsTracker stats to Google Sheets";
 
@@ -450,11 +453,14 @@ fn payload_fingerprint(raw_payload: &str) -> u64 {
 }
 
 /// Exponential backoff delay for a given retry attempt (1-based). Produces a
-/// 3s, 6s, 12s, 24s, 48s sequence before capping.
+/// 3s, 6s, 12s, 24s, 48s, 96s, ... sequence that caps at
+/// `LCSTATS_RETRY_BACKOFF_CAP` so a persistently failing write is retried
+/// indefinitely at a steady cadence rather than being dropped.
 fn retry_backoff_delay(attempt: u32) -> Duration {
-    let exponent = attempt.saturating_sub(1).min(4) as u32;
+    let exponent = attempt.saturating_sub(1).min(7) as u32;
     let base_secs: u64 = LCSTATS_RETRY_DELAY.as_secs();
-    Duration::from_secs(base_secs.saturating_mul(1u64 << exponent))
+    let delay_secs = base_secs.saturating_mul(1u64 << exponent);
+    Duration::from_secs(delay_secs).min(LCSTATS_RETRY_BACKOFF_CAP)
 }
 
 async fn flush_pending_stats(
@@ -473,19 +479,11 @@ async fn flush_pending_stats(
         let mut entry = entries.remove(0);
         entry.attempts = entry.attempts.saturating_add(1);
 
-        // Once an entry has exhausted its retry budget, drop it so the queue
-        // does not grow without bound when the sheet is permanently broken.
-        if entry.attempts > LCSTATS_FLUSH_MAX_ATTEMPTS {
-            log::error!(
-                "LCStatsTracker AutoSheet request {} dropped after {} retries: permanently failed",
-                entry.request_id,
-                entry.attempts - 1
-            );
-            continue;
-        }
-
         // Back off before a retry so a transient network/Google issue has time
-        // to recover. The first attempt has no delay (attempt == 1).
+        // to recover. The first attempt has no delay (attempt == 1). The delay
+        // grows exponentially up to LCSTATS_RETRY_BACKOFF_CAP, after which the
+        // entry keeps retrying at that capped interval indefinitely — a write
+        // is never dropped while the launcher is running.
         if entry.attempts > 1 {
             let delay = retry_backoff_delay(entry.attempts);
             tokio::time::sleep(delay).await;
