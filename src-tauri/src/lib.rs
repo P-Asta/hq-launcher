@@ -98,15 +98,15 @@ const NATIVE_OVERLAY_RELEASE_MANIFEST_URL: &str =
 const NATIVE_OVERLAY_RELEASE_DOWNLOAD_BASE_URL: &str =
     "https://github.com/P-Asta/hq-overlay/releases/download";
 const NATIVE_OVERLAY_RELEASE_MANIFEST_MAX_DOWNLOAD_BYTES: u64 = 64 * 1024;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const NATIVE_OVERLAY_MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 // Injection starts while Unity's main thread is still suspended. On real
 // launches the first D3D11 Present can arrive well after the DLL has installed
 // its DXGI hooks, so the ready window must cover game startup as well as
 // WebView2 creation and the frontend/module handshake.
 const NATIVE_OVERLAY_READY_TIMEOUT_MS: u32 = 60_000;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const NATIVE_OVERLAY_LOAD_TIMEOUT_MS: u32 = 15_000;
 #[cfg(target_os = "windows")]
 const VK_CONTROL_KEY: i32 = 0x11;
@@ -129,7 +129,7 @@ const VK_LWIN_KEY: i32 = 0x5B;
 #[cfg(target_os = "windows")]
 const VK_RWIN_KEY: i32 = 0x5C;
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 static NATIVE_OVERLAY_INSTALL_LOCK: Mutex<()> = Mutex::new(());
 
 fn manifest_state_has_version(app: &tauri::AppHandle, version: u32) -> bool {
@@ -683,6 +683,225 @@ fn inject_dll_into_process(_pid: u32, _dll_path: &std::path::Path) -> Result<(),
     Err("DLL injection is only supported on Windows".to_string())
 }
 
+/// Resolve the bundled `hq-inject-helper.exe` path.
+///
+/// During development the helper sits under the source tree's resources
+/// directory; in a packaged build it is materialized by Tauri's
+/// `resource_dir()`. We probe both locations and pick the first hit.
+#[cfg(target_os = "linux")]
+fn inject_helper_exe_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    const HELPER_NAME: &str = "hq-inject-helper.exe";
+    // 1. Packaged build: <resource_dir>/native-overlay/<helper>.
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let candidate = resource_dir
+            .join("native-overlay")
+            .join(HELPER_NAME);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    // 2. Development: a few well-known locations relative to the crate.
+    let dev_candidates = [
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("native-overlay")
+            .join(HELPER_NAME),
+        std::path::PathBuf::from("src-tauri/resources/native-overlay").join(HELPER_NAME),
+        std::path::PathBuf::from("resources/native-overlay").join(HELPER_NAME),
+    ];
+    for candidate in dev_candidates {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err(format!(
+        "hq-inject-helper.exe was not found; native overlay injection is unavailable on this platform"
+    ))
+}
+
+/// Locate the Proton/Wine `wine64` binary that will host the helper exe.
+#[cfg(target_os = "linux")]
+fn proton_wine64_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let proton_dir = installer::get_current_proton_dir_impl(app)?
+        .ok_or_else(|| "Proton is not installed; cannot run the Wine inject helper".to_string())?;
+    // Proton-GE layout: <proton>/files/bin/wine64 or <proton>/bin/wine64.
+    for rel in ["files/bin/wine64", "bin/wine64", "files/bin/wine"] {
+        let candidate = proton_dir.join(rel);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err(format!(
+        "could not find a wine binary under {}",
+        proton_dir.display()
+    ))
+}
+
+/// Resolve the `hq_overlay.dll` to inject. On Linux the same Windows DLL that
+/// the Windows path downloads is reused, so we mirror the Windows install
+/// machinery: ensure `<app_data>/hq_overlay.dll` exists (and auto-install when
+/// missing), then validate it.
+#[cfg(target_os = "linux")]
+fn resolve_native_overlay_dll_linux(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let install_guard = NATIVE_OVERLAY_INSTALL_LOCK
+        .lock()
+        .map_err(|_| "native overlay install lock poisoned".to_string())?;
+    let destination = installed_native_overlay_dll_path(app)?;
+    let install_reason = if !destination.is_file() {
+        Some("missing".to_string())
+    } else {
+        validate_x64_pe_dll(&destination)
+            .err()
+            .map(|error| format!("invalid ({error})"))
+    };
+
+    if let Some(reason) = install_reason {
+        set_game_overlay_debug(
+            app,
+            format!("native overlay DLL is {reason}; installing the latest release"),
+        );
+        install_native_overlay_update_locked(app, &install_guard).map_err(|error| {
+            format!(
+                "HQ Overlay DLL is {reason}, and automatic installation of the latest release failed: {error}"
+            )
+        })?;
+    }
+
+    validate_x64_pe_dll(&destination)?;
+    Ok(destination.canonicalize().unwrap_or(destination))
+}
+
+/// Wait for the Wine game process to materialize and return its PID.
+///
+/// `proton run` spawns an intermediate process tree; the actual game
+/// (`Lethal Company.exe`) appears a moment later. We poll `/proc` for up to
+/// ~30 seconds using the existing process-matching heuristics.
+#[cfg(target_os = "linux")]
+fn wait_for_wine_game_pid(
+    app: &tauri::AppHandle,
+    proton_child_pid: u32,
+    version: u32,
+    timeout: std::time::Duration,
+) -> Result<u32, String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        // collect_linux_game_processes matches the version directory and the
+        // STEAM_COMPAT_DATA_PATH prefix, which uniquely identifies this prefix.
+        let pids = collect_linux_game_processes(app, version);
+        // Prefer the lowest matching PID that is not the Proton parent.
+        if let Some(&game_pid) = pids
+            .iter()
+            .filter(|&&pid| pid as u32 != proton_child_pid)
+            .min()
+        {
+            return Ok(game_pid as u32);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for the game process to appear under Proton (watched child pid {proton_child_pid})"
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
+/// Run the bundled `hq-inject-helper.exe` inside the same Wine prefix as the
+/// game so it can `OpenProcess` + `LoadLibraryW` the overlay DLL into it.
+///
+/// Returns the DLL path on success.
+#[cfg(target_os = "linux")]
+fn run_wine_inject_helper(
+    app: &tauri::AppHandle,
+    game_pid: u32,
+    dll_path: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let wine = proton_wine64_path(app)?;
+    let helper = inject_helper_exe_path(app)?;
+    let proton_env = installer::proton_env_dir(app)?;
+    let wine_prefix = proton_env.join("wine_prefix");
+
+    // Wine needs a Windows-style (Z:-mapped or drive_c) path for the DLL so
+    // that LoadLibraryW inside the game resolves it. Reuse the helper's own
+    // Wine process to translate the path via `winepath`.
+    let dll_path_str = dll_path
+        .to_str()
+        .ok_or_else(|| format!("dll path is not utf-8: {}", dll_path.display()))?;
+    let helper_path_str = helper
+        .to_str()
+        .ok_or_else(|| format!("helper path is not utf-8: {}", helper.display()))?;
+
+    let winepath_output = std::process::Command::new(&wine)
+        .arg("winepath")
+        .arg("-w")
+        .arg(dll_path_str)
+        .env("WINEPREFIX", &wine_prefix)
+        .env("WINEDLLOVERRIDES", "mscoree=d;mshtml=d")
+        .output()
+        .map_err(|e| format!("failed to run winepath: {e}"))?;
+    if !winepath_output.status.success() {
+        return Err(format!(
+            "winepath failed to translate the DLL path (exit {:?}): {}",
+            winepath_output.status.code(),
+            String::from_utf8_lossy(&winepath_output.stderr).trim()
+        ));
+    }
+    let windows_dll_path = String::from_utf8_lossy(&winepath_output.stdout)
+        .trim()
+        .to_string();
+    if windows_dll_path.is_empty() {
+        return Err("winepath returned an empty Windows path for the overlay DLL".to_string());
+    }
+
+    let mut cmd = std::process::Command::new(&wine);
+    cmd.arg(helper_path_str)
+        .arg(game_pid.to_string())
+        .arg(&windows_dll_path)
+        .env("WINEPREFIX", &wine_prefix)
+        .env("WINEDLLOVERRIDES", "mscoree=d;mshtml=d")
+        // Keep the prefix consistent with the launch command so the helper
+        // shares the same wineserver as the game.
+        .env("STEAM_COMPAT_DATA_PATH", &wine_prefix);
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("failed to spawn the Wine inject helper: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Wine inject helper exited with code {:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(dll_path.to_path_buf())
+}
+
+/// Top-level Linux native overlay injection: resolve the DLL, wait for the
+/// game process, then drive the Wine helper. Any failure is surfaced to the
+/// caller, which degrades the overlay to legacy/off.
+#[cfg(target_os = "linux")]
+fn try_inject_native_overlay_via_wine(
+    app: &tauri::AppHandle,
+    proton_child_pid: u32,
+    version: u32,
+) -> Result<std::path::PathBuf, String> {
+    let dll_path = resolve_native_overlay_dll_linux(app)?;
+    let game_pid = wait_for_wine_game_pid(
+        app,
+        proton_child_pid,
+        version,
+        std::time::Duration::from_secs(30),
+    )?;
+    run_wine_inject_helper(app, game_pid, &dll_path)
+}
+
+/// Extract the numeric version from a `vNN` version directory name.
+#[cfg(target_os = "linux")]
+fn parse_version_from_dir(path: &std::path::Path) -> Option<u32> {
+    let name = path.file_name()?.to_str()?;
+    let trimmed = name.strip_prefix('v')?;
+    trimmed.parse().ok()
+}
+
 fn validate_x64_pe_dll(path: &Path) -> Result<(), String> {
     let bytes = std::fs::read(path)
         .map_err(|e| format!("failed to read native overlay DLL {}: {e}", path.display()))?;
@@ -821,7 +1040,7 @@ fn parse_installed_native_overlay_version(text: &str) -> Option<NativeOverlayRel
     parse_native_overlay_release_version(&metadata.version).ok()
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn installed_native_overlay_dll_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let app_data = app
         .path()
@@ -830,7 +1049,7 @@ fn installed_native_overlay_dll_path(app: &tauri::AppHandle) -> Result<std::path
     Ok(native_overlay_dll_path_for_app_data(&app_data))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn installed_native_overlay_version_path(
     app: &tauri::AppHandle,
 ) -> Result<std::path::PathBuf, String> {
@@ -841,13 +1060,13 @@ fn installed_native_overlay_version_path(
     Ok(native_overlay_version_path_for_app_data(&app_data))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn read_installed_native_overlay_version(path: &Path) -> Option<NativeOverlayReleaseVersion> {
     let text = std::fs::read_to_string(path).ok()?;
     parse_installed_native_overlay_version(&text)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn native_overlay_http_client() -> Result<reqwest::blocking::Client, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
@@ -857,7 +1076,7 @@ fn native_overlay_http_client() -> Result<reqwest::blocking::Client, String> {
     Ok(client)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn fetch_native_overlay_release(
     client: &reqwest::blocking::Client,
 ) -> Result<NativeOverlayReleaseVersion, String> {
@@ -884,7 +1103,7 @@ fn fetch_native_overlay_release(
     parse_native_overlay_release_version(&manifest.version)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn native_overlay_update_info_for_release(
     app: &tauri::AppHandle,
     release: &NativeOverlayReleaseVersion,
@@ -913,7 +1132,7 @@ fn native_overlay_update_info_for_release(
     })
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn ensure_native_overlay_not_running(app: &tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<GameOverlayState>();
     let native_pid = state.native_pid.load(Ordering::Relaxed);
@@ -931,7 +1150,7 @@ fn ensure_native_overlay_not_running(app: &tauri::AppHandle) -> Result<(), Strin
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 #[derive(Debug)]
 struct StagedFileReplacement {
     destination: std::path::PathBuf,
@@ -939,7 +1158,7 @@ struct StagedFileReplacement {
     had_existing: bool,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn replace_with_staged_file(
     staged: &Path,
     destination: &Path,
@@ -984,7 +1203,7 @@ fn replace_with_staged_file(
     })
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn rollback_staged_file_replacement(replacement: &StagedFileReplacement) -> Result<(), String> {
     if replacement.destination.exists() {
         std::fs::remove_file(&replacement.destination).map_err(|error| {
@@ -1005,7 +1224,7 @@ fn rollback_staged_file_replacement(replacement: &StagedFileReplacement) -> Resu
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn commit_staged_file_replacement(replacement: &StagedFileReplacement) {
     if replacement.had_existing && replacement.backup.exists() {
         if let Err(error) = std::fs::remove_file(&replacement.backup) {
@@ -1017,7 +1236,7 @@ fn commit_staged_file_replacement(replacement: &StagedFileReplacement) {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn install_native_overlay_update_locked(
     app: &tauri::AppHandle,
     _install_guard: &std::sync::MutexGuard<'_, ()>,
@@ -1130,7 +1349,7 @@ fn install_native_overlay_update_locked(
     native_overlay_update_info_for_release(app, &release)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn install_native_overlay_update_blocking(
     app: &tauri::AppHandle,
 ) -> Result<NativeOverlayUpdateInfo, String> {
@@ -1140,7 +1359,7 @@ fn install_native_overlay_update_blocking(
     install_native_overlay_update_locked(app, &install_guard)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn resolve_native_overlay_dll(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let install_guard = NATIVE_OVERLAY_INSTALL_LOCK
         .lock()
@@ -10214,12 +10433,11 @@ fn spawn_game_process(
     let native_process_monitor_mode =
         native_requested && game_overlay_config.general.inject_all_processes;
 
-    #[cfg(not(target_os = "windows"))]
-    if native_requested && requested_backend == GameOverlayBackend::Native {
-        return Err(
-            "Native HQ overlay injection is currently supported only on Windows x64".to_string(),
-        );
-    }
+    // Native HQ overlay injection is attempted on every platform. On Windows
+    // it is performed directly below; on Linux it is delegated to a Wine helper
+    // exe after the Proton process appears (see the non-Windows tail). When the
+    // injection is unavailable the overlay degrades to legacy/off instead of
+    // blocking the game launch.
 
     #[cfg(target_os = "windows")]
     let (mut command, native_dll_path, native_preflight_error, needs_suspended_launch) = {
@@ -10435,23 +10653,24 @@ fn spawn_game_process(
             && launch_backend == GameOverlayBackend::Native
             && !native_process_monitor_mode;
 
-        if strict_native && !native_injected {
-            let error = native_error.unwrap_or_else(|| {
-                "Native HQ overlay injection did not start for an unknown reason".to_string()
-            });
-            set_game_overlay_backend_runtime(
+        // The native overlay DLL could not be injected (missing, corrupt,
+        // network failure during auto-install, etc.). Blocking the game launch
+        // here is worse than running without the overlay: degrade to the legacy
+        // WebView backend when the configured backend allows a fallback
+        // (Auto/Legacy), otherwise turn the overlay off entirely and let the
+        // game proceed. `native_injected` stays false so the shared tail below
+        // takes the no-native branch and owns the transition_lock release.
+        let strict_native_failed = strict_native && !native_injected;
+        if strict_native_failed {
+            set_game_overlay_debug(
                 _app,
-                launch_backend,
-                "off",
-                0,
-                false,
-                native_dll_path.as_deref(),
-                Some(error.clone()),
+                format!(
+                    "Native HQ overlay unavailable ({}); continuing without native overlay",
+                    native_error.as_deref().unwrap_or(
+                        "injection did not start for an unknown reason"
+                    )
+                ),
             );
-            drop(transition_guard);
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
         }
 
         if needs_suspended_launch {
@@ -10689,26 +10908,92 @@ fn spawn_game_process(
 
     #[cfg(not(target_os = "windows"))]
     {
-        let effective_backend = if !game_overlay_config.general.enabled
-            || requested_backend == GameOverlayBackend::Off
-        {
-            "off"
+        let pid = child.id();
+        let mut native_injected = false;
+        let mut native_error: Option<String> = None;
+
+        if native_requested && game_overlay_config.general.enabled {
+            let version = parse_version_from_dir(_version_dir).unwrap_or(0);
+            match try_inject_native_overlay_via_wine(_app, pid, version) {
+                Ok(dll_path) => {
+                    native_injected = true;
+                    set_game_overlay_debug(
+                        _app,
+                        format!(
+                            "native HQ overlay injected via Wine helper into pid {pid} ({})",
+                            dll_path.display()
+                        ),
+                    );
+                }
+                Err(error) => {
+                    native_error = Some(error);
+                }
+            }
+        }
+
+        let overlay_state = _app.state::<GameOverlayState>();
+        let transition_guard = overlay_state
+            .native_transition_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if native_injected {
+            // The Wine helper only guarantees that LoadLibraryW succeeded; the
+            // readiness handshake happens out-of-band once the DLL initializes
+            // its WebView2 surface. Mirror the Windows "pending" state and rely
+            // on the same timeout semantics.
+            set_game_overlay_backend_runtime(
+                _app,
+                requested_backend,
+                "pending",
+                pid,
+                false,
+                None,
+                None,
+            );
+            drop(transition_guard);
         } else {
-            "legacy"
-        };
-        set_game_overlay_backend_runtime(
-            _app,
-            requested_backend,
-            effective_backend,
-            0,
-            false,
-            None,
-            if native_requested {
-                Some("Native HQ overlay is unavailable on this platform; using legacy".to_string())
-            } else {
-                None
-            },
-        );
+            let effective_backend =
+                if !game_overlay_config.general.enabled || requested_backend == GameOverlayBackend::Off
+                {
+                    "off"
+                } else if requested_backend.allows_legacy_fallback() {
+                    "legacy"
+                } else {
+                    "off"
+                };
+            set_game_overlay_backend_runtime(
+                _app,
+                requested_backend,
+                effective_backend,
+                0,
+                false,
+                None,
+                native_error.clone().or_else(|| {
+                    if native_requested {
+                        Some(
+                            "Native HQ overlay injection is not available on this platform; using fallback backend"
+                                .to_string(),
+                        )
+                    } else {
+                        None
+                    }
+                }),
+            );
+            drop(transition_guard);
+            if let Some(error) = native_error {
+                log::warn!("Native HQ overlay Wine injection failed for pid {pid}: {error}");
+                set_game_overlay_debug(
+                    _app,
+                    format!(
+                        "native overlay unavailable ({error}); effective backend={effective_backend}"
+                    ),
+                );
+            }
+            if effective_backend == "legacy" {
+                show_game_overlay(_app);
+            }
+        }
     }
 
     Ok(child)

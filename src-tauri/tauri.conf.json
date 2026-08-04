@@ -40,7 +40,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    
+    "resources": [
+      "resources/native-overlay/hq-inject-helper.exe"
+    ],
     "windows": {
       "webviewInstallMode": {
         "type": "embedBootstrapper"

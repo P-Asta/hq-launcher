@@ -1,0 +1,31 @@
+[package]
+name = "hq-inject-helper"
+version = "0.1.0"
+edition = "2021"
+description = "Wine-side helper that injects hq_overlay.dll into a game process"
+
+# Keep this crate out of the main launcher workspace so it can be built
+# independently with a different (Windows) target triple.
+[workspace]
+
+[[bin]]
+name = "hq-inject-helper"
+path = "src/main.rs"
+
+[dependencies.windows-sys]
+version = "0.61"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+]
+
+[profile.release]
+panic = "abort"
+strip = true
+lto = true
+codegen-units = 1
