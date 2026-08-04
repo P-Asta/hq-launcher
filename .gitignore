@@ -31,3 +31,4 @@ src-tauri/resources/native-overlay/hq-inject-helper.exe
 *.sw?
 .yarn/*
 .yarnrc.yml
+/target
