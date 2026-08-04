@@ -34,9 +34,9 @@ pub async fn write(
     token: &str,
     settings: &LcStatsSettings,
     stats: &Value,
-) -> Result<(), String> {
+) -> Result<Option<crate::lcstats_autosheet::layouts::WriteReceipt>, String> {
     if !settings.layout.eq_ignore_ascii_case(EVILSHEET_LAYOUT) {
-        return Ok(());
+        return Ok(None);
     }
     let spreadsheet_id = settings.spreadsheet_id.trim();
     let source_sheet = settings.active_sheet_name.trim();
@@ -59,7 +59,10 @@ pub async fn write(
 
     let lc_stats = lcstats(stats);
     if lc_stats.is_gordion_moon() {
-        return handle_gordion(client, token, spreadsheet_id, source_sheet, row, &lc_stats).await;
+        handle_gordion(client, token, spreadsheet_id, source_sheet, row, &lc_stats).await?;
+        // Gordion writes to dedicated economy rows, not the day check column, so
+        // there is no check cell to verify.
+        return Ok(None);
     }
 
     let normalized = NormalizedStats::from_stats(&lc_stats);
@@ -85,7 +88,11 @@ pub async fn write(
         &player_columns,
         row,
     )
-    .await
+    .await?;
+    Ok(Some(crate::lcstats_autosheet::layouts::WriteReceipt {
+        row,
+        column: CHECK_COLUMN.to_string(),
+    }))
 }
 
 async fn setup_or_match_player_columns(

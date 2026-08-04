@@ -13,9 +13,9 @@ pub async fn write(
     token: &str,
     settings: &LcStatsSettings,
     stats: &Value,
-) -> Result<(), String> {
+) -> Result<Option<crate::lcstats_autosheet::layouts::WriteReceipt>, String> {
     if !settings.layout.eq_ignore_ascii_case(AUTOSHEETMODEL_LAYOUT) {
-        return Ok(());
+        return Ok(None);
     }
     let spreadsheet_id = settings.spreadsheet_id.trim();
     let sheet_name = settings.active_sheet_name.trim();
@@ -27,6 +27,7 @@ pub async fn write(
     }
 
     let row = process_stats(stats);
+    let mut receipt = None;
     match row.len() {
         1 => {
             let current_sell_count =
@@ -104,9 +105,15 @@ pub async fn write(
                 vec![row],
             )
             .await?;
+            // Only full day rows populate the start column; sell/quota rows are
+            // additive read-modify-write and have no stable check cell.
+            receipt = Some(crate::lcstats_autosheet::layouts::WriteReceipt {
+                row: first_empty_row,
+                column: start_column.clone(),
+            });
         }
     }
-    Ok(())
+    Ok(receipt)
 }
 
 fn process_stats(stats: &Value) -> Vec<Value> {

@@ -14,6 +14,24 @@ use serde_json::Value;
 use crate::google_oauth::LcStatsSettings;
 use crate::lcstats_autosheet::sheets::SheetInfo;
 
+/// Confirmation anchor for a completed sheet write.
+///
+/// Each layout fills a "check column" cell at the row it wrote its day data to
+/// (the same column `first_empty_row_from` scans). Returning this receipt lets
+/// the caller read that exact cell back to verify the write landed, which is
+/// what makes retries safe: if the cell is still empty the write did not
+/// commit and retrying will land on the same row (no duplicate); if it is
+/// populated the write is confirmed and the payload can be finalized.
+///
+/// `None` means the layout had nothing to write for this payload (e.g. an
+/// economy-only event that updates running totals only), so there is no row to
+/// verify.
+#[derive(Debug, Clone)]
+pub struct WriteReceipt {
+    pub row: usize,
+    pub column: String,
+}
+
 pub const AUTOSHEETMODEL_LAYOUT: &str = "AutoSheetModel";
 pub const BREADSHEET_LAYOUT: &str = "BreadSheet";
 pub const CHARLY_AUTOSHEET_LAYOUT: &str = "CharlyAutoSheet";
@@ -43,7 +61,7 @@ pub async fn write_stats(
     client: &reqwest::Client,
     settings: &LcStatsSettings,
     stats: &Value,
-) -> Result<(), String> {
+) -> Result<Option<WriteReceipt>, String> {
     crate::google_oauth::assert_spreadsheet_can_edit(
         app.clone(),
         client,
@@ -53,7 +71,7 @@ pub async fn write_stats(
     let token = crate::google_oauth::access_token(app.clone()).await?;
     let settings = resolve_active_sheet(app.clone(), client, &token, settings).await?;
     match write_stats_for_layout(client, &token, &settings, stats).await {
-        Ok(()) => Ok(()),
+        Ok(receipt) => Ok(receipt),
         Err(error) => {
             let recovered =
                 resolve_active_sheet_for_retry(app, client, &token, settings.clone()).await;
@@ -87,7 +105,7 @@ async fn write_stats_for_layout(
     token: &str,
     settings: &LcStatsSettings,
     stats: &Value,
-) -> Result<(), String> {
+) -> Result<Option<WriteReceipt>, String> {
     if settings.layout.eq_ignore_ascii_case(WAFRODY_LAYOUT) {
         wafrody::write(client, token, settings, stats).await
     } else if settings

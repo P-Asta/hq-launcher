@@ -25,9 +25,9 @@ pub async fn write(
     token: &str,
     settings: &LcStatsSettings,
     stats: &Value,
-) -> Result<(), String> {
+) -> Result<Option<crate::lcstats_autosheet::layouts::WriteReceipt>, String> {
     if !settings.layout.eq_ignore_ascii_case(EVIE_AUTOSHEET_LAYOUT) {
-        return Ok(());
+        return Ok(None);
     }
     let spreadsheet_id = settings.spreadsheet_id.trim();
     let sheet_name = settings.active_sheet_name.trim();
@@ -40,15 +40,18 @@ pub async fn write(
     write_furniture_state(client, token, spreadsheet_id, sheet_name, &payload).await?;
 
     if payload.is_quota_event() {
-        write_new_quota(client, token, spreadsheet_id, sheet_name, &payload).await
+        write_new_quota(client, token, spreadsheet_id, sheet_name, &payload).await?;
+        Ok(None)
     } else if !payload.has_dungeon_info() {
         if payload.value_sold() == 0 {
-            Ok(())
+            Ok(None)
         } else {
-            update_sold_this_quota(client, token, spreadsheet_id, sheet_name, &payload).await
+            update_sold_this_quota(client, token, spreadsheet_id, sheet_name, &payload).await?;
+            Ok(None)
         }
     } else {
-        write_new_day(client, token, spreadsheet_id, sheet_name, stats, &payload).await
+        let receipt = write_new_day(client, token, spreadsheet_id, sheet_name, stats, &payload).await?;
+        Ok(Some(receipt))
     }
 }
 
@@ -142,7 +145,7 @@ async fn write_new_day(
     sheet_name: &str,
     raw_stats: &Value,
     stats: &LcStats,
-) -> Result<(), String> {
+) -> Result<crate::lcstats_autosheet::layouts::WriteReceipt, String> {
     let mut player_row = first_empty_row(
         client,
         token,
@@ -181,7 +184,11 @@ async fn write_new_day(
         spreadsheet_id,
         build_note_requests(sheet_id, stats, stats_row),
     )
-    .await
+    .await?;
+    Ok(crate::lcstats_autosheet::layouts::WriteReceipt {
+        row: stats_row,
+        column: START_STATS_COLUMN.to_string(),
+    })
 }
 
 async fn write_initial_values(

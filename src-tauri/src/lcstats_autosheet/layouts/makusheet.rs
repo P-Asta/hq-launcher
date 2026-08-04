@@ -34,9 +34,9 @@ pub async fn write(
     token: &str,
     settings: &LcStatsSettings,
     stats: &Value,
-) -> Result<(), String> {
+) -> Result<Option<crate::lcstats_autosheet::layouts::WriteReceipt>, String> {
     if !settings.layout.eq_ignore_ascii_case(MAKUSHEET_LAYOUT) {
-        return Ok(());
+        return Ok(None);
     }
     let spreadsheet_id = settings.spreadsheet_id.trim();
     let sheet_name = settings.active_sheet_name.trim();
@@ -46,10 +46,12 @@ pub async fn write(
 
     let lc_stats = lcstats(stats);
     if lc_stats.is_quota_event() {
-        return handle_quota_event(client, token, spreadsheet_id, sheet_name, &lc_stats).await;
+        handle_quota_event(client, token, spreadsheet_id, sheet_name, &lc_stats).await?;
+        return Ok(None);
     }
     if !lc_stats.has_dungeon_info() {
-        return handle_sell_event(client, token, spreadsheet_id, sheet_name, &lc_stats).await;
+        handle_sell_event(client, token, spreadsheet_id, sheet_name, &lc_stats).await?;
+        return Ok(None);
     }
 
     let row = first_empty_row_from(
@@ -62,7 +64,8 @@ pub async fn write(
     )
     .await?;
     if lc_stats.is_gordion_moon() {
-        return handle_sell_event(client, token, spreadsheet_id, sheet_name, &lc_stats).await;
+        handle_sell_event(client, token, spreadsheet_id, sheet_name, &lc_stats).await?;
+        return Ok(None);
     }
     let player_columns =
         setup_or_match_player_columns(client, token, spreadsheet_id, sheet_name, &lc_stats).await?;
@@ -77,7 +80,11 @@ pub async fn write(
         &player_columns,
         row,
     )
-    .await
+    .await?;
+    Ok(Some(crate::lcstats_autosheet::layouts::WriteReceipt {
+        row,
+        column: CHECK_COLUMN.to_string(),
+    }))
 }
 
 async fn handle_quota_event(

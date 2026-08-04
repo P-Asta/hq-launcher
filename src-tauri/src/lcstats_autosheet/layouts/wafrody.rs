@@ -54,9 +54,9 @@ pub async fn write(
     token: &str,
     settings: &LcStatsSettings,
     stats: &Value,
-) -> Result<(), String> {
+) -> Result<Option<crate::lcstats_autosheet::layouts::WriteReceipt>, String> {
     if !settings.layout.eq_ignore_ascii_case(WAFRODY_LAYOUT) {
-        return Ok(());
+        return Ok(None);
     }
     let spreadsheet_id = settings.spreadsheet_id.trim();
     let source_sheet = settings.active_sheet_name.trim();
@@ -89,7 +89,10 @@ pub async fn write(
             &payload,
         )
         .await?;
-        return Ok(());
+        return Ok(Some(crate::lcstats_autosheet::layouts::WriteReceipt {
+            row: target_row,
+            column: CHECK_COLUMN.to_string(),
+        }));
     }
 
     let normalized = NormalizedStats::from_stats(stats, &payload);
@@ -135,7 +138,11 @@ pub async fn write(
         target_row,
         stats,
     )
-    .await
+    .await?;
+    Ok(Some(crate::lcstats_autosheet::layouts::WriteReceipt {
+        row: target_row,
+        column: CHECK_COLUMN.to_string(),
+    }))
 }
 
 async fn setup_or_match_player_columns(

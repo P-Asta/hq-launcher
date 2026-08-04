@@ -15,7 +15,9 @@ use tauri::Emitter;
 
 const LCSTATS_SSE_URL: &str = "http://localhost:2145/";
 const LCSTATS_RETRY_DELAY: Duration = Duration::from_secs(3);
-const LCSTATS_WRITE_TIMEOUT: Duration = Duration::from_secs(45);
+const LCSTATS_WRITE_TIMEOUT: Duration = Duration::from_secs(90);
+const LCSTATS_CONFIRM_TIMEOUT: Duration = Duration::from_secs(30);
+const LCSTATS_FLUSH_MAX_ATTEMPTS: u32 = 5;
 const RECENT_WRITTEN_PAYLOAD_LIMIT: usize = 64;
 const LCSTATS_WRITE_TIMEOUT_ERROR: &str = "Timed out writing LCStatsTracker stats to Google Sheets";
 
@@ -248,37 +250,83 @@ async fn run_listener(app: tauri::AppHandle, state: LcStatsAutosheetState) -> Re
             continue;
         }
 
-        match write_stats_with_timeout(app.clone(), &client, &settings, &stats).await {
-            Ok(()) => {
+        let write_outcome = write_and_confirm(app.clone(), &client, &settings, &stats).await;
+        match write_outcome {
+            WriteOutcome::Confirmed => {
                 log::info!(
                     "LCStatsTracker AutoSheet request {request_id} input complete: layout={}, sheet={}",
                     settings.layout,
                     settings.active_sheet_name
                 );
             }
-            Err(e) => {
-                if is_write_timeout_error(&e) {
+            WriteOutcome::NoReceipt => {
+                // No check cell to verify (e.g. economy-only payload). The write
+                // call itself returned Ok, so treat it as confirmed.
+                log::info!(
+                    "LCStatsTracker AutoSheet request {request_id} input complete (no receipt): layout={}, sheet={}",
+                    settings.layout,
+                    settings.active_sheet_name
+                );
+            }
+            WriteOutcome::Unconfirmed(error) => {
+                // The write either errored or could not be read back, so the
+                // payload is not safely committed. Roll the fingerprint back so
+                // a re-delivery is retried, and queue the write for retry with
+                // backoff. Retrying is safe because the next attempt re-scans
+                // for the first empty row: if the write did land, the scan
+                // moves past it and the retry becomes a no-op confirmation.
+                let _ = unmark_payload_for_write(&state, &payload);
+                log::warn!(
+                    "LCStatsTracker AutoSheet request {request_id} input error: write not confirmed; queued for retry: {error}"
+                );
+                if let Err(queue_error) =
+                    enqueue_pending_stats(&state, request_id, settings, stats, error)
+                {
                     log::error!(
-                        "LCStatsTracker AutoSheet request {request_id} input error: failed to confirm Google Sheets write before timeout; not queued for retry to avoid duplicate rows: {e}"
+                        "LCStatsTracker AutoSheet request {request_id} input error: failed to keep in memory retry queue: {queue_error}"
                     );
                 } else {
-                    log::error!(
-                        "LCStatsTracker AutoSheet request {request_id} input error: failed to write Google Sheets; queued for retry: {e}"
+                    log::info!(
+                        "LCStatsTracker AutoSheet request {request_id} queued for retry"
                     );
-                    if let Err(queue_error) =
-                        enqueue_pending_stats(&state, request_id, settings, stats, e.clone())
-                    {
-                        log::error!(
-                            "LCStatsTracker AutoSheet request {request_id} input error: failed to keep in memory retry queue: {queue_error}"
-                        );
-                    } else {
-                        log::info!(
-                            "LCStatsTracker AutoSheet request {request_id} queued for retry"
-                        );
-                    }
                 }
             }
         }
+    }
+}
+
+/// Outcome of a write + read-back confirmation cycle for one payload.
+enum WriteOutcome {
+    /// The write landed and was verified by reading the check cell back.
+    Confirmed,
+    /// The write returned Ok but produced no check cell (e.g. economy-only
+    /// payload). Nothing to verify, so it is treated as complete.
+    NoReceipt,
+    /// The write failed or could not be confirmed. The payload should be
+    /// retried. Carries the underlying error message.
+    Unconfirmed(String),
+}
+
+/// Write a payload and confirm it landed via a read-back of the layout's check
+/// cell. The confirmation makes retries safe: if the write committed, the next
+/// `first_empty_row_from` scan moves past it, so re-running the same layout
+/// becomes a no-op rather than a duplicate row.
+async fn write_and_confirm(
+    app: tauri::AppHandle,
+    client: &reqwest::Client,
+    settings: &crate::google_oauth::LcStatsSettings,
+    stats: &Value,
+) -> WriteOutcome {
+    match write_stats_with_timeout(app.clone(), client, settings, stats).await {
+        Ok(Some(receipt)) => match confirm_write(app, client, settings, &receipt).await {
+            Ok(true) => WriteOutcome::Confirmed,
+            Ok(false) => {
+                WriteOutcome::Unconfirmed("write check cell was empty after write".to_string())
+            }
+            Err(error) => WriteOutcome::Unconfirmed(format!("failed to confirm write: {error}")),
+        },
+        Ok(None) => WriteOutcome::NoReceipt,
+        Err(error) => WriteOutcome::Unconfirmed(error),
     }
 }
 
@@ -315,7 +363,7 @@ async fn write_stats_with_timeout(
     client: &reqwest::Client,
     settings: &crate::google_oauth::LcStatsSettings,
     stats: &Value,
-) -> Result<(), String> {
+) -> Result<Option<layouts::WriteReceipt>, String> {
     match tokio::time::timeout(
         LCSTATS_WRITE_TIMEOUT,
         layouts::write_stats(app, client, settings, stats),
@@ -324,6 +372,39 @@ async fn write_stats_with_timeout(
     {
         Ok(result) => result,
         Err(_) => Err(LCSTATS_WRITE_TIMEOUT_ERROR.to_string()),
+    }
+}
+
+/// Read back the check cell identified by `receipt` to confirm the write
+/// actually landed on the sheet. Returns `Ok(true)` when the cell is populated
+/// (write confirmed), `Ok(false)` when the cell is still empty (write did not
+/// commit). An HTTP/parse error is surfaced as `Err`.
+async fn confirm_write(
+    app: tauri::AppHandle,
+    client: &reqwest::Client,
+    settings: &crate::google_oauth::LcStatsSettings,
+    receipt: &layouts::WriteReceipt,
+) -> Result<bool, String> {
+    let confirm_result = tokio::time::timeout(
+        LCSTATS_CONFIRM_TIMEOUT,
+        async {
+            let token = crate::google_oauth::access_token(app.clone()).await?;
+            let spreadsheet_id = settings.spreadsheet_id.trim();
+            let sheet_name = settings.active_sheet_name.trim();
+            let cell = format!("{}{}", receipt.column, receipt.row);
+            let value = sheets::read_number(client, &token, spreadsheet_id, sheet_name, &cell)
+                .await
+                .or_else(|_| Ok::<f64, String>(0.0))?;
+            // A populated check cell (non-zero numeric) confirms the write. We
+            // intentionally also treat read failures as "not confirmed" rather
+            // than hard-failing, so the caller queues a safe retry.
+            Ok(value != 0.0)
+        },
+    )
+    .await;
+    match confirm_result {
+        Ok(inner) => inner,
+        Err(_) => Ok(false),
     }
 }
 
@@ -346,14 +427,34 @@ fn mark_payload_for_write(
     Ok(true)
 }
 
+/// Remove a payload's fingerprint from the dedupe ring. Used when a write
+/// could not be confirmed so that a future re-delivery of the same payload is
+/// retried instead of silently suppressed.
+fn unmark_payload_for_write(
+    state: &LcStatsAutosheetState,
+    raw_payload: &str,
+) -> Result<(), String> {
+    let fingerprint = payload_fingerprint(raw_payload);
+    let mut recent = state
+        .recent_written_payloads
+        .lock()
+        .map_err(|e| format!("LCStatsTracker duplicate payload lock failed: {e}"))?;
+    recent.retain(|item| *item != fingerprint);
+    Ok(())
+}
+
 fn payload_fingerprint(raw_payload: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     raw_payload.trim().hash(&mut hasher);
     hasher.finish()
 }
 
-fn is_write_timeout_error(error: &str) -> bool {
-    error == LCSTATS_WRITE_TIMEOUT_ERROR
+/// Exponential backoff delay for a given retry attempt (1-based). Produces a
+/// 3s, 6s, 12s, 24s, 48s sequence before capping.
+fn retry_backoff_delay(attempt: u32) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(4) as u32;
+    let base_secs: u64 = LCSTATS_RETRY_DELAY.as_secs();
+    Duration::from_secs(base_secs.saturating_mul(1u64 << exponent))
 }
 
 async fn flush_pending_stats(
@@ -371,6 +472,25 @@ async fn flush_pending_stats(
     while !entries.is_empty() {
         let mut entry = entries.remove(0);
         entry.attempts = entry.attempts.saturating_add(1);
+
+        // Once an entry has exhausted its retry budget, drop it so the queue
+        // does not grow without bound when the sheet is permanently broken.
+        if entry.attempts > LCSTATS_FLUSH_MAX_ATTEMPTS {
+            log::error!(
+                "LCStatsTracker AutoSheet request {} dropped after {} retries: permanently failed",
+                entry.request_id,
+                entry.attempts - 1
+            );
+            continue;
+        }
+
+        // Back off before a retry so a transient network/Google issue has time
+        // to recover. The first attempt has no delay (attempt == 1).
+        if entry.attempts > 1 {
+            let delay = retry_backoff_delay(entry.attempts);
+            tokio::time::sleep(delay).await;
+        }
+
         log::info!(
             "LCStatsTracker AutoSheet request {} retry {} input ready: layout={}, sheet={}",
             entry.request_id,
@@ -378,24 +498,24 @@ async fn flush_pending_stats(
             entry.settings.layout,
             entry.settings.active_sheet_name
         );
-        match write_stats_with_timeout(app.clone(), client, &entry.settings, &entry.stats).await {
-            Ok(()) => {
+        match write_and_confirm(app.clone(), client, &entry.settings, &entry.stats).await {
+            WriteOutcome::Confirmed | WriteOutcome::NoReceipt => {
                 log::info!(
                     "LCStatsTracker AutoSheet request {} retry {} input complete",
                     entry.request_id,
                     entry.attempts
                 );
             }
-            Err(e) => {
+            WriteOutcome::Unconfirmed(error) => {
                 if entry.attempts == 1 {
                     log::error!(
-                        "LCStatsTracker AutoSheet request {} retry {} input error: {e}",
+                        "LCStatsTracker AutoSheet request {} retry {} input error: {error}",
                         entry.request_id,
                         entry.attempts
                     );
                 } else {
                     log::warn!(
-                        "LCStatsTracker AutoSheet request {} retry {} still could not be completed: {e}",
+                        "LCStatsTracker AutoSheet request {} retry {} still could not be completed: {error}",
                         entry.request_id,
                         entry.attempts
                     );
@@ -403,7 +523,7 @@ async fn flush_pending_stats(
                 remaining.push(entry);
                 remaining.extend(entries);
                 restore_pending_stats(state, remaining)?;
-                return Err(e);
+                return Err(error);
             }
         }
     }

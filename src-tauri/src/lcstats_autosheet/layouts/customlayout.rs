@@ -17,9 +17,9 @@ pub async fn write(
     token: &str,
     settings: &LcStatsSettings,
     stats: &Value,
-) -> Result<(), String> {
+) -> Result<Option<crate::lcstats_autosheet::layouts::WriteReceipt>, String> {
     if !settings.layout.eq_ignore_ascii_case(CUSTOM_LAYOUT) {
-        return Ok(());
+        return Ok(None);
     }
     let spreadsheet_id = settings.spreadsheet_id.trim();
     let sheet_name = settings.active_sheet_name.trim();
@@ -39,7 +39,7 @@ pub async fn write(
     .await?;
     let payload = lcstats(stats);
     if is_economy_moon(&payload) {
-        return handle_economy_event(
+        handle_economy_event(
             client,
             token,
             spreadsheet_id,
@@ -48,7 +48,8 @@ pub async fn write(
             row,
             &payload,
         )
-        .await;
+        .await?;
+        return Ok(None);
     }
 
     let normalized = NormalizedStats::from_stats(stats, &payload, &layout);
@@ -69,7 +70,11 @@ pub async fn write(
         &normalized,
         &layout,
     )
-    .await
+    .await?;
+    Ok(Some(crate::lcstats_autosheet::layouts::WriteReceipt {
+        row,
+        column: layout.check_column.clone(),
+    }))
 }
 
 #[derive(Debug, Clone)]

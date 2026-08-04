@@ -47,9 +47,9 @@ pub async fn write(
     token: &str,
     settings: &LcStatsSettings,
     stats: &Value,
-) -> Result<(), String> {
+) -> Result<Option<crate::lcstats_autosheet::layouts::WriteReceipt>, String> {
     if !settings.layout.eq_ignore_ascii_case(SERENADE_LAYOUT) {
-        return Ok(());
+        return Ok(None);
     }
     let spreadsheet_id = settings.spreadsheet_id.trim();
     let sheet_name = settings.active_sheet_name.trim();
@@ -68,7 +68,9 @@ pub async fn write(
     .await?;
     let lc_stats = lcstats(stats);
     if lc_stats.is_gordion_moon() {
-        return handle_gordion(client, token, spreadsheet_id, sheet_name, row, &lc_stats).await;
+        handle_gordion(client, token, spreadsheet_id, sheet_name, row, &lc_stats).await?;
+        // Gordion writes to dedicated economy rows, not the day check column.
+        return Ok(None);
     }
     let normalized = NormalizedStats::from_stats(&lc_stats);
     batch_write_cells_user_entered(
@@ -79,7 +81,11 @@ pub async fn write(
         build_value_updates(&normalized, row),
     )
     .await?;
-    write_note_cells(client, token, spreadsheet_id, sheet_name, row, &normalized).await
+    write_note_cells(client, token, spreadsheet_id, sheet_name, row, &normalized).await?;
+    Ok(Some(crate::lcstats_autosheet::layouts::WriteReceipt {
+        row,
+        column: CHECK_COLUMN.to_string(),
+    }))
 }
 
 async fn handle_gordion(

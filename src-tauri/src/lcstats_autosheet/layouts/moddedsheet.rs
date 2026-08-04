@@ -22,9 +22,9 @@ pub async fn write(
     token: &str,
     settings: &LcStatsSettings,
     stats: &Value,
-) -> Result<(), String> {
+) -> Result<Option<crate::lcstats_autosheet::layouts::WriteReceipt>, String> {
     if !settings.layout.eq_ignore_ascii_case(MODDEDSHEET_LAYOUT) {
-        return Ok(());
+        return Ok(None);
     }
     let spreadsheet_id = settings.spreadsheet_id.trim();
     let sheet_name = settings.active_sheet_name.trim();
@@ -43,11 +43,13 @@ pub async fn write(
     .await?;
     let lc_stats = lcstats(stats);
     if is_economy_stats(&lc_stats) {
-        return handle_economy(client, token, spreadsheet_id, sheet_name, row, &lc_stats).await;
+        handle_economy(client, token, spreadsheet_id, sheet_name, row, &lc_stats).await?;
+        return Ok(None);
     }
     let stats_kind = stats_kind(&lc_stats);
     if !stats_kind.has_day_stats() {
-        return handle_economy(client, token, spreadsheet_id, sheet_name, row, &lc_stats).await;
+        handle_economy(client, token, spreadsheet_id, sheet_name, row, &lc_stats).await?;
+        return Ok(None);
     }
     let day_row = row;
     let economy_row = economy_row_for_stats(row, stats_kind);
@@ -62,7 +64,11 @@ pub async fn write(
         &mut values,
     )
     .await?;
-    batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, values).await
+    batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, values).await?;
+    Ok(Some(crate::lcstats_autosheet::layouts::WriteReceipt {
+        row: day_row,
+        column: COLLECTED_COLUMN.to_string(),
+    }))
 }
 
 async fn handle_economy(

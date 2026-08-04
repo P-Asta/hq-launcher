@@ -19,9 +19,9 @@ pub async fn write(
     token: &str,
     settings: &LcStatsSettings,
     stats: &Value,
-) -> Result<(), String> {
+) -> Result<Option<crate::lcstats_autosheet::layouts::WriteReceipt>, String> {
     if !settings.layout.eq_ignore_ascii_case(BREADSHEET_LAYOUT) {
-        return Ok(());
+        return Ok(None);
     }
     let spreadsheet_id = settings.spreadsheet_id.trim();
     let sheet_name = settings.active_sheet_name.trim();
@@ -53,9 +53,19 @@ pub async fn write(
     )
     .await?;
     if values.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
-    batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, values).await
+    batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, values).await?;
+    // Only day payloads populate the collected column at target_row; economy
+    // payloads write quota/sold rows only and have no check cell to verify.
+    if include_day {
+        Ok(Some(crate::lcstats_autosheet::layouts::WriteReceipt {
+            row: target_row,
+            column: COLLECTED_COLUMN.to_string(),
+        }))
+    } else {
+        Ok(None)
+    }
 }
 
 fn build_values(
