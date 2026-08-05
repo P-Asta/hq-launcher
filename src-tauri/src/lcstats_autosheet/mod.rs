@@ -11,7 +11,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 const LCSTATS_SSE_URL: &str = "http://localhost:2145/";
 const LCSTATS_RETRY_DELAY: Duration = Duration::from_secs(3);
@@ -214,6 +214,7 @@ async fn run_listener(app: tauri::AppHandle, state: LcStatsAutosheetState) -> Re
             summary.moon_name()
         );
         remember_latest_payload(&state, payload.clone(), stats.clone())?;
+        write_overlay_lcstats_file(&app, &payload);
         emit_overlay_lcstats_update(&app, payload.clone(), stats.clone());
         let settings = match crate::google_oauth::get_settings(app.clone()) {
             Ok(settings) => settings,
@@ -333,6 +334,31 @@ fn emit_overlay_lcstats_update(app: &tauri::AppHandle, raw: String, stats: Value
     });
 
     let _ = app.emit("overlay://lcstats-updated", payload);
+}
+
+/// Persist the latest LCStatsTracker raw payload as a relay file so the native
+/// injected overlay can pick it up via its 1-second config poll. The C# mod's
+/// SSE server (localhost:2145) is a lossy request-per-packet channel that the
+/// launcher reliably wins; this file is the overlay's dependable data source
+/// on top of (not instead of) the SSE stream. The payload is the exact raw
+/// stats JSON the mod emitted over SSE, so no serialization is needed.
+fn write_overlay_lcstats_file(app: &tauri::AppHandle, raw: &str) {
+    let Some(dir) = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|data_dir| data_dir.join("config").join("overlay"))
+    else {
+        return;
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        log::warn!("Failed to create overlay lcstats relay dir: {e}");
+        return;
+    }
+    let path = dir.join("lcstats.json");
+    if let Err(e) = std::fs::write(&path, raw) {
+        log::warn!("Failed to write overlay lcstats relay file: {e}");
+    }
 }
 
 fn remember_latest_payload(
