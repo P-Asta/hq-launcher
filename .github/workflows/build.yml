@@ -94,18 +94,6 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev
 
-      - name: Build inject-helper (Linux cross-compile)
-        if: matrix.platform == 'ubuntu-latest'
-        run: |
-          cargo build --release --manifest-path src-tauri/inject-helper/Cargo.toml --target x86_64-pc-windows-gnu
-          cp src-tauri/inject-helper/target/x86_64-pc-windows-gnu/release/hq-inject-helper.exe src-tauri/resources/native-overlay/hq-inject-helper.exe
-
-      - name: Build inject-helper (Windows native)
-        if: matrix.platform == 'windows-latest'
-        run: |
-          cargo build --release --manifest-path src-tauri/inject-helper/Cargo.toml
-          cp src-tauri/inject-helper/target/release/hq-inject-helper.exe src-tauri/resources/native-overlay/hq-inject-helper.exe
-
       - name: Install frontend dependencies
         run: yarn install
 

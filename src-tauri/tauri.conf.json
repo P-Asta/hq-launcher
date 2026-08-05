@@ -41,7 +41,9 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/native-overlay/hq-inject-helper.exe"
+      "resources/native-overlay/hq-inject-helper.exe",
+      "resources/native-overlay/hq_overlay.dll",
+      "resources/native-overlay/THIRD_PARTY_NOTICES.md"
     ],
     "windows": {
       "webviewInstallMode": {

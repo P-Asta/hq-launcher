@@ -16,8 +16,8 @@ dist-embedded-overlay
 dist-ssr
 *.local
 lc-launcher-cache.json
-# The inject helper exe is cross-compiled in CI and staged into resources;
-# never commit a locally built copy.
+# The inject helper exe is auto-built and staged into resources by build.rs
+# (Windows native or x86_64-pc-windows-gnu cross-compile); never commit a copy.
 src-tauri/resources/native-overlay/hq-inject-helper.exe
 # Editor directories and files
 .vscode/*

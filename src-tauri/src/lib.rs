@@ -691,32 +691,92 @@ fn inject_dll_into_process(_pid: u32, _dll_path: &std::path::Path) -> Result<(),
 #[cfg(target_os = "linux")]
 fn inject_helper_exe_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     const HELPER_NAME: &str = "hq-inject-helper.exe";
-    // 1. Packaged build: <resource_dir>/native-overlay/<helper>.
+
+    // Collect every candidate location the bundled helper could live in.
+    // On Linux, Tauri's `resource_dir()` is not always reliable across
+    // AppImage/deb layouts, so we also probe a few well-known relative paths
+    // and stage a private copy in app_data as a dependable fallback.
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(resource_dir) = app.path().resource_dir() {
-        let candidate = resource_dir
-            .join("native-overlay")
-            .join(HELPER_NAME);
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
+        candidates.push(resource_dir.join("native-overlay").join(HELPER_NAME));
     }
-    // 2. Development: a few well-known locations relative to the crate.
-    let dev_candidates = [
+    candidates.push(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("resources")
             .join("native-overlay")
             .join(HELPER_NAME),
-        std::path::PathBuf::from("src-tauri/resources/native-overlay").join(HELPER_NAME),
-        std::path::PathBuf::from("resources/native-overlay").join(HELPER_NAME),
-    ];
-    for candidate in dev_candidates {
+    );
+    candidates.push(std::path::PathBuf::from("src-tauri/resources/native-overlay").join(HELPER_NAME));
+    candidates.push(std::path::PathBuf::from("resources/native-overlay").join(HELPER_NAME));
+
+    // Return the first bundled copy that exists.
+    for candidate in &candidates {
         if candidate.is_file() {
-            return Ok(candidate);
+            return Ok(stage_helper_into_app_data(app, candidate, HELPER_NAME));
         }
     }
+
+    // Fallback: a previously staged copy may still exist in app_data even if
+    // every bundle location is currently unreachable (e.g. an AppImage whose
+    // mount moved). Use it directly.
+    if let Some(staged) = staged_helper_in_app_data(app, HELPER_NAME) {
+        if staged.is_file() {
+            return Ok(staged);
+        }
+    }
+
     Err(format!(
         "hq-inject-helper.exe was not found; native overlay injection is unavailable on this platform"
     ))
+}
+
+/// Return the private, stable copy of the helper in app_data, if resolvable.
+#[cfg(target_os = "linux")]
+fn staged_helper_in_app_data(app: &tauri::AppHandle, helper_name: &str) -> Option<std::path::PathBuf> {
+    let app_data = app.path().app_data_dir().ok()?;
+    Some(app_data.join("native-overlay").join(helper_name))
+}
+
+/// Copy the bundled helper into app_data so subsequent runs can find it even
+/// when the bundle layout (resource_dir / AppImage mount) is unreliable.
+/// Returns the staged path; on any staging failure the original source is used.
+#[cfg(target_os = "linux")]
+fn stage_helper_into_app_data(
+    app: &tauri::AppHandle,
+    source: &std::path::Path,
+    helper_name: &str,
+) -> std::path::PathBuf {
+    let Some(destination) = staged_helper_in_app_data(app, helper_name) else {
+        return source.to_path_buf();
+    };
+    // Only restage when the staged copy is missing or differs in size, to avoid
+    // touching the filesystem on every injection attempt.
+    let needs_copy = match std::fs::metadata(&destination) {
+        Ok(meta) => meta.len() != std::fs::metadata(source).map(|m| m.len()).unwrap_or(0),
+        Err(_) => true,
+    };
+    if needs_copy {
+        if let Some(parent) = destination.parent() {
+            if std::fs::create_dir_all(parent).is_err() {
+                return source.to_path_buf();
+            }
+        }
+        if std::fs::copy(source, &destination).is_err() {
+            return source.to_path_buf();
+        }
+        // Best-effort executable bit; Wine needs the file readable, and chmod
+        // is harmless on the Windows PE payload.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(&destination) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o755);
+                let _ = std::fs::set_permissions(&destination, perms);
+            }
+        }
+    }
+    destination
 }
 
 /// Locate the Proton/Wine `wine64` binary that will host the helper exe.
@@ -756,15 +816,26 @@ fn resolve_native_overlay_dll_linux(app: &tauri::AppHandle) -> Result<std::path:
     };
 
     if let Some(reason) = install_reason {
-        set_game_overlay_debug(
-            app,
-            format!("native overlay DLL is {reason}; installing the latest release"),
-        );
-        install_native_overlay_update_locked(app, &install_guard).map_err(|error| {
-            format!(
-                "HQ Overlay DLL is {reason}, and automatic installation of the latest release failed: {error}"
-            )
-        })?;
+        // Prefer the bundled copy over a network download so the overlay works
+        // offline and on first launch without connectivity.
+        if stage_bundled_dll_to_app_data(app, &destination)?.is_some()
+            && validate_x64_pe_dll(&destination).is_ok()
+        {
+            set_game_overlay_debug(
+                app,
+                format!("native overlay DLL was {reason}; staged from bundled copy"),
+            );
+        } else {
+            set_game_overlay_debug(
+                app,
+                format!("native overlay DLL is {reason}; installing the latest release"),
+            );
+            install_native_overlay_update_locked(app, &install_guard).map_err(|error| {
+                format!(
+                    "HQ Overlay DLL is {reason}, and automatic installation of the latest release failed: {error}"
+                )
+            })?;
+        }
     }
 
     validate_x64_pe_dll(&destination)?;
@@ -1359,6 +1430,63 @@ fn install_native_overlay_update_blocking(
     install_native_overlay_update_locked(app, &install_guard)
 }
 
+/// Try to copy the bundled `hq_overlay.dll` (shipped in `resources/native-overlay/`)
+/// into app_data so it can be injected without a network download. Returns
+/// `Ok(Some(path))` when the bundled copy was staged successfully, `Ok(None)`
+/// when no usable bundled copy exists, or `Err` on a hard failure.
+///
+/// This is tried before falling back to the GitHub release download so the
+/// overlay works offline and does not depend on the user's first launch being
+/// online. Only (re)stages when the destination is missing or differs in size.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn stage_bundled_dll_to_app_data(
+    app: &tauri::AppHandle,
+    destination: &Path,
+) -> Result<Option<std::path::PathBuf>, String> {
+    const DLL_NAME: &str = "hq_overlay.dll";
+
+    // Locate the bundled DLL across all known layouts. resource_dir() is the
+    // canonical packaged location; the dev paths cover cargo run / cargo tauri dev.
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("native-overlay").join(DLL_NAME));
+    }
+    candidates.push(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("native-overlay")
+            .join(DLL_NAME),
+    );
+    candidates.push(std::path::PathBuf::from("resources/native-overlay").join(DLL_NAME));
+    candidates.push(std::path::PathBuf::from("src-tauri/resources/native-overlay").join(DLL_NAME));
+
+    let Some(source) = candidates.into_iter().find(|candidate| candidate.is_file()) else {
+        return Ok(None);
+    };
+    // Validate the bundled copy before trusting it; a corrupt/placeholder
+    // bundle must not clobber a working downloaded copy.
+    if validate_x64_pe_dll(&source).is_err() {
+        return Ok(None);
+    }
+
+    let needs_copy = match std::fs::metadata(destination) {
+        Ok(meta) => {
+            meta.len() != std::fs::metadata(&source).map(|m| m.len()).unwrap_or(0)
+        }
+        Err(_) => true,
+    };
+    if !needs_copy {
+        return Ok(Some(destination.to_path_buf()));
+    }
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create native overlay dir: {error}"))?;
+    }
+    std::fs::copy(&source, destination)
+        .map_err(|error| format!("failed to stage bundled overlay DLL: {error}"))?;
+    Ok(Some(destination.to_path_buf()))
+}
+
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn resolve_native_overlay_dll(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let install_guard = NATIVE_OVERLAY_INSTALL_LOCK
@@ -1374,15 +1502,26 @@ fn resolve_native_overlay_dll(app: &tauri::AppHandle) -> Result<std::path::PathB
     };
 
     if let Some(reason) = install_reason {
-        set_game_overlay_debug(
-            app,
-            format!("native overlay DLL is {reason}; installing the latest release"),
-        );
-        install_native_overlay_update_locked(app, &install_guard).map_err(|error| {
-            format!(
-                "HQ Overlay DLL is {reason}, and automatic installation of the latest release failed: {error}"
-            )
-        })?;
+        // Prefer the bundled copy over a network download so the overlay works
+        // offline and on first launch without connectivity.
+        if stage_bundled_dll_to_app_data(app, &destination)?.is_some()
+            && validate_x64_pe_dll(&destination).is_ok()
+        {
+            set_game_overlay_debug(
+                app,
+                format!("native overlay DLL was {reason}; staged from bundled copy"),
+            );
+        } else {
+            set_game_overlay_debug(
+                app,
+                format!("native overlay DLL is {reason}; installing the latest release"),
+            );
+            install_native_overlay_update_locked(app, &install_guard).map_err(|error| {
+                format!(
+                    "HQ Overlay DLL is {reason}, and automatic installation of the latest release failed: {error}"
+                )
+            })?;
+        }
     }
 
     validate_x64_pe_dll(&destination)?;
