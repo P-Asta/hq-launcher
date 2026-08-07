@@ -1675,6 +1675,7 @@ export default function LauncherPage({
   const [nativeOverlayUpdate, setNativeOverlayUpdate] = useState(null);
   const [nativeOverlayInstalling, setNativeOverlayInstalling] = useState(false);
   const [nativeOverlayUpdateError, setNativeOverlayUpdateError] = useState("");
+  const nativeOverlayCheckRequestRef = useRef(0);
 
   const [gameStatus, setGameStatus] = useState({ running: false, pid: null });
   const [runningGamesDialogOpen, setRunningGamesDialogOpen] = useState(false);
@@ -3489,6 +3490,18 @@ export default function LauncherPage({
     void refreshNativeOverlayUpdate();
   }, []);
 
+  useEffect(() => {
+    if (!didFinishBootstrap) return;
+    const version = Number(selectedVersion);
+    if (!Number.isFinite(version) || !isInstalled(version)) {
+      setNativeOverlayUpdate(null);
+      return;
+    }
+    // Do not carry the previous game's proxy status across version changes.
+    setNativeOverlayUpdate(null);
+    void refreshNativeOverlayUpdate(version);
+  }, [didFinishBootstrap, installedVersions, isInstalled, selectedVersion]);
+
   // If link/unlink is triggered from the Titlebar while config UI is open,
   // force-refresh config lists + active file immediately.
   useEffect(() => {
@@ -3702,12 +3715,15 @@ export default function LauncherPage({
   }
 
   async function refreshNativeOverlayUpdate(version = selectedVersion) {
+    const requestId = ++nativeOverlayCheckRequestRef.current;
     try {
       const numericVersion = Number(version);
       const info = await invoke("check_native_overlay_update", {
         version: Number.isFinite(numericVersion) ? numericVersion : null,
       });
-      setNativeOverlayUpdate(info ?? null);
+      if (requestId === nativeOverlayCheckRequestRef.current) {
+        setNativeOverlayUpdate(info ?? null);
+      }
       return info;
     } catch (error) {
       console.warn("Failed to check the HQ Overlay version", error);
