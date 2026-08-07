@@ -884,40 +884,21 @@ export default function Titlebar({ installedVersions, ...props }) {
                                                 </Select>
                                             </div>
                                              <div className="mt-3 rounded-md bg-black/20 px-3 py-2 text-xs leading-5 text-white/45">
-                                                 Native uses <span className="font-mono text-white/65">hq_overlay.dll</span> under <span className="font-mono text-white/65">AppData/Roaming/asta.hq-launcher</span>, hosts the same HTML overlay UI inside the game, and loads <span className="font-mono text-white/65">overlayModule/*.js</span> without BepInEx.
+                                                 Native loads the overlay as a <span className="font-mono text-white/65">version.dll</span> proxy inside the game directory, hosts the same HTML overlay UI inside the game, and loads <span className="font-mono text-white/65">overlayModule/*.js</span> without BepInEx.
                                              </div>
                                         </div>
 
                                         <div className="rounded-lg border border-panel-outline p-4">
                                             <div className="flex items-start justify-between gap-4">
                                                 <div className="min-w-0">
-                                                    <div className="text-sm font-semibold text-white">Inject All Lethal Company Processes</div>
+                                                    <div className="text-sm font-semibold text-white">All Lethal Company Launches</div>
                                                     <div className="mt-1 text-sm leading-5 text-white/55">
-                                                        Watches for every running Lethal Company process and injects the Native overlay, including games started outside HQLC. Off by default.
+                                                        The Native overlay is loaded as a <span className="font-mono text-white/65">version.dll</span> proxy inside the game directory, so it activates automatically for every launch from that version folder — including games started outside HQLC.
                                                     </div>
                                                 </div>
-                                                <Switch
-                                                    checked={gameOverlayConfig.general?.inject_all_processes === true}
-                                                    disabled={steamOverlayBusy
-                                                        || gameOverlayConfig.general?.enabled === false
-                                                        || gameOverlayConfig.general?.backend !== "native"}
-                                                    onCheckedChange={(checked) => {
-                                                        const nextGameOverlayConfig = {
-                                                            ...gameOverlayConfig,
-                                                            general: {
-                                                                ...(gameOverlayConfig.general ?? {}),
-                                                                inject_all_processes: checked,
-                                                            },
-                                                        };
-                                                        setGameOverlayConfig(nextGameOverlayConfig);
-                                                        setSteamOverlaySaved("");
-                                                        void persistOverlaySettings(steamOverlayConfig, nextGameOverlayConfig);
-                                                    }}
-                                                    aria-label="Inject all Lethal Company processes"
-                                                />
                                             </div>
                                             <div className="mt-3 rounded-md bg-black/20 px-3 py-2 text-xs leading-5 text-white/45">
-                                                Turning this off disables overlays already managed by the watcher. Relaunch the game before enabling Native again in that process.
+                                                No watcher or per-process injection is used. Reinstall or update the overlay to refresh the proxy for every installed version.
                                             </div>
                                         </div>
 

@@ -152,12 +152,33 @@ async fn setup_or_match_player_columns(
         }
         batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, updates).await?;
     } else {
+        let mut updates = vec![];
         for player in players {
-            if let Some(column) = existing_slots.get(&normalize_player_name_key(&player.stats.name))
+            if let Some(column) =
+                existing_slots.get(&normalize_player_name_key(&player.stats.name))
             {
                 player_columns.insert(player.steam_id, column.clone());
+                if let Some((index, _)) = PLAYER_STATE_COLUMNS
+                    .iter()
+                    .enumerate()
+                    .find(|(_, candidate)| **candidate == column.as_str())
+                {
+                    let current_name = existing_row
+                        .get(index)
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .trim();
+                    if current_name.is_empty() {
+                        updates.push((
+                            PLAYER_NAME_COLUMNS[index].to_string(),
+                            PLAYER_NAME_ROW,
+                            json!(strip_apostrophe(&player.stats.name)),
+                        ));
+                    }
+                }
             }
         }
+        batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, updates).await?;
     }
 
     Ok(player_columns)

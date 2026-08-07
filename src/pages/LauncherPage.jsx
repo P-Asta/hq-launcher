@@ -3302,6 +3302,9 @@ export default function LauncherPage({
           refreshInstalledModVersions(v);
           refreshConfigLinkState(v);
         }
+        // The unified update flow may have installed an overlay update too;
+        // refresh the overlay state so the UI no longer shows it as pending.
+        void refreshNativeOverlayUpdate();
       });
       unlistenError = await listen("download://error", (event) => {
         // If practice setup fails, keep the modal open and show the error.
@@ -3441,6 +3444,9 @@ export default function LauncherPage({
           invoke("list_installed_versions")
             .then((v) => updateInstalledVersionsState(v))
             .catch(() => {});
+          // Refresh overlay update info so the unified check reflects overlay
+          // availability alongside mod updates.
+          void refreshNativeOverlayUpdate();
         }
       );
       unlistenCheckUpdateError = await listen("updatable://error", (event) => {
@@ -6544,10 +6550,13 @@ export default function LauncherPage({
       ? checkUpdateTask.updatable_mods
       : []
     : [];
+  const hasNativeOverlayUpdate =
+    nativeOverlayUpdate?.supported !== false &&
+    nativeOverlayUpdate?.available === true;
   const hasSelectedVersionUpdates =
     checkUpdateTask.status === "done" &&
     checkUpdateMatchesSelectedRun &&
-    selectedRunUpdatableMods.length > 0;
+    (selectedRunUpdatableMods.length > 0 || hasNativeOverlayUpdate);
 
   return (
     <div className="h-full bg-[var(--theme-bg)] text-white">
@@ -6868,41 +6877,19 @@ export default function LauncherPage({
               }
               setCheckUpdatePrompt({ open: true, mods: filteredMods });
             }}
-            title="Check mod updates"
+            title="Check for updates"
           >
             <span className="relative inline-flex">
               <Download className="h-4 w-4" />
               {checkUpdateTask.status === "done" &&
               checkUpdateMatchesSelectedRun &&
-              selectedRunUpdatableMods.length > 0 ? (
+              (selectedRunUpdatableMods.length > 0 || hasNativeOverlayUpdate) ? (
                 <span className="absolute -right-2 -top-2 rounded-full bg-amber-400 px-1.5 py-0.5 text-[10px] font-bold text-black">
-                  {selectedRunUpdatableMods.length}
+                  {selectedRunUpdatableMods.length + (hasNativeOverlayUpdate ? 1 : 0)}
                 </span>
               ) : null}
             </span>
           </Button>}
-          {nativeOverlayUpdate?.supported !== false && nativeOverlayUpdate?.available === true && (
-            <Button
-              variant="secondary"
-              className="h-11 shrink-0 bg-[var(--theme-surface)] hover:bg-white/[0.07]"
-              disabled={nativeOverlayInstalling}
-              onClick={() => {
-                void installNativeOverlayUpdate();
-              }}
-              title={`HQ Overlay ${nativeOverlayUpdate.installed ? "update" : "install"}: ${nativeOverlayUpdate.current_version ?? "not installed"} → ${nativeOverlayUpdate.latest_version ?? "latest"}`}
-            >
-              {nativeOverlayInstalling ? (
-                <RefreshCw className="h-4 w-4 animate-spin" />
-              ) : (
-                <Download className="h-4 w-4" />
-              )}
-              {nativeOverlayInstalling
-                ? "Installing Overlay..."
-                : nativeOverlayUpdate.installed
-                  ? "Update Overlay"
-                  : "Install Overlay"}
-            </Button>
-          )}
           {loginState?.username != null && <div className="ml-2 flex items-center gap-2">
             <Button
               variant="ghost"
@@ -8314,8 +8301,22 @@ export default function LauncherPage({
               <div className="min-w-0">
                 <div className="text-lg font-semibold">
                   {checkUpdateTask.status === "done"
-                    ? `${selectedRunUpdatableMods.length} mods can be updated`
-                    : "Checking mod versions..."}
+                    ? (() => {
+                        const overlayAvailable =
+                          nativeOverlayUpdate?.supported !== false &&
+                          nativeOverlayUpdate?.available === true;
+                        const modCount = selectedRunUpdatableMods.length;
+                        if (modCount === 0 && overlayAvailable) {
+                          return "HQ Overlay update available";
+                        }
+                        if (modCount === 0) {
+                          return "Everything is up to date";
+                        }
+                        return overlayAvailable
+                          ? `${modCount} mods + HQ Overlay can be updated`
+                          : `${modCount} mods can be updated`;
+                      })()
+                    : "Checking for updates..."}
                 </div>
               </div>
             </div>
@@ -8346,10 +8347,22 @@ export default function LauncherPage({
               </div>
             )}
             {checkUpdateTask.status === "done" && (
-              <div className="mt-4 text-sm text-white/50">
+              <div className="mt-4 space-y-1 text-sm text-white/50">
                 {selectedRunUpdatableMods.map((mod, index) => (
                   <div key={index}>{mod}</div>
                 ))}
+                {nativeOverlayUpdate?.supported !== false &&
+                  nativeOverlayUpdate?.available === true && (
+                    <div key="hq-overlay">
+                      HQ Overlay: {nativeOverlayUpdate.current_version ?? "not installed"}{" "}
+                      &rarr; {nativeOverlayUpdate.latest_version ?? "latest"}
+                    </div>
+                  )}
+                {selectedRunUpdatableMods.length === 0 &&
+                  !(
+                    nativeOverlayUpdate?.supported !== false &&
+                    nativeOverlayUpdate?.available === true
+                  ) && <div>Everything is up to date</div>}
               </div>
             )}
 
@@ -8378,7 +8391,13 @@ export default function LauncherPage({
                     <Button
                       variant="default"
                       className="h-10 min-w-[120px]"
-                      disabled={selectedRunUpdatableMods.length === 0}
+                      disabled={
+                        selectedRunUpdatableMods.length === 0 &&
+                        !(
+                          nativeOverlayUpdate?.supported !== false &&
+                          nativeOverlayUpdate?.available === true
+                        )
+                      }
                       onClick={() => {
                         setCheckUpdatePrompt({ open: false, mods: [] });
                         runModUpdate(checkUpdateTask.version ?? selectedVersion);

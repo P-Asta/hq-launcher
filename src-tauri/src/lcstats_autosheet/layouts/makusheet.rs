@@ -247,6 +247,12 @@ async fn setup_or_match_player_columns(
         batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, updates).await?;
     } else {
         let mut updates = vec![];
+        let used_columns: std::collections::HashSet<&str> =
+            existing_slots.values().map(String::as_str).collect();
+        let mut free_columns = PLAYER_COLUMNS
+            .iter()
+            .filter(|column| !used_columns.contains(**column))
+            .copied();
         for player in &players {
             if let Some(column) = existing_slots.get(&player.steam_id) {
                 player_columns.insert(player.steam_id.clone(), column.clone());
@@ -268,6 +274,17 @@ async fn setup_or_match_player_columns(
                         ));
                     }
                 }
+            } else if let Some(column) = free_columns.next() {
+                // Seed a newly seen steam_id into an unused player column so its
+                // name/status land instead of being dropped because it wasn't
+                // present on the very first run.
+                player_columns.insert(player.steam_id.clone(), column.to_string());
+                updates.push((column.to_string(), PLAYER_ID_ROW, json!(player.steam_id)));
+                updates.push((
+                    column.to_string(),
+                    PLAYER_NAME_ROW,
+                    json!(uppercase_text(&player.stats.name)),
+                ));
             }
         }
         batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, updates).await?;

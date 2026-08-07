@@ -40,9 +40,9 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Module32FirstW, Module32NextW, Process32FirstW, Process32NextW,
-    Thread32First, Thread32Next, MODULEENTRY32W, PROCESSENTRY32W, TH32CS_SNAPMODULE,
-    TH32CS_SNAPMODULE32, TH32CS_SNAPPROCESS, TH32CS_SNAPTHREAD, THREADENTRY32,
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW,
+    Thread32First, Thread32Next, PROCESSENTRY32W,
+    TH32CS_SNAPPROCESS, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
@@ -52,7 +52,7 @@ use windows_sys::Win32::System::Memory::{
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, CreateRemoteThread, GetCurrentProcessId, GetExitCodeThread, OpenEventW,
+    CreateEventW, CreateRemoteThread, OpenEventW,
     OpenProcess, OpenThread, QueryFullProcessImageNameW, ResumeThread, SetEvent,
     WaitForSingleObject, EVENT_MODIFY_STATE, INFINITE, PROCESS_CREATE_THREAD,
     PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_OPERATION,
@@ -106,8 +106,6 @@ const NATIVE_OVERLAY_MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
 // its DXGI hooks, so the ready window must cover game startup as well as
 // WebView2 creation and the frontend/module handshake.
 const NATIVE_OVERLAY_READY_TIMEOUT_MS: u32 = 60_000;
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-const NATIVE_OVERLAY_LOAD_TIMEOUT_MS: u32 = 15_000;
 #[cfg(target_os = "windows")]
 const VK_CONTROL_KEY: i32 = 0x11;
 #[cfg(target_os = "windows")]
@@ -400,401 +398,9 @@ fn inject_dll_into_process(pid: u32, dll_path: &std::path::Path) -> Result<(), S
     result
 }
 
-#[cfg(any(target_os = "windows", test))]
-fn relocate_address_within_module(
-    local_base: usize,
-    local_size: usize,
-    remote_base: usize,
-    local_address: usize,
-) -> Option<usize> {
-    let offset = local_address.checked_sub(local_base)?;
-    if offset >= local_size {
-        return None;
-    }
-    remote_base.checked_add(offset)
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Debug)]
-struct WindowsProcessModule {
-    name: String,
-    base: usize,
-    size: usize,
-}
-
-#[cfg(target_os = "windows")]
-fn windows_process_modules(pid: u32) -> Result<Vec<WindowsProcessModule>, String> {
-    let snapshot =
-        unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid) };
-    if snapshot == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
-        return Err(format!(
-            "failed to enumerate modules for process {pid} (Win32 error {})",
-            unsafe { GetLastError() }
-        ));
-    }
-
-    let result = (|| {
-        let mut entry = MODULEENTRY32W {
-            dwSize: std::mem::size_of::<MODULEENTRY32W>() as u32,
-            ..Default::default()
-        };
-        if unsafe { Module32FirstW(snapshot, &mut entry) } == 0 {
-            return Err(format!(
-                "failed to read the first module for process {pid} (Win32 error {})",
-                unsafe { GetLastError() }
-            ));
-        }
-
-        let mut modules = Vec::new();
-        loop {
-            let name_len = entry
-                .szModule
-                .iter()
-                .position(|value| *value == 0)
-                .unwrap_or(entry.szModule.len());
-            modules.push(WindowsProcessModule {
-                name: String::from_utf16_lossy(&entry.szModule[..name_len]),
-                base: entry.modBaseAddr as usize,
-                size: entry.modBaseSize as usize,
-            });
-            if unsafe { Module32NextW(snapshot, &mut entry) } == 0 {
-                break;
-            }
-        }
-        Ok(modules)
-    })();
-
-    unsafe { CloseHandle(snapshot) };
-    result
-}
-
-#[cfg(target_os = "windows")]
-fn remote_address_for_local_function(pid: u32, local_address: usize) -> Result<usize, String> {
-    let local_modules = windows_process_modules(unsafe { GetCurrentProcessId() })?;
-    let local_module = local_modules
-        .iter()
-        .find(|module| {
-            local_address >= module.base
-                && local_address - module.base < module.size
-        })
-        .ok_or_else(|| {
-            format!(
-                "could not identify the local module containing function address 0x{local_address:x}"
-            )
-        })?;
-    let remote_modules = windows_process_modules(pid)?;
-    let remote_module = remote_modules
-        .iter()
-        .find(|module| module.name.eq_ignore_ascii_case(&local_module.name))
-        .ok_or_else(|| {
-            format!(
-                "target process {pid} does not contain required module {}",
-                local_module.name
-            )
-        })?;
-
-    relocate_address_within_module(
-        local_module.base,
-        local_module.size,
-        remote_module.base,
-        local_address,
-    )
-    .ok_or_else(|| {
-        format!(
-            "failed to relocate function address from {} into process {pid}",
-            local_module.name
-        )
-    })
-}
-
-#[cfg(target_os = "windows")]
-fn inject_native_overlay_dll_into_process(
-    pid: u32,
-    dll_path: &std::path::Path,
-) -> Result<(), String> {
-    use std::ptr::{null, null_mut};
-
-    // Keep the legacy Steam/BepInEx injector above byte-compatible and use a
-    // dedicated wide-character path for hq_overlay.dll. Windows user/profile
-    // paths are not guaranteed to be representable by LoadLibraryA.
-    let dll_path_wide: Vec<u16> = dll_path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let process = unsafe {
-        OpenProcess(
-            PROCESS_CREATE_THREAD
-                | PROCESS_QUERY_INFORMATION
-                | PROCESS_VM_OPERATION
-                | PROCESS_VM_WRITE
-                | PROCESS_VM_READ,
-            0,
-            pid,
-        )
-    };
-    if process.is_null() {
-        return Err(format!(
-            "failed to open process {pid} for native overlay injection (Win32 error {})",
-            unsafe { GetLastError() }
-        ));
-    }
-
-    let result = (|| {
-        let alloc_size = dll_path_wide.len() * std::mem::size_of::<u16>();
-        let remote_memory = unsafe {
-            VirtualAllocEx(
-                process,
-                null_mut(),
-                alloc_size,
-                MEM_COMMIT | MEM_RESERVE,
-                PAGE_READWRITE,
-            )
-        };
-        if remote_memory.is_null() {
-            return Err(format!(
-                "failed to allocate remote memory for native overlay injection (Win32 error {})",
-                unsafe { GetLastError() }
-            ));
-        }
-
-        let write_ok = unsafe {
-            WriteProcessMemory(
-                process,
-                remote_memory,
-                dll_path_wide.as_ptr().cast(),
-                alloc_size,
-                null_mut(),
-            )
-        };
-        if write_ok == 0 {
-            unsafe {
-                VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
-            }
-            return Err(format!(
-                "failed to write the native overlay DLL path into the target process (Win32 error {})",
-                unsafe { GetLastError() }
-            ));
-        }
-
-        let kernel32 = unsafe { GetModuleHandleA(c"kernel32.dll".as_ptr().cast()) };
-        if kernel32.is_null() {
-            unsafe {
-                VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
-            }
-            return Err(format!(
-                "failed to resolve kernel32.dll for native overlay injection (Win32 error {})",
-                unsafe { GetLastError() }
-            ));
-        }
-
-        let Some(load_library_w) =
-            (unsafe { GetProcAddress(kernel32, c"LoadLibraryW".as_ptr().cast()) })
-        else {
-            unsafe {
-                VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
-            }
-            return Err(format!(
-                "failed to resolve LoadLibraryW for native overlay injection (Win32 error {})",
-                unsafe { GetLastError() }
-            ));
-        };
-        let remote_load_library_w =
-            match remote_address_for_local_function(pid, load_library_w as usize) {
-                Ok(address) => address,
-                Err(error) => {
-                    unsafe {
-                        VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
-                    }
-                    return Err(format!(
-                        "failed to resolve LoadLibraryW inside process {pid}: {error}"
-                    ));
-                }
-            };
-
-        let remote_thread = unsafe {
-            CreateRemoteThread(
-                process,
-                null(),
-                0,
-                Some(std::mem::transmute(remote_load_library_w)),
-                remote_memory,
-                0,
-                null_mut(),
-            )
-        };
-        if remote_thread.is_null() {
-            unsafe {
-                VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
-            }
-            return Err(format!(
-                "failed to create the native overlay loader thread (Win32 error {})",
-                unsafe { GetLastError() }
-            ));
-        }
-
-        let wait_result =
-            unsafe { WaitForSingleObject(remote_thread, NATIVE_OVERLAY_LOAD_TIMEOUT_MS) };
-        if wait_result != WAIT_OBJECT_0 {
-            unsafe {
-                CloseHandle(remote_thread);
-            }
-            return Err(format!(
-                "LoadLibraryW did not complete in process {pid} within {} ms (wait result {wait_result}); the remote path buffer was retained because loader thread completion is unknown",
-                NATIVE_OVERLAY_LOAD_TIMEOUT_MS
-            ));
-        }
-
-        let mut load_result = 0u32;
-        let exit_code_ok = unsafe { GetExitCodeThread(remote_thread, &mut load_result) };
-        let exit_code_error = if exit_code_ok == 0 {
-            unsafe { GetLastError() }
-        } else {
-            0
-        };
-        unsafe {
-            CloseHandle(remote_thread);
-            VirtualFreeEx(process, remote_memory, 0, MEM_RELEASE);
-        }
-        if exit_code_ok == 0 {
-            return Err(format!(
-                "failed to read LoadLibraryW result for {} (Win32 error {})",
-                dll_path.display(),
-                exit_code_error
-            ));
-        }
-        if load_result == 0 {
-            return Err(format!(
-                "LoadLibraryW rejected {} in process {pid}; verify that it is a valid x64 DLL and all native dependencies are present",
-                dll_path.display()
-            ));
-        }
-        Ok(())
-    })();
-
-    unsafe {
-        CloseHandle(process);
-    }
-    result
-}
-
 #[cfg(not(target_os = "windows"))]
 fn inject_dll_into_process(_pid: u32, _dll_path: &std::path::Path) -> Result<(), String> {
     Err("DLL injection is only supported on Windows".to_string())
-}
-
-/// Resolve the bundled `hq-inject-helper.exe` path.
-///
-/// During development the helper sits under the source tree's resources
-/// directory; in a packaged build it is materialized by Tauri's
-/// `resource_dir()`. We probe both locations and pick the first hit.
-#[cfg(target_os = "linux")]
-fn inject_helper_exe_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    const HELPER_NAME: &str = "hq-inject-helper.exe";
-
-    // Collect every candidate location the bundled helper could live in.
-    // On Linux, Tauri's `resource_dir()` is not always reliable across
-    // AppImage/deb layouts, so we also probe a few well-known relative paths
-    // and stage a private copy in app_data as a dependable fallback.
-    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        candidates.push(resource_dir.join("native-overlay").join(HELPER_NAME));
-    }
-    candidates.push(
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join("native-overlay")
-            .join(HELPER_NAME),
-    );
-    candidates.push(std::path::PathBuf::from("src-tauri/resources/native-overlay").join(HELPER_NAME));
-    candidates.push(std::path::PathBuf::from("resources/native-overlay").join(HELPER_NAME));
-
-    // Return the first bundled copy that exists.
-    for candidate in &candidates {
-        if candidate.is_file() {
-            return Ok(stage_helper_into_app_data(app, candidate, HELPER_NAME));
-        }
-    }
-
-    // Fallback: a previously staged copy may still exist in app_data even if
-    // every bundle location is currently unreachable (e.g. an AppImage whose
-    // mount moved). Use it directly.
-    if let Some(staged) = staged_helper_in_app_data(app, HELPER_NAME) {
-        if staged.is_file() {
-            return Ok(staged);
-        }
-    }
-
-    Err(format!(
-        "hq-inject-helper.exe was not found; native overlay injection is unavailable on this platform"
-    ))
-}
-
-/// Return the private, stable copy of the helper in app_data, if resolvable.
-#[cfg(target_os = "linux")]
-fn staged_helper_in_app_data(app: &tauri::AppHandle, helper_name: &str) -> Option<std::path::PathBuf> {
-    let app_data = app.path().app_data_dir().ok()?;
-    Some(app_data.join("native-overlay").join(helper_name))
-}
-
-/// Copy the bundled helper into app_data so subsequent runs can find it even
-/// when the bundle layout (resource_dir / AppImage mount) is unreliable.
-/// Returns the staged path; on any staging failure the original source is used.
-#[cfg(target_os = "linux")]
-fn stage_helper_into_app_data(
-    app: &tauri::AppHandle,
-    source: &std::path::Path,
-    helper_name: &str,
-) -> std::path::PathBuf {
-    let Some(destination) = staged_helper_in_app_data(app, helper_name) else {
-        return source.to_path_buf();
-    };
-    // Only restage when the staged copy is missing or differs in size, to avoid
-    // touching the filesystem on every injection attempt.
-    let needs_copy = match std::fs::metadata(&destination) {
-        Ok(meta) => meta.len() != std::fs::metadata(source).map(|m| m.len()).unwrap_or(0),
-        Err(_) => true,
-    };
-    if needs_copy {
-        if let Some(parent) = destination.parent() {
-            if std::fs::create_dir_all(parent).is_err() {
-                return source.to_path_buf();
-            }
-        }
-        if std::fs::copy(source, &destination).is_err() {
-            return source.to_path_buf();
-        }
-        // Best-effort executable bit; Wine needs the file readable, and chmod
-        // is harmless on the Windows PE payload.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = std::fs::metadata(&destination) {
-                let mut perms = meta.permissions();
-                perms.set_mode(0o755);
-                let _ = std::fs::set_permissions(&destination, perms);
-            }
-        }
-    }
-    destination
-}
-
-/// Locate the Proton/Wine `wine64` binary that will host the helper exe.
-#[cfg(target_os = "linux")]
-fn proton_wine64_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let proton_dir = installer::get_current_proton_dir_impl(app)?
-        .ok_or_else(|| "Proton is not installed; cannot run the Wine inject helper".to_string())?;
-    // Proton-GE layout: <proton>/files/bin/wine64 or <proton>/bin/wine64.
-    for rel in ["files/bin/wine64", "bin/wine64", "files/bin/wine"] {
-        let candidate = proton_dir.join(rel);
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-    Err(format!(
-        "could not find a wine binary under {}",
-        proton_dir.display()
-    ))
 }
 
 /// Resolve the `hq_overlay.dll` to inject. On Linux the same Windows DLL that
@@ -840,129 +446,6 @@ fn resolve_native_overlay_dll_linux(app: &tauri::AppHandle) -> Result<std::path:
 
     validate_x64_pe_dll(&destination)?;
     Ok(destination.canonicalize().unwrap_or(destination))
-}
-
-/// Wait for the Wine game process to materialize and return its PID.
-///
-/// `proton run` spawns an intermediate process tree; the actual game
-/// (`Lethal Company.exe`) appears a moment later. We poll `/proc` for up to
-/// ~30 seconds using the existing process-matching heuristics.
-#[cfg(target_os = "linux")]
-fn wait_for_wine_game_pid(
-    app: &tauri::AppHandle,
-    proton_child_pid: u32,
-    version: u32,
-    timeout: std::time::Duration,
-) -> Result<u32, String> {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        // collect_linux_game_processes matches the version directory and the
-        // STEAM_COMPAT_DATA_PATH prefix, which uniquely identifies this prefix.
-        let pids = collect_linux_game_processes(app, version);
-        // Prefer the lowest matching PID that is not the Proton parent.
-        if let Some(&game_pid) = pids
-            .iter()
-            .filter(|&&pid| pid as u32 != proton_child_pid)
-            .min()
-        {
-            return Ok(game_pid as u32);
-        }
-        if std::time::Instant::now() >= deadline {
-            return Err(format!(
-                "timed out waiting for the game process to appear under Proton (watched child pid {proton_child_pid})"
-            ));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(250));
-    }
-}
-
-/// Run the bundled `hq-inject-helper.exe` inside the same Wine prefix as the
-/// game so it can `OpenProcess` + `LoadLibraryW` the overlay DLL into it.
-///
-/// Returns the DLL path on success.
-#[cfg(target_os = "linux")]
-fn run_wine_inject_helper(
-    app: &tauri::AppHandle,
-    game_pid: u32,
-    dll_path: &std::path::Path,
-) -> Result<std::path::PathBuf, String> {
-    let wine = proton_wine64_path(app)?;
-    let helper = inject_helper_exe_path(app)?;
-    let proton_env = installer::proton_env_dir(app)?;
-    let wine_prefix = proton_env.join("wine_prefix");
-
-    // Wine needs a Windows-style (Z:-mapped or drive_c) path for the DLL so
-    // that LoadLibraryW inside the game resolves it. Reuse the helper's own
-    // Wine process to translate the path via `winepath`.
-    let dll_path_str = dll_path
-        .to_str()
-        .ok_or_else(|| format!("dll path is not utf-8: {}", dll_path.display()))?;
-    let helper_path_str = helper
-        .to_str()
-        .ok_or_else(|| format!("helper path is not utf-8: {}", helper.display()))?;
-
-    let winepath_output = std::process::Command::new(&wine)
-        .arg("winepath")
-        .arg("-w")
-        .arg(dll_path_str)
-        .env("WINEPREFIX", &wine_prefix)
-        .env("WINEDLLOVERRIDES", "mscoree=d;mshtml=d")
-        .output()
-        .map_err(|e| format!("failed to run winepath: {e}"))?;
-    if !winepath_output.status.success() {
-        return Err(format!(
-            "winepath failed to translate the DLL path (exit {:?}): {}",
-            winepath_output.status.code(),
-            String::from_utf8_lossy(&winepath_output.stderr).trim()
-        ));
-    }
-    let windows_dll_path = String::from_utf8_lossy(&winepath_output.stdout)
-        .trim()
-        .to_string();
-    if windows_dll_path.is_empty() {
-        return Err("winepath returned an empty Windows path for the overlay DLL".to_string());
-    }
-
-    let mut cmd = std::process::Command::new(&wine);
-    cmd.arg(helper_path_str)
-        .arg(game_pid.to_string())
-        .arg(&windows_dll_path)
-        .env("WINEPREFIX", &wine_prefix)
-        .env("WINEDLLOVERRIDES", "mscoree=d;mshtml=d")
-        // Keep the prefix consistent with the launch command so the helper
-        // shares the same wineserver as the game.
-        .env("STEAM_COMPAT_DATA_PATH", &wine_prefix);
-
-    let output = cmd
-        .output()
-        .map_err(|e| format!("failed to spawn the Wine inject helper: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "Wine inject helper exited with code {:?}: {}",
-            output.status.code(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(dll_path.to_path_buf())
-}
-
-/// Top-level Linux native overlay injection: resolve the DLL, wait for the
-/// game process, then drive the Wine helper. Any failure is surfaced to the
-/// caller, which degrades the overlay to legacy/off.
-#[cfg(target_os = "linux")]
-fn try_inject_native_overlay_via_wine(
-    app: &tauri::AppHandle,
-    proton_child_pid: u32,
-    version: u32,
-) -> Result<std::path::PathBuf, String> {
-    let dll_path = resolve_native_overlay_dll_linux(app)?;
-    let game_pid = wait_for_wine_game_pid(
-        app,
-        proton_child_pid,
-        version,
-        std::time::Duration::from_secs(30),
-    )?;
-    run_wine_inject_helper(app, game_pid, &dll_path)
 }
 
 /// Extract the numeric version from a `vNN` version directory name.
@@ -1526,6 +1009,123 @@ fn resolve_native_overlay_dll(app: &tauri::AppHandle) -> Result<std::path::PathB
 
     validate_x64_pe_dll(&destination)?;
     Ok(destination.canonicalize().unwrap_or(destination))
+}
+
+/// Resolve the native overlay DLL for the current platform.
+///
+/// On Windows this reads from `app_data/hq_overlay.dll`; on Linux the same
+/// Windows DLL is reused for the Wine/Proton path. Both ultimately serve the
+/// proxy-DLL flow: the resolved file is copied next to the game exe as
+/// `version.dll` and loaded by the OS/Wine PE loader.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn resolve_native_overlay_dll_for_platform(
+    app: &tauri::AppHandle,
+) -> Result<std::path::PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        resolve_native_overlay_dll(app)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        resolve_native_overlay_dll_linux(app)
+    }
+}
+
+/// Copy the resolved native overlay DLL into the game directory as
+/// `version.dll`, the OS/Wine PE loader's hijack name.
+///
+/// The overlay ships `hq_overlay.dll` (which now also forwards every public
+/// `version.dll` export) but it must be materialized next to the game
+/// executable under the name `version.dll` so the loader resolves it ahead
+/// of `System32\version.dll` via the standard DLL search order. This
+/// replaces the former `CreateRemoteThread` injection entirely: there is no
+/// cross-process memory write, no remote thread, and therefore no AV
+/// signature surface.
+///
+/// Staging is idempotent: it only touches the file when the size differs or
+/// the recorded version stamp no longer matches the installed overlay, so
+/// repeated launches do not churn the game folder or fight BepInEx updates,
+/// and a same-size overlay update is still propagated reliably.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn stage_native_overlay_as_proxy(
+    app: &tauri::AppHandle,
+    version_dir: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    const OVERLAY_VERSION_STAMP: &str = ".hq-overlay-version";
+
+    let source = resolve_native_overlay_dll_for_platform(app)?;
+    let target = version_dir.join("version.dll");
+    let stamp_path = version_dir.join(OVERLAY_VERSION_STAMP);
+
+    // The installed overlay version (e.g. "1.2.3"), read from the app_data
+    // metadata. When unavailable (first install, corrupt metadata) the stamp
+    // comparison is skipped and the size check alone drives the copy.
+    let installed_version = installed_native_overlay_version_path(app)
+        .ok()
+        .and_then(|path| read_installed_native_overlay_version(&path).map(|v| v.normalized));
+
+    let size_differs = match std::fs::metadata(&target) {
+        Ok(target_meta) => {
+            let source_len = std::fs::metadata(&source).map(|m| m.len()).unwrap_or(0);
+            target_meta.len() != source_len
+        }
+        Err(_) => true,
+    };
+    let version_differs = match (&installed_version, std::fs::read_to_string(&stamp_path).ok()) {
+        (Some(installed), Some(stamped)) => installed.trim() != stamped.trim(),
+        // No stamp on disk but we know the installed version: treat as stale.
+        (Some(_), None) => true,
+        // Unknown installed version: cannot decide, defer to the size check.
+        (None, _) => false,
+    };
+
+    if size_differs || version_differs {
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("failed to create game dir for version.dll proxy: {e}"))?;
+        }
+        std::fs::copy(&source, &target).map_err(|e| {
+            format!(
+                "failed to stage version.dll proxy into {}: {e}",
+                target.display()
+            )
+        })?;
+        if let Some(version) = &installed_version {
+            let _ = std::fs::write(&stamp_path, version);
+        }
+    }
+    Ok(target)
+}
+
+/// Re-stage the native overlay proxy into every installed game version
+/// directory.
+///
+/// After an overlay update writes a fresh `app_data/hq_overlay.dll`, the
+/// `version.dll` copy in each version directory is stale until the next time
+/// that version is launched. This walks every installed version (mirroring
+/// `restore_stale_vanilla_winhttp_backups`) and re-stages the proxy so all
+/// installations pick up the new overlay immediately. Per-directory failures
+/// (e.g. a version.dll locked by a running game) are logged and skipped so a
+/// single locked file cannot block the rest.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn restage_native_overlay_into_all_versions(app: &tauri::AppHandle) -> Result<(), String> {
+    let base = storage::versions_dir(app)?;
+    let Ok(entries) = std::fs::read_dir(&base) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if let Err(error) = stage_native_overlay_as_proxy(app, &path) {
+            log::warn!(
+                "failed to restage native overlay proxy into {}: {error}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -5082,18 +4682,6 @@ mod game_overlay_backend_tests {
         assert!(!should_promote_native_overlay(true, true, false, 7, 7));
     }
 
-    #[test]
-    fn remote_function_relocation_preserves_the_module_offset() {
-        assert_eq!(
-            relocate_address_within_module(0x1000, 0x500, 0x9000, 0x1234),
-            Some(0x9234)
-        );
-        assert_eq!(
-            relocate_address_within_module(0x1000, 0x200, 0x9000, 0x1234),
-            None
-        );
-    }
-
     #[cfg(target_os = "windows")]
     #[test]
     fn polled_overlay_shortcut_emits_only_state_transitions() {
@@ -7016,6 +6604,12 @@ fn release_managed_native_injection_after_failure(app: &tauri::AppHandle, pid: u
 
 #[cfg(target_os = "windows")]
 fn inject_managed_native_overlay(app: tauri::AppHandle, pid: u32, dll_path: std::path::PathBuf) {
+    // The native overlay now loads through the OS PE loader as a `version.dll`
+    // proxy placed in the game directory. The watcher cannot stage that proxy
+    // into an externally-launched game folder reliably, so a managed
+    // injection is no longer possible; only the readiness handshake is kept
+    // for a proxy that the loader already mapped (e.g. a game launched from a
+    // version dir where the overlay DLL was previously staged).
     let events = match NativeOverlayEvents::create(pid) {
         Ok(events) => events,
         Err(error) => {
@@ -7023,11 +6617,6 @@ fn inject_managed_native_overlay(app: tauri::AppHandle, pid: u32, dll_path: std:
             return;
         }
     };
-    if let Err(error) = inject_native_overlay_dll_into_process(pid, &dll_path) {
-        let _ = events.disable();
-        release_managed_native_injection_after_failure(&app, pid, error);
-        return;
-    }
 
     if let Ok(mut path) = app.state::<GameOverlayState>().native_dll_path.lock() {
         *path = Some(dll_path.to_string_lossy().to_string());
@@ -7035,7 +6624,7 @@ fn inject_managed_native_overlay(app: tauri::AppHandle, pid: u32, dll_path: std:
     set_game_overlay_debug(
         &app,
         format!(
-            "native process monitor injected pid={pid}; waiting up to {}s for HTML readiness",
+            "native process monitor watching pid={pid}; waiting up to {}s for HTML readiness",
             NATIVE_OVERLAY_READY_TIMEOUT_MS / 1_000
         ),
     );
@@ -8962,7 +8551,9 @@ struct ActiveGame {
     mode_label: String,
     launch_options: Vec<String>,
     launch_command_template: Option<String>,
-    _vanilla_winhttp_guard: Option<VanillaWinhttpGuard>,
+    // Vanilla Run hides both proxy DLLs (BepInEx winhttp.dll and the HQ overlay
+    // version.dll) so neither loads in the unmodded game. Both restore on drop.
+    _vanilla_proxy_dll_guards: Option<Vec<VanillaProxyDllGuard>>,
 }
 
 #[derive(Default)]
@@ -9836,6 +9427,95 @@ async fn check_mod_updates(
     Ok(true)
 }
 
+/// Check for and apply a pending native overlay update as the final step of the
+/// unified update flow, then propagate the refreshed `version.dll` into every
+/// installed version directory.
+///
+/// On non-Windows hosts (or when no update is available) this is a fast no-op
+/// that emits the completion progress for the overlay step and returns. Errors
+/// are logged and never propagated: an overlay update failure must not turn a
+/// successful mod update into a failure.
+///
+/// `version_dir` scopes the post-install proxy staging to the version being
+/// updated: mod updates are per-version, so the refreshed overlay is only
+/// re-staged into that version's directory rather than propagated everywhere.
+async fn apply_native_overlay_update_step(
+    app: &tauri::AppHandle,
+    steps_total: u32,
+    version_dir: &std::path::Path,
+) {
+    const STEP: u32 = 3;
+    const STEP_NAME: &str = "HQ Overlay";
+
+    // Emit an initial progress tick so the UI shows the overlay step started.
+    progress::emit_progress(
+        app,
+        TaskProgressPayload {
+            version: 0,
+            steps_total,
+            step: STEP,
+            step_name: STEP_NAME.to_string(),
+            step_progress: 0.0,
+            overall_percent: overall_from_step(STEP, 0.0, steps_total),
+            detail: Some("Checking HQ Overlay...".to_string()),
+            downloaded_bytes: None,
+            total_bytes: None,
+            extracted_files: None,
+            total_files: None,
+        },
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        let app_handle = app.clone();
+        let installed = tauri::async_runtime::spawn_blocking(move || {
+            let client = native_overlay_http_client()?;
+            let release = fetch_native_overlay_release(&client)?;
+            let info = native_overlay_update_info_for_release(&app_handle, &release)?;
+            if !info.available {
+                return Ok(false);
+            }
+            install_native_overlay_update_blocking(&app_handle).map(|_| true)
+        })
+        .await;
+
+        match installed {
+            Ok(Ok(true)) => {
+                // Stage into the version directory being updated only; other
+                // versions pick up the overlay on their next launch or update.
+                if let Err(error) = stage_native_overlay_as_proxy(app, version_dir) {
+                    log::warn!("failed to stage overlay proxy after update: {error}");
+                }
+            }
+            Ok(Ok(false)) => {} // no overlay update available
+            Ok(Err(error)) => {
+                log::warn!("HQ Overlay update failed during unified update step: {error}");
+            }
+            Err(error) => {
+                log::warn!("HQ Overlay update worker failed: {error}");
+            }
+        }
+    }
+
+    // Emit the completion tick regardless of outcome.
+    progress::emit_progress(
+        app,
+        TaskProgressPayload {
+            version: 0,
+            steps_total,
+            step: STEP,
+            step_name: STEP_NAME.to_string(),
+            step_progress: 1.0,
+            overall_percent: overall_from_step(STEP, 1.0, steps_total),
+            detail: Some("HQ Overlay up to date".to_string()),
+            downloaded_bytes: None,
+            total_bytes: None,
+            extracted_files: None,
+            total_files: None,
+        },
+    );
+}
+
 #[tauri::command]
 async fn apply_mod_updates(
     app: tauri::AppHandle,
@@ -9868,7 +9548,7 @@ async fn apply_mod_updates(
         let (preset, _practice) = preset_and_practice_for_run_mode(&run_mode_name);
         let active_tags = preset_tags_for_name(&preset);
 
-        const STEPS_TOTAL: u32 = 2;
+        const STEPS_TOTAL: u32 = 3;
         progress::emit_progress(
             &app,
             TaskProgressPayload {
@@ -9948,7 +9628,7 @@ async fn apply_mod_updates(
                     step: 2,
                     step_name: "Update Mods".to_string(),
                     step_progress: 1.0,
-                    overall_percent: 100.0,
+                    overall_percent: overall_from_step(2, 1.0, STEPS_TOTAL),
                     detail: Some("No updates available".to_string()),
                     downloaded_bytes: None,
                     total_bytes: None,
@@ -9956,6 +9636,8 @@ async fn apply_mod_updates(
                     total_files: None,
                 },
             );
+            // Even with no mod updates, a pending overlay update is still applied.
+            apply_native_overlay_update_step(&app, STEPS_TOTAL, &game_root).await;
             return Ok(());
         }
 
@@ -10009,6 +9691,11 @@ async fn apply_mod_updates(
         .await?;
 
         let _ = ensure_reverb_trigger_fix_cfg(&app, version);
+
+        // Step 3: apply a pending native overlay update (if any) so the single
+        // "Update" action refreshes mods and the overlay together, staging the
+        // fresh DLL into this version's directory only.
+        apply_native_overlay_update_step(&app, STEPS_TOTAL, &game_root).await;
 
         Ok(())
     }
@@ -10186,7 +9873,7 @@ fn ensure_launch_compatible_with_active_games(
         .map_err(|_| "game state lock poisoned".to_string())?;
     cleanup_active_games(app, &mut guard)?;
     let conflict = guard.iter().any(|active| {
-        active.version == version && (vanilla || active._vanilla_winhttp_guard.is_some())
+        active.version == version && (vanilla || active._vanilla_proxy_dll_guards.is_some())
     });
     if conflict {
         return Err(
@@ -10556,7 +10243,8 @@ fn spawn_game_process(
     load_bepinex: bool,
 ) -> Result<std::process::Child, String> {
     if load_bepinex {
-        VanillaWinhttpGuard::restore_stale(_version_dir)?;
+        VanillaProxyDllGuard::restore_stale(_version_dir, VanillaProxyDllGuard::WINHTTP)?;
+        VanillaProxyDllGuard::restore_stale(_version_dir, VanillaProxyDllGuard::VERSION)?;
     }
 
     #[cfg(target_os = "windows")]
@@ -10589,16 +10277,23 @@ fn spawn_game_process(
         let (program, args) =
             build_wrapped_launch_command(launch_command_template, &default_program, &default_args)?;
         let launches_game_directly = windows_program_matches_game(&program, exe_path, exe_dir);
+        // The native overlay is now loaded by the OS PE loader as a
+        // `version.dll` proxy dropped into the game directory, replacing the
+        // former `CreateRemoteThread` injection. Staging must happen before
+        // the process is spawned so the loader resolves the local
+        // `version.dll` at process start. A wrapper launch template can start
+        // the game from a different working directory, so the proxy is only
+        // effective when the launcher launches the game exe directly.
         let (native_dll_path, native_preflight_error) = if !native_requested {
             (None, None)
         } else if !launches_game_directly && !native_process_monitor_mode {
-            let error = "Native HQ overlay injection requires a direct Lethal Company launch; the configured launch command template starts a wrapper process instead".to_string();
+            let error = "Native HQ overlay requires a direct Lethal Company launch; the configured launch command template starts a wrapper process instead".to_string();
             if requested_backend == GameOverlayBackend::Native {
                 return Err(error);
             }
             (None, Some(error))
         } else {
-            match resolve_native_overlay_dll(_app) {
+            match stage_native_overlay_as_proxy(_app, _version_dir) {
                 Ok(path) => (Some(path), None),
                 Err(error) if requested_backend == GameOverlayBackend::Native => return Err(error),
                 Err(error) => (None, Some(error)),
@@ -10696,7 +10391,10 @@ fn spawn_game_process(
         sanitize_linux_host_process_env(&mut cmd);
         cmd.env("STEAM_COMPAT_DATA_PATH", &compat_pre_path);
         cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_path);
-        cmd.env("WINEDLLOVERRIDES", "winhttp=n,b");
+        // Let the Wine loader pick up the local proxy `winhttp.dll` (BepInEx)
+        // and `version.dll` (native HQ overlay) ahead of the built-in system
+        // copies, mirroring the native Windows DLL search order.
+        cmd.env("WINEDLLOVERRIDES", "winhttp=n,b;version=n,b");
         if overlay_config.enabled {
             cmd.env("SteamGameId", LETHAL_COMPANY_STEAM_APP_ID);
             cmd.env("SteamAppId", LETHAL_COMPANY_STEAM_APP_ID);
@@ -10719,6 +10417,27 @@ fn spawn_game_process(
 
     apply_custom_launch_options(&mut command, launch_options);
     put_command_in_new_process_group(&mut command);
+
+    // On Linux/Proton the proxy `version.dll` must be staged next to the game
+    // exe before the Wine process starts, so Wine's PE loader resolves it at
+    // load time just like the native Windows loader. Windows already staged it
+    // inside the command-build block above.
+    #[cfg(not(target_os = "windows"))]
+    let native_dll_path: Option<std::path::PathBuf> = if native_requested
+        && game_overlay_config.general.enabled
+    {
+        match stage_native_overlay_as_proxy(_app, _version_dir) {
+            Ok(path) => Some(path),
+            Err(error) => {
+                log::warn!("failed to stage native overlay proxy on Linux: {error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    #[cfg(target_os = "windows")]
+    let _ = native_requested;
 
     #[allow(unused_mut)]
     #[cfg(target_os = "windows")]
@@ -10753,24 +10472,22 @@ fn spawn_game_process(
             }
         }
 
+        // The proxy `version.dll` is loaded by the OS loader at process
+        // start, so there is no injection step here: we only open the named
+        // handshake events and wait for the DLL's bootstrap to signal ready.
         if !native_process_monitor_mode {
             if let Some(dll_path) = native_dll_path.as_deref() {
                 match NativeOverlayEvents::create(pid) {
-                    Ok(events) => match inject_native_overlay_dll_into_process(pid, dll_path) {
-                        Ok(()) => {
-                            native_injected = true;
-                            native_events = Some(events);
-                        }
-                        Err(error) => {
-                            let _ = events.disable();
-                            retain_native_overlay_events_until_process_exit(events, pid);
-                            native_error = Some(format!(
-                                "Failed to inject native HQ overlay from {}: {error}",
-                                dll_path.display()
-                            ));
-                        }
-                    },
-                    Err(error) => native_error = Some(error),
+                    Ok(events) => {
+                        native_injected = true;
+                        native_events = Some(events);
+                    }
+                    Err(error) => {
+                        native_error = Some(format!(
+                            "Failed to open native overlay handshake for {}: {error}",
+                            dll_path.display()
+                        ));
+                    }
                 }
             }
         }
@@ -11052,20 +10769,23 @@ fn spawn_game_process(
         let mut native_error: Option<String> = None;
 
         if native_requested && game_overlay_config.general.enabled {
-            let version = parse_version_from_dir(_version_dir).unwrap_or(0);
-            match try_inject_native_overlay_via_wine(_app, pid, version) {
-                Ok(dll_path) => {
+            // The proxy `version.dll` was staged before spawn; Wine's PE loader
+            // loads it at process start. There is nothing to inject here, so
+            // the staging result drives the pending/readiness handshake below.
+            match &native_dll_path {
+                Some(dll_path) => {
                     native_injected = true;
                     set_game_overlay_debug(
                         _app,
                         format!(
-                            "native HQ overlay injected via Wine helper into pid {pid} ({})",
+                            "native HQ overlay proxy staged as version.dll for pid {pid} ({})",
                             dll_path.display()
                         ),
                     );
                 }
-                Err(error) => {
-                    native_error = Some(error);
+                None => {
+                    native_error =
+                        Some("Native HQ overlay proxy could not be staged as version.dll".to_string());
                 }
             }
         }
@@ -11077,7 +10797,7 @@ fn spawn_game_process(
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         if native_injected {
-            // The Wine helper only guarantees that LoadLibraryW succeeded; the
+            // The Wine PE loader loads version.dll at process start; the
             // readiness handshake happens out-of-band once the DLL initializes
             // its WebView2 surface. Mirror the Windows "pending" state and rely
             // on the same timeout semantics.
@@ -11138,20 +10858,31 @@ fn spawn_game_process(
     Ok(child)
 }
 
-struct VanillaWinhttpGuard {
+/// Temporarily renames a proxy DLL (e.g. `winhttp.dll`, `version.dll`) out of
+/// the game directory so a Vanilla Run starts without the associated mod or
+/// overlay. The file is restored on drop.
+struct VanillaProxyDllGuard {
+    dll_name: &'static str,
     original: std::path::PathBuf,
     hidden: std::path::PathBuf,
     renamed: bool,
 }
 
-impl VanillaWinhttpGuard {
-    fn restore_stale(version_dir: &std::path::Path) -> Result<(), String> {
-        let original = version_dir.join("winhttp.dll");
-        let hidden = version_dir.join("winhttp.dll.hq-launcher-disabled");
+impl VanillaProxyDllGuard {
+    const WINHTTP: &'static str = "winhttp.dll";
+    const VERSION: &'static str = "version.dll";
+
+    fn disabled_suffix() -> &'static str {
+        ".hq-launcher-disabled"
+    }
+
+    fn restore_stale(version_dir: &std::path::Path, dll_name: &str) -> Result<(), String> {
+        let original = version_dir.join(dll_name);
+        let hidden = version_dir.join(format!("{dll_name}{}", Self::disabled_suffix()));
         if !original.exists() && hidden.exists() {
             std::fs::rename(&hidden, &original).map_err(|e| {
                 format!(
-                    "failed to restore stale vanilla winhttp.dll backup {}: {e}",
+                    "failed to restore stale vanilla {dll_name} backup {}: {e}",
                     hidden.to_string_lossy()
                 )
             })?;
@@ -11159,13 +10890,13 @@ impl VanillaWinhttpGuard {
         Ok(())
     }
 
-    fn hide(version_dir: &std::path::Path) -> Result<Self, String> {
-        let original = version_dir.join("winhttp.dll");
-        let hidden = version_dir.join("winhttp.dll.hq-launcher-disabled");
+    fn hide(version_dir: &std::path::Path, dll_name: &'static str) -> Result<Self, String> {
+        let original = version_dir.join(dll_name);
+        let hidden = version_dir.join(format!("{dll_name}{}", Self::disabled_suffix()));
 
         // Recover a backup left behind if the launcher was terminated during a
         // previous vanilla launch.
-        Self::restore_stale(version_dir)?;
+        Self::restore_stale(version_dir, dll_name)?;
 
         if original.exists() && hidden.exists() {
             return Err(format!(
@@ -11179,13 +10910,14 @@ impl VanillaWinhttpGuard {
         if renamed {
             std::fs::rename(&original, &hidden).map_err(|e| {
                 format!(
-                    "failed to disable BepInEx by renaming {}: {e}",
+                    "failed to disable {dll_name} by renaming {}: {e}",
                     original.to_string_lossy()
                 )
             })?;
         }
 
         Ok(Self {
+            dll_name,
             original,
             hidden,
             renamed,
@@ -11198,7 +10930,8 @@ impl VanillaWinhttpGuard {
         }
         std::fs::rename(&self.hidden, &self.original).map_err(|e| {
             format!(
-                "the vanilla game started, but winhttp.dll could not be restored from {}: {e}",
+                "the vanilla game started, but {} could not be restored from {}: {e}",
+                self.dll_name,
                 self.hidden.to_string_lossy()
             )
         })?;
@@ -11207,10 +10940,10 @@ impl VanillaWinhttpGuard {
     }
 }
 
-impl Drop for VanillaWinhttpGuard {
+impl Drop for VanillaProxyDllGuard {
     fn drop(&mut self) {
         if let Err(e) = self.restore() {
-            log::error!("Failed to restore winhttp.dll after Vanilla Run: {e}");
+            log::error!("Failed to restore {} after Vanilla Run: {e}", self.dll_name);
         }
     }
 }
@@ -11223,7 +10956,8 @@ fn restore_stale_vanilla_winhttp_backups(app: &tauri::AppHandle) -> Result<(), S
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            VanillaWinhttpGuard::restore_stale(&path)?;
+            VanillaProxyDllGuard::restore_stale(&path, VanillaProxyDllGuard::WINHTTP)?;
+            VanillaProxyDllGuard::restore_stale(&path, VanillaProxyDllGuard::VERSION)?;
         }
     }
     Ok(())
@@ -11811,7 +11545,7 @@ async fn launch_game(
         mode_label: "HQ".to_string(),
         launch_options,
         launch_command_template: launch_command_template_for_state,
-        _vanilla_winhttp_guard: None,
+        _vanilla_proxy_dll_guards: None,
     });
     let lcstats_enabled = is_lcstats_enabled(&app)?;
     lcstats_autosheet::start_for_launch(app.clone(), lcstats_enabled, &lcstats_state);
@@ -11843,7 +11577,10 @@ async fn launch_game_vanilla(
 
     let launch_options = launch_options.unwrap_or_default();
     let launch_command_template_for_state = launch_command_template.clone();
-    let winhttp_guard = VanillaWinhttpGuard::hide(&dir)?;
+    // Vanilla Run must hide both BepInEx (winhttp.dll) and the HQ overlay
+    // (version.dll) proxy DLLs so neither loads in the unmodded game.
+    let winhttp_guard = VanillaProxyDllGuard::hide(&dir, VanillaProxyDllGuard::WINHTTP)?;
+    let version_guard = VanillaProxyDllGuard::hide(&dir, VanillaProxyDllGuard::VERSION)?;
     let child = spawn_game_process(
         &app,
         &dir,
@@ -11866,8 +11603,9 @@ async fn launch_game_vanilla(
         mode_label: "Vanilla".to_string(),
         launch_options,
         launch_command_template: launch_command_template_for_state,
-        // The guard restores winhttp.dll when this active game is removed.
-        _vanilla_winhttp_guard: Some(winhttp_guard),
+        // The guards restore winhttp.dll and version.dll when this active game
+        // is removed (dropped).
+        _vanilla_proxy_dll_guards: Some(vec![winhttp_guard, version_guard]),
     });
     show_game_overlay(&app);
     Ok(pid)
@@ -11941,7 +11679,7 @@ async fn launch_game_practice(
         mode_label: "Practice".to_string(),
         launch_options,
         launch_command_template: launch_command_template_for_state,
-        _vanilla_winhttp_guard: None,
+        _vanilla_proxy_dll_guards: None,
     });
     let lcstats_enabled = is_lcstats_enabled(&app)?;
     lcstats_autosheet::start_for_launch(app.clone(), lcstats_enabled, &lcstats_state);
@@ -12090,7 +11828,7 @@ async fn launch_game_preset(
         mode_label,
         launch_options,
         launch_command_template: launch_command_template_for_state,
-        _vanilla_winhttp_guard: None,
+        _vanilla_proxy_dll_guards: None,
     });
     let lcstats_enabled = is_lcstats_enabled(&app)?;
     lcstats_autosheet::start_for_launch(app.clone(), lcstats_enabled, &lcstats_state);
@@ -13672,6 +13410,13 @@ pub fn run() {
             logger::init(&app.handle()).map_err(|e| tauri::Error::Setup(e.into()))?;
             if let Err(e) = restore_stale_vanilla_winhttp_backups(app.handle()) {
                 log::warn!("Failed to restore a stale Vanilla Run winhttp.dll backup: {e}");
+            }
+            // Propagate the installed overlay into every version directory's
+            // version.dll so an overlay update is effective without first
+            // relaunching each version.
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            if let Err(e) = restage_native_overlay_into_all_versions(app.handle()) {
+                log::warn!("Failed to restage native overlay proxy into version dirs: {e}");
             }
             release_channel::load(&app.handle()).map_err(|e| {
                 let err: Box<dyn std::error::Error> =

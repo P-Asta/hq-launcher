@@ -160,10 +160,26 @@ async fn setup_or_match_player_columns(
         PLAYER_COLUMNS[PLAYER_COLUMNS.len() - 1],
         PLAYER_ID_ROW
     );
-    let ranges = batch_read_ranges(client, token, spreadsheet_id, &[&id_range]).await?;
+    let name_range = format!(
+        "{}!{}{}:{}{}",
+        quote_sheet_name(sheet_name),
+        PLAYER_COLUMNS[0],
+        PLAYER_NAME_ROW,
+        PLAYER_COLUMNS[PLAYER_COLUMNS.len() - 1],
+        PLAYER_NAME_ROW
+    );
+    let ranges = batch_read_ranges(client, token, spreadsheet_id, &[&id_range, &name_range]).await?;
     let existing_row = ranges
         .first()
         .and_then(|data| data.get("values"))
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let name_data = ranges.get(1).cloned().unwrap_or_default();
+    let existing_name_row = name_data
+        .get("values")
         .and_then(Value::as_array)
         .and_then(|rows| rows.first())
         .and_then(Value::as_array)
@@ -201,11 +217,54 @@ async fn setup_or_match_player_columns(
         }
         batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, updates).await?;
     } else {
-        for (steam_id, _) in players {
-            if let Some(column) = existing_slots.get(&steam_id) {
+        let mut updates = vec![];
+        let used_columns: std::collections::HashSet<&str> =
+            existing_slots.values().map(String::as_str).collect();
+        let mut free_columns = PLAYER_COLUMNS
+            .iter()
+            .filter(|column| !used_columns.contains(**column))
+            .copied();
+        for (steam_id, player) in &players {
+            if let Some(column) = existing_slots.get(steam_id) {
                 player_columns.insert(steam_id.clone(), column.clone());
+                if let Some((index, _)) = PLAYER_COLUMNS
+                    .iter()
+                    .enumerate()
+                    .find(|(_, candidate)| **candidate == column.as_str())
+                {
+                    let current_name = existing_name_row
+                        .get(index)
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .trim();
+                    if current_name.is_empty() {
+                        updates.push((
+                            column.clone(),
+                            PLAYER_NAME_ROW,
+                            json!(player
+                                .get("Name")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()),
+                        ));
+                    }
+                }
+            } else if let Some(column) = free_columns.next() {
+                // Seed a newly seen steam_id into an unused player column so its
+                // name/status land instead of being dropped because it wasn't
+                // present on the very first run.
+                player_columns.insert(steam_id.clone(), column.to_string());
+                updates.push((column.to_string(), PLAYER_ID_ROW, json!(steam_id)));
+                updates.push((
+                    column.to_string(),
+                    PLAYER_NAME_ROW,
+                    json!(player
+                        .get("Name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()),
+                ));
             }
         }
+        batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, updates).await?;
     }
 
     Ok(player_columns)

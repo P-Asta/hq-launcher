@@ -4,7 +4,7 @@ use crate::google_oauth::LcStatsSettings;
 use crate::lcstats_autosheet::layouts::EVIE_AUTOSHEET_LAYOUT;
 use crate::lcstats_autosheet::sheets::{
     batch_update_spreadsheet, batch_write_cells_user_entered, first_empty_row, get_sheet_id,
-    number_value, read_number, write_cells,
+    number_value, quote_sheet_name, read_number, read_range, write_cells,
 };
 use crate::lcstats_autosheet::stats::{
     lcstats, parse_lcstats_time_to_minutes, strip_apostrophe, strip_moon_number, LcStats,
@@ -157,6 +157,8 @@ async fn write_new_day(
     if player_row <= FIRST_DATA_ROW {
         write_initial_values(client, token, spreadsheet_id, sheet_name, raw_stats, stats).await?;
         player_row = FIRST_DATA_ROW;
+    } else {
+        backfill_missing_player_names(client, token, spreadsheet_id, sheet_name, stats).await?;
     }
 
     let stats_row = first_empty_row(
@@ -245,6 +247,64 @@ async fn write_initial_values(
         vec![vec![version]],
     )
     .await
+}
+
+/// Backfills any blank player name cells (CA22+) using the current payload.
+/// `write_initial_values` only runs on the very first day, so a name that was
+/// empty/missing on day one (or a player who joined later) would otherwise stay
+/// blank forever. This keeps the existing name cells stable while repairing gaps.
+async fn backfill_missing_player_names(
+    client: &reqwest::Client,
+    token: &str,
+    spreadsheet_id: &str,
+    sheet_name: &str,
+    stats: &LcStats,
+) -> Result<(), String> {
+    const PLAYER_NAME_START_ROW: usize = 22;
+    const PLAYER_NAME_MAX: usize = 4;
+    let players = stats.players_sorted();
+    if players.is_empty() {
+        return Ok(());
+    }
+    let name_range = format!(
+        "{}!{PLAYER_NAME_COLUMN}{PLAYER_NAME_START_ROW}:{PLAYER_NAME_COLUMN}{}",
+        quote_sheet_name(sheet_name),
+        PLAYER_NAME_START_ROW + PLAYER_NAME_MAX - 1,
+    );
+    let existing = read_range(client, token, spreadsheet_id, &name_range).await?;
+    let existing_row = existing
+        .get("values")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut updates = vec![];
+    for (index, player) in players.iter().take(PLAYER_NAME_MAX).enumerate() {
+        let current_name = existing_row
+            .get(index)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        if current_name.is_empty() {
+            updates.push((
+                format!("{PLAYER_NAME_COLUMN}{}", PLAYER_NAME_START_ROW + index),
+                json!(strip_apostrophe(&player.stats.name)),
+            ));
+        }
+    }
+    for (cell, value) in updates {
+        write_cells(
+            client,
+            token,
+            spreadsheet_id,
+            sheet_name,
+            &cell,
+            vec![vec![value]],
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn write_shop_sales(
