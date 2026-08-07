@@ -3701,9 +3701,12 @@ export default function LauncherPage({
     }
   }
 
-  async function refreshNativeOverlayUpdate() {
+  async function refreshNativeOverlayUpdate(version = selectedVersion) {
     try {
-      const info = await invoke("check_native_overlay_update");
+      const numericVersion = Number(version);
+      const info = await invoke("check_native_overlay_update", {
+        version: Number.isFinite(numericVersion) ? numericVersion : null,
+      });
       setNativeOverlayUpdate(info ?? null);
       return info;
     } catch (error) {
@@ -3744,7 +3747,10 @@ export default function LauncherPage({
       error: null,
     }));
     try {
-      await invoke("check_mod_updates", { version: v, runMode: nextRunMode });
+      await Promise.all([
+        invoke("check_mod_updates", { version: v, runMode: nextRunMode }),
+        refreshNativeOverlayUpdate(v),
+      ]);
     } catch (e) {
       setCheckUpdateTask((t) => ({
         ...t,
@@ -3768,6 +3774,10 @@ export default function LauncherPage({
     }));
     try {
       await invoke("apply_mod_updates", { version: v, runMode: runMode });
+      // The unified update also refreshes the selected version's
+      // `.hq-overlay-version` stamp. Re-check it before rendering the update
+      // state so a stale `available: true` result is not left in the dialog.
+      await refreshNativeOverlayUpdate(v);
       // Avoid re-checking (network heavy). Assume up-to-date after successful apply.
       setCheckUpdateTask((t) => ({
         ...t,

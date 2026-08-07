@@ -156,7 +156,8 @@ pub async fn write_cells(
         .send()
         .await
         .map_err(|e| e.to_string())?;
-    let _ = parse_google_response(response, "write Google Sheets range").await?;
+    let data = parse_google_response(response, "write Google Sheets range").await?;
+    ensure_cells_updated(&data, "write Google Sheets range")?;
     batch_update_spreadsheet(client, token, spreadsheet_id, note_clear_requests).await
 }
 
@@ -187,7 +188,8 @@ pub async fn batch_write_cells_user_entered(
         .send()
         .await
         .map_err(|e| e.to_string())?;
-    let _ = parse_google_response(response, "batch write Google Sheets values").await?;
+    let data = parse_google_response(response, "batch write Google Sheets values").await?;
+    ensure_cells_updated(&data, "batch write Google Sheets values")?;
     batch_update_spreadsheet(client, token, spreadsheet_id, note_clear_requests).await
 }
 
@@ -559,4 +561,24 @@ mod tests {
         assert_eq!(parse_cell_reference("$B$3"), Some((1, 3)));
         assert_eq!(parse_cell_reference("12AA"), None);
     }
+
+    #[test]
+    fn rejects_success_response_that_updated_no_cells() {
+        assert!(ensure_cells_updated(&json!({"totalUpdatedCells": 0}), "test").is_err());
+        assert!(ensure_cells_updated(&json!({"updatedCells": 1}), "test").is_ok());
+    }
+}
+
+fn ensure_cells_updated(data: &Value, operation: &str) -> Result<(), String> {
+    let updated = data
+        .get("updatedCells")
+        .or_else(|| data.get("totalUpdatedCells"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if updated == 0 {
+        return Err(format!(
+            "Google Sheets reported 0 updated cells while attempting to {operation}"
+        ));
+    }
+    Ok(())
 }

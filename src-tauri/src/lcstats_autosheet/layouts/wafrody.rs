@@ -625,7 +625,10 @@ async fn handle_gordion(
     let new_quota = payload.new_quota();
     let gift_bonus = gift_bonus_total(stats);
     let target_line = run_block_start_row(target_row);
-    let mut updates = vec![];
+
+    // Always occupy the check column on a company day, even when there is
+    // nothing else to write. See `gordion_row_marker` for why this matters.
+    let mut updates = vec![gordion_row_marker(target_row)];
 
     if value_sold != 0 {
         let current_value = read_number(
@@ -665,10 +668,24 @@ async fn handle_gordion(
             number_value(current_value + gift_bonus as f64),
         ));
     }
-    if updates.is_empty() {
-        return Ok(());
-    }
     batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, updates).await
+}
+
+/// Check-column marker written on company (Gordion/Galetry) days.
+///
+/// Company days write their economy values (value sold, new quota, gift bonus)
+/// into other columns but never into the check column (X), which is exactly
+/// the column `first_empty_row_from` scans to find the next free row. Leaving
+/// X blank on a company day means the next regular day resolves to this same
+/// row as the "first empty row" and overwrites/absorbs it — the
+/// "wafrodysheet occasionally loses a row" symptom. There is no error log
+/// because the overwrite write itself succeeds.
+///
+/// Writing a non-numeric text marker reserves the row (so it is skipped by the
+/// empty-row scan) without colliding with real CollectedTotal numbers, and
+/// makes company days visible at a glance.
+fn gordion_row_marker(row: usize) -> (String, usize, Value) {
+    (CHECK_COLUMN.to_string(), row, json!("Company"))
 }
 
 async fn add_lost_scraps_to_total(
@@ -1719,6 +1736,17 @@ mod tests {
         });
 
         assert!(lcstats(&stats).is_gordion_moon());
+    }
+
+    #[test]
+    fn gordion_day_reserves_check_column_row() {
+        // Company days must occupy the check column so first_empty_row_from
+        // skips this row on the next regular day. Without it the company row
+        // gets overwritten/absorbed (a silent row loss — no error log).
+        let marker = gordion_row_marker(7);
+        assert_eq!(marker.0, CHECK_COLUMN);
+        assert_eq!(marker.1, 7);
+        assert_eq!(marker.2, json!("Company"));
     }
 
     fn cell_value<'a>(updates: &'a [(String, usize, Value)], column: &str) -> Option<&'a Value> {

@@ -686,6 +686,42 @@ fn native_overlay_update_info_for_release(
     })
 }
 
+#[cfg(target_os = "windows")]
+fn native_overlay_proxy_needs_update(
+    app: &tauri::AppHandle,
+    version_dir: &Path,
+    release: &NativeOverlayReleaseVersion,
+) -> bool {
+    const OVERLAY_VERSION_STAMP: &str = ".hq-overlay-version";
+    let target = version_dir.join("version.dll");
+    let stamp = version_dir.join(OVERLAY_VERSION_STAMP);
+    if !target.is_file() {
+        return true;
+    }
+    // This helper is called while the update-check path holds
+    // `NATIVE_OVERLAY_INSTALL_LOCK`. Do not call the resolver here: it tries
+    // to acquire the same lock and can deadlock the update UI.
+    let source = match installed_native_overlay_dll_path(app) {
+        Ok(source) => source,
+        Err(_) => return false,
+    };
+    let size_differs = std::fs::metadata(&target).ok().map(|target| target.len())
+        != std::fs::metadata(source).ok().map(|source| source.len());
+    if size_differs {
+        return true;
+    }
+    let Some(installed_version) = installed_native_overlay_version_path(app)
+        .ok()
+        .and_then(|path| read_installed_native_overlay_version(&path))
+        .map(|version| version.normalized)
+    else {
+        return false;
+    };
+    std::fs::read_to_string(stamp)
+        .map(|value| value.trim() != installed_version || installed_version != release.normalized)
+        .unwrap_or(true)
+}
+
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn ensure_native_overlay_not_running(app: &tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<GameOverlayState>();
@@ -1131,23 +1167,32 @@ fn restage_native_overlay_into_all_versions(app: &tauri::AppHandle) -> Result<()
 #[cfg(target_os = "windows")]
 fn check_native_overlay_update_blocking(
     app: &tauri::AppHandle,
+    version: Option<u32>,
 ) -> Result<NativeOverlayUpdateInfo, String> {
     let client = native_overlay_http_client()?;
     let release = fetch_native_overlay_release(&client)?;
     let _install_guard = NATIVE_OVERLAY_INSTALL_LOCK
         .lock()
         .map_err(|_| "native overlay install lock poisoned".to_string())?;
-    native_overlay_update_info_for_release(app, &release)
+    let mut info = native_overlay_update_info_for_release(app, &release)?;
+    if let Some(version) = version {
+        let version_dir = version_dir(app, version)?;
+        if native_overlay_proxy_needs_update(app, &version_dir, &release) {
+            info.available = true;
+        }
+    }
+    Ok(info)
 }
 
 #[tauri::command]
 async fn check_native_overlay_update(
     app: tauri::AppHandle,
+    version: Option<u32>,
 ) -> Result<NativeOverlayUpdateInfo, String> {
     #[cfg(target_os = "windows")]
     {
         return tauri::async_runtime::spawn_blocking(move || {
-            check_native_overlay_update_blocking(&app)
+            check_native_overlay_update_blocking(&app, version)
         })
         .await
         .map_err(|error| format!("native overlay update check worker failed: {error}"))?;
@@ -1155,7 +1200,7 @@ async fn check_native_overlay_update(
 
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = app;
+        let _ = (app, version);
         Ok(unsupported_native_overlay_update_info())
     }
 }
@@ -9472,22 +9517,28 @@ async fn apply_native_overlay_update_step(
             let client = native_overlay_http_client()?;
             let release = fetch_native_overlay_release(&client)?;
             let info = native_overlay_update_info_for_release(&app_handle, &release)?;
-            if !info.available {
-                return Ok(false);
+            if info.available {
+                install_native_overlay_update_blocking(&app_handle).map(|_| true)
+            } else {
+                // The app-data DLL may already be current while this game
+                // version's `version.dll` proxy has a stale or missing
+                // `.hq-overlay-version` stamp. The proxy still needs to be
+                // staged in that case, just like a mod update is applied to
+                // the selected version directory.
+                Ok(false)
             }
-            install_native_overlay_update_blocking(&app_handle).map(|_| true)
         })
         .await;
 
         match installed {
-            Ok(Ok(true)) => {
-                // Stage into the version directory being updated only; other
-                // versions pick up the overlay on their next launch or update.
+            Ok(Ok(_)) => {
+                // Always run the stamp/size check for the version being
+                // updated. This also repairs a stale proxy when the central
+                // overlay DLL itself is already up to date.
                 if let Err(error) = stage_native_overlay_as_proxy(app, version_dir) {
-                    log::warn!("failed to stage overlay proxy after update: {error}");
+                    log::warn!("failed to stage overlay proxy during update: {error}");
                 }
             }
-            Ok(Ok(false)) => {} // no overlay update available
             Ok(Err(error)) => {
                 log::warn!("HQ Overlay update failed during unified update step: {error}");
             }

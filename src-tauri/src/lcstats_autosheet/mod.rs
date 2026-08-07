@@ -16,6 +16,14 @@ use tauri::{Emitter, Manager};
 const LCSTATS_SSE_URL: &str = "http://localhost:2145/";
 const LCSTATS_RETRY_DELAY: Duration = Duration::from_secs(3);
 const LCSTATS_WRITE_TIMEOUT: Duration = Duration::from_secs(90);
+/// Per-read deadline for the SSE stream. The C# mod serves one response per
+/// day then closes the connection, but the launcher has no request timeout of
+/// its own. Without this, a half-open/idle connection (e.g. after the OS
+/// reaps an idle TCP socket hours into a long session) leaves the listener
+/// waiting forever on a dead stream — the "parses for a while then stops
+/// permanently" symptom. A bounded read deadline forces a reconnect so the
+/// listener recovers on its own.
+const LCSTATS_SSE_READ_TIMEOUT: Duration = Duration::from_secs(120);
 /// Upper bound for the exponential retry backoff. Once the delay grows past
 /// this it stays capped here, so a persistently failing write is retried
 /// indefinitely at a steady cadence instead of being dropped.
@@ -263,13 +271,26 @@ async fn run_listener(app: tauri::AppHandle, state: LcStatsAutosheetState) -> Re
                 );
             }
             WriteOutcome::TimedOut => {
-                // The HTTP call timed out, so we cannot tell whether the write
-                // landed. Keep the fingerprint committed so a replay does not
-                // duplicate the row, and accept a rare miss over a guaranteed
-                // duplicate. We deliberately do NOT queue this for retry.
                 log::warn!(
-                    "LCStatsTracker AutoSheet request {request_id} input timed out; not retried to avoid duplicate rows"
+                    "LCStatsTracker AutoSheet request {request_id} input timed out; queued for retry because the row may not have been written"
                 );
+                if let Err(queue_error) = enqueue_pending_stats(
+                    &state,
+                    request_id,
+                    settings,
+                    stats,
+                    LCSTATS_WRITE_TIMEOUT_ERROR.to_string(),
+                ) {
+                    log::error!(
+                        "LCStatsTracker AutoSheet request {request_id} input error: failed to keep timed-out write in memory retry queue: {queue_error}"
+                    );
+                } else if let Err(retry_error) =
+                    flush_pending_stats(app.clone(), &client, &state).await
+                {
+                    log::warn!(
+                        "LCStatsTracker AutoSheet request {request_id} timed-out write retry is pending: {retry_error}"
+                    );
+                }
             }
             WriteOutcome::Failed(error) => {
                 // Unambiguous failure: the write did not commit. It is safe to
@@ -581,24 +602,43 @@ async fn receive_lcstats_payload(client: &reqwest::Client) -> Result<String, Str
         return Err(format!("LCStatsTracker SSE returned {}", response.status()));
     }
 
-    let mut buffer = String::new();
+    // Accumulate raw bytes rather than decoding each chunk. A chunk boundary
+    // can fall in the middle of a multi-byte UTF-8 sequence (Korean player
+    // names, emoji); decoding per-chunk would replace the split halves with
+    // U+FFFD and corrupt the JSON, causing serde_json::from_str to fail.
+    // Decoding only the final, complete payload avoids that.
+    let mut buffer: Vec<u8> = Vec::new();
     let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| e.to_string())?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
-        if let Some(payload) = first_complete_sse_payload(&buffer) {
-            return Ok(payload);
+    loop {
+        let next = tokio::time::timeout(LCSTATS_SSE_READ_TIMEOUT, stream.next()).await;
+        match next {
+            Ok(Some(chunk)) => {
+                let chunk = chunk.map_err(|e| e.to_string())?;
+                buffer.extend_from_slice(&chunk);
+                if let Some(payload) = first_complete_sse_payload(&buffer) {
+                    return Ok(payload);
+                }
+            }
+            Ok(None) => break, // stream ended (the C# mod closes after one response)
+            Err(_) => {
+                return Err(format!(
+                    "LCStatsTracker SSE read timed out after {}s",
+                    LCSTATS_SSE_READ_TIMEOUT.as_secs()
+                ));
+            }
         }
     }
 
     Ok(first_sse_payload(&buffer).unwrap_or_default())
 }
 
-fn first_complete_sse_payload(text: &str) -> Option<String> {
-    let normalized = normalize_sse_text(text);
-    let mut rest = normalized.as_str();
-    while let Some((event, next)) = rest.split_once("\n\n") {
-        if let Some(payload) = event_payload(event) {
+fn first_complete_sse_payload(bytes: &[u8]) -> Option<String> {
+    let normalized = normalize_sse_bytes(bytes);
+    let mut rest = normalized.as_slice();
+    while let Some(split) = find_event_boundary(rest) {
+        let event = &rest[..split.start];
+        let next = &rest[split.end..];
+        if let Some(payload) = event_payload_bytes(event) {
             return Some(payload);
         }
         rest = next;
@@ -606,39 +646,172 @@ fn first_complete_sse_payload(text: &str) -> Option<String> {
     None
 }
 
-fn first_sse_payload(text: &str) -> Option<String> {
-    let normalized = normalize_sse_text(text);
-    if let Some(payload) = normalized
-        .split("\n\n")
-        .find_map(|event| event_payload(event))
+fn first_sse_payload(bytes: &[u8]) -> Option<String> {
+    let normalized = normalize_sse_bytes(bytes);
+    if let Some(payload) = iterate_sse_events(&normalized).find_map(|event| event_payload_bytes(event))
     {
         return Some(payload);
     }
 
-    let trimmed = normalized.trim();
-    if trimmed.starts_with('{') || trimmed.starts_with('[') {
-        Some(trimmed.to_string())
+    let trimmed = trim_bytes(&normalized);
+    if trimmed.first().is_some_and(|b| matches!(b, b'{' | b'[')) {
+        String::from_utf8(trimmed.to_vec()).ok()
     } else {
         None
     }
 }
 
-fn event_payload(event: &str) -> Option<String> {
-    let data = event
-        .lines()
-        .filter_map(|line| line.strip_prefix("data:"))
-        .map(|line| line.strip_prefix(' ').unwrap_or(line).trim_end())
-        .collect::<Vec<_>>()
-        .join("\n");
-    if data.trim().is_empty() {
-        None
-    } else {
-        Some(data)
+fn event_payload_bytes(event: &[u8]) -> Option<String> {
+    let mut data_parts: Vec<&[u8]> = Vec::new();
+    for line in split_lines(event) {
+        if let Some(rest) = line.strip_prefix(b"data:") {
+            let rest = rest.strip_prefix(b" ").unwrap_or(rest);
+            data_parts.push(trim_end_bytes(rest));
+        }
+    }
+    if data_parts.is_empty() {
+        return None;
+    }
+    if data_parts.iter().all(|part| part.is_empty()) {
+        return None;
+    }
+    let mut joined = Vec::with_capacity(
+        data_parts
+            .iter()
+            .map(|part| part.len() + 1)
+            .sum::<usize>(),
+    );
+    for (index, part) in data_parts.iter().enumerate() {
+        if index > 0 {
+            joined.push(b'\n');
+        }
+        joined.extend_from_slice(part);
+    }
+    String::from_utf8(joined).ok()
+}
+
+/// Start/end byte offsets of the first `"\n\n"` (or `"\r\n\r\n"`) SSE event
+/// delimiter in `bytes`, normalized so both CRLF and LF are recognized.
+struct EventBoundary {
+    start: usize,
+    end: usize,
+}
+
+fn find_event_boundary(bytes: &[u8]) -> Option<EventBoundary> {
+    let mut index = 0;
+    while index + 1 < bytes.len() {
+        if bytes[index] == b'\n' {
+            if bytes[index + 1] == b'\n' {
+                return Some(EventBoundary {
+                    start: index,
+                    end: index + 2,
+                });
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
+fn iterate_sse_events(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    struct EventIter<'a> {
+        remaining: &'a [u8],
+    }
+    impl<'a> Iterator for EventIter<'a> {
+        type Item = &'a [u8];
+        fn next(&mut self) -> Option<&'a [u8]> {
+            if self.remaining.is_empty() {
+                return None;
+            }
+            match find_event_boundary(self.remaining) {
+                Some(split) => {
+                    let event = &self.remaining[..split.start];
+                    self.remaining = &self.remaining[split.end..];
+                    Some(event)
+                }
+                None => {
+                    let event = self.remaining;
+                    self.remaining = &[];
+                    if event.is_empty() {
+                        None
+                    } else {
+                        Some(event)
+                    }
+                }
+            }
+        }
+    }
+    EventIter {
+        remaining: bytes,
     }
 }
 
-fn normalize_sse_text(text: &str) -> String {
-    text.replace("\r\n", "\n").replace('\r', "\n")
+fn split_lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    struct LineIter<'a> {
+        remaining: &'a [u8],
+    }
+    impl<'a> Iterator for LineIter<'a> {
+        type Item = &'a [u8];
+        fn next(&mut self) -> Option<&'a [u8]> {
+            if self.remaining.is_empty() {
+                return None;
+            }
+            match self.remaining.iter().position(|b| *b == b'\n') {
+                Some(pos) => {
+                    let (line, rest) = self.remaining.split_at(pos);
+                    self.remaining = if rest.len() > 1 { &rest[1..] } else { &[] };
+                    Some(line)
+                }
+                None => {
+                    let line = self.remaining;
+                    self.remaining = &[];
+                    Some(line)
+                }
+            }
+        }
+    }
+    LineIter { remaining: bytes }
+}
+
+fn trim_end_bytes(bytes: &[u8]) -> &[u8] {
+    let mut end = bytes.len();
+    while end > 0 && matches!(bytes[end - 1], b' ' | b'\t' | b'\r') {
+        end -= 1;
+    }
+    &bytes[..end]
+}
+
+fn trim_bytes(bytes: &[u8]) -> &[u8] {
+    let mut start = 0;
+    while start < bytes.len() && matches!(bytes[start], b' ' | b'\t' | b'\n' | b'\r') {
+        start += 1;
+    }
+    let mut end = bytes.len();
+    while end > start && matches!(bytes[end - 1], b' ' | b'\t' | b'\n' | b'\r') {
+        end -= 1;
+    }
+    &bytes[start..end]
+}
+
+fn normalize_sse_bytes(bytes: &[u8]) -> Vec<u8> {
+    // Normalize CRLF and lone CR to LF, operating on raw bytes so a multi-byte
+    // UTF-8 sequence split across chunks is never partially decoded.
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\r' {
+            out.push(b'\n');
+            if index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
+                index += 2;
+            } else {
+                index += 1;
+            }
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -647,30 +820,60 @@ mod tests {
 
     #[test]
     fn parses_complete_sse_event_before_connection_closes() {
-        let payload = first_complete_sse_payload("event: stats\r\ndata: {\"quota\":130}\r\n\r\n");
+        let payload = first_complete_sse_payload(b"event: stats\r\ndata: {\"quota\":130}\r\n\r\n");
 
         assert_eq!(payload.as_deref(), Some("{\"quota\":130}"));
     }
 
     #[test]
     fn does_not_parse_incomplete_streaming_event() {
-        let payload = first_complete_sse_payload("data: {\"quota\":130}");
+        let payload = first_complete_sse_payload(b"data: {\"quota\":130}");
 
         assert_eq!(payload, None);
     }
 
     #[test]
     fn parses_final_sse_event_when_server_closes_without_blank_line() {
-        let payload = first_sse_payload("data: {\"quota\":130}");
+        let payload = first_sse_payload(b"data: {\"quota\":130}");
 
         assert_eq!(payload.as_deref(), Some("{\"quota\":130}"));
     }
 
     #[test]
     fn accepts_raw_json_payloads_from_non_sse_responses() {
-        let payload = first_sse_payload("  {\"quota\":130}\n");
+        let payload = first_sse_payload(b"  {\"quota\":130}\n");
 
         assert_eq!(payload.as_deref(), Some("{\"quota\":130}"));
+    }
+
+    #[test]
+    fn parses_multibyte_payload_split_across_chunk_boundary() {
+        // "Asta":"멍늅잉" — the Korean name is 9 UTF-8 bytes (3 per syllable).
+        // Splitting the JSON in the middle of the name must still decode to the
+        // original string rather than producing U+FFFD replacement characters
+        // that would make serde_json::from_str fail.
+        let name = "멍늅잉";
+        let full: Vec<u8> = format!("data: {{\"Asta\":\"{}\"}}\n\n", name).into_bytes();
+        // Cut inside the first 3-byte syllable (after 1 byte of it).
+        let split_at = full
+            .windows(name.len())
+            .position(|w| w == name.as_bytes())
+            .unwrap()
+            + 1;
+        let part1 = &full[..split_at];
+        let part2 = &full[split_at..];
+
+        let mut combined = Vec::with_capacity(full.len());
+        combined.extend_from_slice(part1);
+        // The first chunk alone (cut mid-codepoint) must NOT yield a payload,
+        // because the event is incomplete (\n\n not reached yet) — and even if
+        // it were, we must never decode a partial buffer.
+        assert_eq!(first_complete_sse_payload(&combined), None);
+
+        combined.extend_from_slice(part2);
+        let payload = first_complete_sse_payload(&combined).expect("joined payload parses");
+        let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(parsed["Asta"].as_str(), Some(name));
     }
 
     #[test]

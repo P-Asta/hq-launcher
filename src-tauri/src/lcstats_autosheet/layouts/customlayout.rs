@@ -424,7 +424,12 @@ async fn handle_economy_event(
     row: usize,
     payload: &LcStats,
 ) -> Result<(), String> {
-    let mut updates = vec![];
+    // Always occupy the check column on an economy (company/sell) day. The
+    // check column is what first_empty_row_from scans; if it stays blank the
+    // next regular day resolves to this same row and overwrites/absorbs it —
+    // a silent row loss with no error log. A "Company" text marker reserves
+    // the row and keeps company days visible at a glance.
+    let mut updates = vec![economy_row_marker(layout, row)];
     let value_sold = payload.value_sold();
     let new_quota = payload.new_quota();
 
@@ -444,6 +449,13 @@ async fn handle_economy_event(
     }
 
     batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, updates).await
+}
+
+/// Check-column marker written on economy (company/sell) days so the row is
+/// reserved and the next regular day does not overwrite it. See
+/// `handle_economy_event` for why this is required.
+fn economy_row_marker(layout: &ResolvedCustomLayout, row: usize) -> (String, usize, Value) {
+    (layout.check_column.clone(), row, json!("Company"))
 }
 
 #[derive(Debug, Clone)]
@@ -2660,5 +2672,19 @@ mod tests {
     fn normalized_stats(stats: &Value, layout: &ResolvedCustomLayout) -> NormalizedStats {
         let payload = lcstats(stats);
         NormalizedStats::from_stats(stats, &payload, layout)
+    }
+
+    #[test]
+    fn economy_day_reserves_check_column_row() {
+        // Company/sell days must occupy the check column so first_empty_row_from
+        // skips this row on the next regular day (silent row loss otherwise).
+        let layout = ResolvedCustomLayout::from_settings(&CustomLcStatsLayoutSettings {
+            check_column: "G".to_string(),
+            ..Default::default()
+        });
+        let marker = economy_row_marker(&layout, 6);
+        assert_eq!(marker.0, "G");
+        assert_eq!(marker.1, 6);
+        assert_eq!(marker.2, json!("Company"));
     }
 }
