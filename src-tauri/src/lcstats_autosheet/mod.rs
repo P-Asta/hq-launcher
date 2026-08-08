@@ -15,15 +15,11 @@ use tauri::{Emitter, Manager};
 
 const LCSTATS_SSE_URL: &str = "http://localhost:2145/";
 const LCSTATS_RETRY_DELAY: Duration = Duration::from_secs(3);
+const LCSTATS_RECONNECT_BASE_DELAY: Duration = Duration::from_secs(1);
+const LCSTATS_RECONNECT_BACKOFF_CAP: Duration = Duration::from_secs(3);
+const LCSTATS_TCP_KEEPALIVE: Duration = Duration::from_secs(15);
+const LCSTATS_TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
 const LCSTATS_WRITE_TIMEOUT: Duration = Duration::from_secs(90);
-/// Per-read deadline for the SSE stream. The C# mod serves one response per
-/// day then closes the connection, but the launcher has no request timeout of
-/// its own. Without this, a half-open/idle connection (e.g. after the OS
-/// reaps an idle TCP socket hours into a long session) leaves the listener
-/// waiting forever on a dead stream — the "parses for a while then stops
-/// permanently" symptom. A bounded read deadline forces a reconnect so the
-/// listener recovers on its own.
-const LCSTATS_SSE_READ_TIMEOUT: Duration = Duration::from_secs(120);
 /// Upper bound for the exponential retry backoff. Once the delay grows past
 /// this it stays capped here, so a persistently failing write is retried
 /// indefinitely at a steady cadence instead of being dropped.
@@ -167,19 +163,24 @@ fn ensure_listener(app: tauri::AppHandle, state: &tauri::State<'_, LcStatsAutosh
     log::info!("Starting LCStatsTracker AutoSheet listener");
     let state = state.inner().clone();
     tauri::async_runtime::spawn(async move {
-        let result = run_listener(app, state.clone()).await;
-        if let Err(e) = result {
-            log::error!("LCStatsTracker AutoSheet listener stopped: {e}");
+        loop {
+            let result = run_listener(app.clone(), state.clone()).await;
+            if let Err(e) = result {
+                log::error!("LCStatsTracker AutoSheet listener stopped unexpectedly: {e}");
+            }
+            if !state.running.load(Ordering::Acquire) {
+                break;
+            }
+            log::info!("Restarting LCStatsTracker AutoSheet listener after an unexpected stop");
+            tokio::time::sleep(LCSTATS_RETRY_DELAY).await;
         }
         state.listener_running.store(false, Ordering::Release);
     });
 }
 
 async fn run_listener(app: tauri::AppHandle, state: LcStatsAutosheetState) -> Result<(), String> {
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(2))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let mut client = build_lcstats_client()?;
+    let mut reconnect_attempt = 0u32;
 
     loop {
         if !state.running.load(Ordering::Acquire) {
@@ -188,17 +189,46 @@ async fn run_listener(app: tauri::AppHandle, state: LcStatsAutosheetState) -> Re
         }
 
         let payload = match receive_lcstats_payload(&client).await {
-            Ok(payload) => payload.trim().to_string(),
+            Ok(payload) if !payload.trim().is_empty() => {
+                reconnect_attempt = 0;
+                payload.trim().to_string()
+            }
+            Ok(_) => {
+                reconnect_attempt = reconnect_attempt.saturating_add(1);
+                if reconnect_attempt == 1 {
+                    log::warn!(
+                        "LCStatsTracker SSE connection closed without a payload; rebuilding connection immediately"
+                    );
+                } else {
+                    log::debug!(
+                        "LCStatsTracker SSE reconnect attempt {reconnect_attempt} returned no payload; retrying immediately"
+                    );
+                }
+                // An empty response can be a transient race in the mod's SSE
+                // handler. Reconnect before the pending payload is reset or
+                // another fast practice-day event is published.
+                client = build_lcstats_client()?;
+                continue;
+            }
             Err(e) => {
-                log::debug!("LCStatsTracker SSE not ready: {e}");
-                tokio::time::sleep(LCSTATS_RETRY_DELAY).await;
+                reconnect_attempt = reconnect_attempt.saturating_add(1);
+                let delay = reconnect_backoff_delay(reconnect_attempt);
+                if reconnect_attempt == 1 {
+                    log::warn!(
+                        "LCStatsTracker SSE connection lost: {e}; rebuilding connection in {}s",
+                        delay.as_secs()
+                    );
+                } else {
+                    log::debug!(
+                        "LCStatsTracker SSE reconnect attempt {reconnect_attempt} failed: {e}; retrying in {}s",
+                        delay.as_secs()
+                    );
+                }
+                tokio::time::sleep(delay).await;
+                client = build_lcstats_client()?;
                 continue;
             }
         };
-        if payload.is_empty() {
-            log::warn!("LCStatsTracker AutoSheet payload ignored: empty payload from local server");
-            continue;
-        }
         if !state.running.load(Ordering::Acquire) {
             log::debug!("LCStatsTracker AutoSheet payload ignored: tracking is stopped");
             continue;
@@ -313,6 +343,27 @@ async fn run_listener(app: tauri::AppHandle, state: LcStatsAutosheetState) -> Re
             }
         }
     }
+}
+
+fn build_lcstats_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(2))
+        // Preserve the server's intentional day-long HTTP response while
+        // letting the OS detect a genuinely dead local socket. Unlike an HTTP
+        // read timeout, TCP keepalive does not abandon a healthy long poll.
+        .tcp_keepalive(LCSTATS_TCP_KEEPALIVE)
+        .tcp_keepalive_interval(LCSTATS_TCP_KEEPALIVE_INTERVAL)
+        .tcp_keepalive_retries(3)
+        .build()
+        .map_err(|e| format!("failed to build LCStatsTracker HTTP client: {e}"))
+}
+
+fn reconnect_backoff_delay(attempt: u32) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(2);
+    let delay_secs = LCSTATS_RECONNECT_BASE_DELAY
+        .as_secs()
+        .saturating_mul(1u64 << exponent);
+    Duration::from_secs(delay_secs).min(LCSTATS_RECONNECT_BACKOFF_CAP)
 }
 
 /// Outcome of a write attempt for one payload.
@@ -609,23 +660,17 @@ async fn receive_lcstats_payload(client: &reqwest::Client) -> Result<String, Str
     // Decoding only the final, complete payload avoids that.
     let mut buffer: Vec<u8> = Vec::new();
     let mut stream = response.bytes_stream();
-    loop {
-        let next = tokio::time::timeout(LCSTATS_SSE_READ_TIMEOUT, stream.next()).await;
-        match next {
-            Ok(Some(chunk)) => {
-                let chunk = chunk.map_err(|e| e.to_string())?;
-                buffer.extend_from_slice(&chunk);
-                if let Some(payload) = first_complete_sse_payload(&buffer) {
-                    return Ok(payload);
-                }
-            }
-            Ok(None) => break, // stream ended (the C# mod closes after one response)
-            Err(_) => {
-                return Err(format!(
-                    "LCStatsTracker SSE read timed out after {}s",
-                    LCSTATS_SSE_READ_TIMEOUT.as_secs()
-                ));
-            }
+    // This endpoint is a long poll, not a continuously-chatty SSE feed. The
+    // server intentionally sends no bytes until the in-game day ends. Do not
+    // impose an application-level read timeout here: abandoning a request does
+    // not cancel its server-side waiter, and repeated reconnects leave multiple
+    // waiters racing to consume/reset the next day payload. TCP keepalive on
+    // reqwest's connection still detects genuinely broken sockets.
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        buffer.extend_from_slice(&chunk);
+        if let Some(payload) = first_complete_sse_payload(&buffer) {
+            return Ok(payload);
         }
     }
 
@@ -892,5 +937,14 @@ mod tests {
             mark_payload_for_write(&state, "{\"quota\":160}").unwrap(),
             true
         );
+    }
+
+    #[test]
+    fn reconnect_backoff_is_bounded() {
+        assert_eq!(reconnect_backoff_delay(1), Duration::from_secs(1));
+        assert_eq!(reconnect_backoff_delay(2), Duration::from_secs(2));
+        assert_eq!(reconnect_backoff_delay(3), Duration::from_secs(3));
+        assert_eq!(reconnect_backoff_delay(4), Duration::from_secs(3));
+        assert_eq!(reconnect_backoff_delay(u32::MAX), Duration::from_secs(3));
     }
 }

@@ -7175,13 +7175,15 @@ fn game_overlay_should_ignore_window_management_shortcut() -> bool {
     }
 
     let alt_tab = key_down(VK_ALT_KEY) && key_down(VK_TAB_KEY);
-    let win_arrow = (key_down(VK_LWIN_KEY) || key_down(VK_RWIN_KEY))
+    let win_down = key_down(VK_LWIN_KEY) || key_down(VK_RWIN_KEY);
+    let win_tab = win_down && key_down(VK_TAB_KEY);
+    let win_arrow = win_down
         && (key_down(VK_LEFT_KEY)
             || key_down(VK_RIGHT_KEY)
             || key_down(VK_UP_KEY)
             || key_down(VK_DOWN_KEY));
 
-    alt_tab || win_arrow
+    alt_tab || win_tab || win_arrow
 }
 
 #[cfg(target_os = "windows")]
@@ -7787,6 +7789,40 @@ fn register_game_overlay_shortcut(app: &tauri::AppHandle) {
             }
         }
     }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn suspend_game_overlay_shortcut_for_native(app: &tauri::AppHandle) {
+    let state = app.state::<GameOverlayState>();
+    let shortcut_label = state
+        .registered_overlay_shortcut
+        .lock()
+        .ok()
+        .and_then(|mut registered| registered.take());
+    let Some(shortcut_label) = shortcut_label else {
+        return;
+    };
+
+    let shortcuts = overlay_shortcuts_for_key(&shortcut_label);
+    if !shortcuts.is_empty() {
+        if let Err(error) = app.global_shortcut().unregister_multiple(shortcuts) {
+            log::warn!(
+                "Failed to release overlay shortcut {shortcut_label} for native Wine overlay: {error}"
+            );
+            // Keep the bookkeeping aligned with the actual registration so a
+            // later retry can unregister it before attempting to re-register.
+            if let Ok(mut registered) = state.registered_overlay_shortcut.lock() {
+                *registered = Some(shortcut_label);
+            }
+            return;
+        }
+    }
+    set_game_overlay_debug(
+        app,
+        format!(
+            "released launcher shortcut {shortcut_label} for native Wine overlay input"
+        ),
+    );
 }
 
 fn normalize_mod_id(dev: &str, name: &str) -> DisabledMod {
@@ -8599,6 +8635,10 @@ struct ActiveGame {
     // Vanilla Run hides both proxy DLLs (BepInEx winhttp.dll and the HQ overlay
     // version.dll) so neither loads in the unmodded game. Both restore on drop.
     _vanilla_proxy_dll_guards: Option<Vec<VanillaProxyDllGuard>>,
+    // Legacy/Off launches hide only the native HQ overlay proxy. Keep the
+    // guard alive until the game exits so version.dll cannot be loaded by a
+    // child process started later in the same run.
+    _non_native_overlay_proxy_guard: Option<VanillaProxyDllGuard>,
 }
 
 #[derive(Default)]
@@ -9916,7 +9956,7 @@ fn ensure_launch_compatible_with_active_games(
     app: &tauri::AppHandle,
     state: &State<'_, GameState>,
     version: u32,
-    vanilla: bool,
+    mutates_proxy_dlls: bool,
 ) -> Result<(), String> {
     let mut guard = state
         .active
@@ -9924,11 +9964,15 @@ fn ensure_launch_compatible_with_active_games(
         .map_err(|_| "game state lock poisoned".to_string())?;
     cleanup_active_games(app, &mut guard)?;
     let conflict = guard.iter().any(|active| {
-        active.version == version && (vanilla || active._vanilla_proxy_dll_guards.is_some())
+        active.version == version
+            && (mutates_proxy_dlls
+                || active._vanilla_proxy_dll_guards.is_some()
+                || active._non_native_overlay_proxy_guard.is_some())
     });
     if conflict {
         return Err(
-            "Vanilla and modded runs cannot use the same game version at the same time".to_string(),
+            "Runs that change proxy DLL availability cannot use the same game version at the same time"
+                .to_string(),
         );
     }
     Ok(())
@@ -9981,6 +10025,8 @@ fn clear_native_overlay_runtime_for_pid(
     if let Ok(cfg) = read_game_overlay_config(app) {
         sync_game_overlay_runtime_state(app, &cfg);
     }
+    #[cfg(not(target_os = "windows"))]
+    register_game_overlay_shortcut(app);
     Ok(())
 }
 
@@ -10028,7 +10074,12 @@ fn inject_launch_dlls(
             );
             continue;
         }
-        inject_dll_into_process(pid, &dll)?;
+        inject_dll_into_process(pid, &dll).map_err(|error| {
+            format!(
+                "failed to inject optional Steam overlay DLL {}: {error}",
+                dll.display()
+            )
+        })?;
     }
 
     if !load_bepinex {
@@ -10040,7 +10091,12 @@ fn inject_launch_dlls(
         log::warn!("winhttp.dll not found: {}", dll_path.to_string_lossy());
         return Ok(());
     }
-    inject_dll_into_process(pid, &dll_path)?;
+    inject_dll_into_process(pid, &dll_path).map_err(|error| {
+        format!(
+            "failed to inject BepInEx bootstrap DLL {}: {error}",
+            dll_path.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -10295,7 +10351,6 @@ fn spawn_game_process(
 ) -> Result<std::process::Child, String> {
     if load_bepinex {
         VanillaProxyDllGuard::restore_stale(_version_dir, VanillaProxyDllGuard::WINHTTP)?;
-        VanillaProxyDllGuard::restore_stale(_version_dir, VanillaProxyDllGuard::VERSION)?;
     }
 
     #[cfg(target_os = "windows")]
@@ -10516,10 +10571,19 @@ fn spawn_game_process(
                 overlay_config.steam_path.as_deref(),
                 load_bepinex,
             ) {
-                log::error!("failed to inject launch DLLs into pid {}: {}", pid, e);
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(e);
+                // Remote-thread injection is an optional compatibility path for
+                // the Steam overlay. Windows security policy, endpoint security,
+                // or a higher-integrity target can legitimately reject it with
+                // ERROR_ACCESS_DENIED. The local winhttp/version proxy DLLs are
+                // still discovered by the PE loader, so do not turn an overlay
+                // failure into a game-launch failure (or leave the child
+                // suspended). Keep the detailed DLL path in the warning so the
+                // disabled optional component remains diagnosable.
+                log::warn!(
+                    "optional launch DLL injection unavailable for pid {}: {}; continuing game launch",
+                    pid,
+                    e
+                );
             }
         }
 
@@ -10848,19 +10912,27 @@ fn spawn_game_process(
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         if native_injected {
-            // The Wine PE loader loads version.dll at process start; the
-            // readiness handshake happens out-of-band once the DLL initializes
-            // its WebView2 surface. Mirror the Windows "pending" state and rely
-            // on the same timeout semantics.
+            // The Wine PE loader loads version.dll at process start. Windows
+            // named-event handles cannot be opened by this native Linux
+            // launcher, so there is no cross-process Ready handshake to move a
+            // staged overlay out of `pending`. Treat successful pre-spawn
+            // staging as the activation boundary: the proxy is loaded before
+            // the game creates its first swapchain and the in-process overlay
+            // owns its own initialization/recovery from that point on.
             set_game_overlay_backend_runtime(
                 _app,
                 requested_backend,
-                "pending",
+                "native",
                 pid,
-                false,
-                None,
+                true,
+                native_dll_path.as_deref(),
                 None,
             );
+            set_game_overlay_debug(
+                _app,
+                format!("native HQ overlay activated through Wine proxy for pid {pid}"),
+            );
+            suspend_game_overlay_shortcut_for_native(_app);
             drop(transition_guard);
         } else {
             let effective_backend =
@@ -10924,7 +10996,7 @@ impl VanillaProxyDllGuard {
     const VERSION: &'static str = "version.dll";
 
     fn disabled_suffix() -> &'static str {
-        ".hq-launcher-disabled"
+        ".old"
     }
 
     fn restore_stale(version_dir: &std::path::Path, dll_name: &str) -> Result<(), String> {
@@ -10933,7 +11005,7 @@ impl VanillaProxyDllGuard {
         if !original.exists() && hidden.exists() {
             std::fs::rename(&hidden, &original).map_err(|e| {
                 format!(
-                    "failed to restore stale vanilla {dll_name} backup {}: {e}",
+                    "failed to restore stale disabled {dll_name} backup {}: {e}",
                     hidden.to_string_lossy()
                 )
             })?;
@@ -10951,7 +11023,7 @@ impl VanillaProxyDllGuard {
 
         if original.exists() && hidden.exists() {
             return Err(format!(
-                "cannot start Vanilla Run because both {} and {} exist",
+                "cannot change proxy DLL availability because both {} and {} exist",
                 original.to_string_lossy(),
                 hidden.to_string_lossy()
             ));
@@ -10981,7 +11053,7 @@ impl VanillaProxyDllGuard {
         }
         std::fs::rename(&self.hidden, &self.original).map_err(|e| {
             format!(
-                "the vanilla game started, but {} could not be restored from {}: {e}",
+                "the game started, but {} could not be restored from {}: {e}",
                 self.dll_name,
                 self.hidden.to_string_lossy()
             )
@@ -10994,8 +11066,25 @@ impl VanillaProxyDllGuard {
 impl Drop for VanillaProxyDllGuard {
     fn drop(&mut self) {
         if let Err(e) = self.restore() {
-            log::error!("Failed to restore {} after Vanilla Run: {e}", self.dll_name);
+            log::error!("Failed to restore {} after game exit: {e}", self.dll_name);
         }
+    }
+}
+
+fn native_overlay_proxy_enabled_for_launch(app: &tauri::AppHandle) -> Result<bool, String> {
+    let config = read_game_overlay_config(app)?;
+    Ok(config.general.enabled && config.general.backend.requests_native())
+}
+
+fn prepare_native_overlay_proxy_for_launch(
+    version_dir: &std::path::Path,
+    enabled: bool,
+) -> Result<Option<VanillaProxyDllGuard>, String> {
+    if enabled {
+        VanillaProxyDllGuard::restore_stale(version_dir, VanillaProxyDllGuard::VERSION)?;
+        Ok(None)
+    } else {
+        VanillaProxyDllGuard::hide(version_dir, VanillaProxyDllGuard::VERSION).map(Some)
     }
 }
 
@@ -11567,13 +11656,21 @@ async fn launch_game(
         .launch_lock
         .lock()
         .map_err(|_| "game launch lock poisoned".to_string())?;
-    ensure_launch_compatible_with_active_games(&app, &state, version, false)?;
+    let use_native_overlay_proxy = native_overlay_proxy_enabled_for_launch(&app)?;
+    ensure_launch_compatible_with_active_games(
+        &app,
+        &state,
+        version,
+        !use_native_overlay_proxy,
+    )?;
     if !allow_multiple.unwrap_or(false) {
         ensure_game_not_running(&app, &state)?;
     }
 
     let launch_options = launch_options.unwrap_or_default();
     let launch_command_template_for_state = launch_command_template.clone();
+    let non_native_overlay_proxy_guard =
+        prepare_native_overlay_proxy_for_launch(&dir, use_native_overlay_proxy)?;
     let child = spawn_game_process(
         &app,
         &dir,
@@ -11597,6 +11694,7 @@ async fn launch_game(
         launch_options,
         launch_command_template: launch_command_template_for_state,
         _vanilla_proxy_dll_guards: None,
+        _non_native_overlay_proxy_guard: non_native_overlay_proxy_guard,
     });
     let lcstats_enabled = is_lcstats_enabled(&app)?;
     lcstats_autosheet::start_for_launch(app.clone(), lcstats_enabled, &lcstats_state);
@@ -11657,6 +11755,7 @@ async fn launch_game_vanilla(
         // The guards restore winhttp.dll and version.dll when this active game
         // is removed (dropped).
         _vanilla_proxy_dll_guards: Some(vec![winhttp_guard, version_guard]),
+        _non_native_overlay_proxy_guard: None,
     });
     show_game_overlay(&app);
     Ok(pid)
@@ -11701,13 +11800,21 @@ async fn launch_game_practice(
         .launch_lock
         .lock()
         .map_err(|_| "game launch lock poisoned".to_string())?;
-    ensure_launch_compatible_with_active_games(&app, &state, version, false)?;
+    let use_native_overlay_proxy = native_overlay_proxy_enabled_for_launch(&app)?;
+    ensure_launch_compatible_with_active_games(
+        &app,
+        &state,
+        version,
+        !use_native_overlay_proxy,
+    )?;
     if !allow_multiple.unwrap_or(false) {
         ensure_game_not_running(&app, &state)?;
     }
 
     let launch_options = launch_options.unwrap_or_default();
     let launch_command_template_for_state = launch_command_template.clone();
+    let non_native_overlay_proxy_guard =
+        prepare_native_overlay_proxy_for_launch(&dir, use_native_overlay_proxy)?;
     let child = spawn_game_process(
         &app,
         &dir,
@@ -11731,6 +11838,7 @@ async fn launch_game_practice(
         launch_options,
         launch_command_template: launch_command_template_for_state,
         _vanilla_proxy_dll_guards: None,
+        _non_native_overlay_proxy_guard: non_native_overlay_proxy_guard,
     });
     let lcstats_enabled = is_lcstats_enabled(&app)?;
     lcstats_autosheet::start_for_launch(app.clone(), lcstats_enabled, &lcstats_state);
@@ -11845,13 +11953,21 @@ async fn launch_game_preset(
         .launch_lock
         .lock()
         .map_err(|_| "game launch lock poisoned".to_string())?;
-    ensure_launch_compatible_with_active_games(&app, &state, version, false)?;
+    let use_native_overlay_proxy = native_overlay_proxy_enabled_for_launch(&app)?;
+    ensure_launch_compatible_with_active_games(
+        &app,
+        &state,
+        version,
+        !use_native_overlay_proxy,
+    )?;
     if !allow_multiple.unwrap_or(false) {
         ensure_game_not_running(&app, &state)?;
     }
 
     let launch_options = launch_options.unwrap_or_default();
     let launch_command_template_for_state = launch_command_template.clone();
+    let non_native_overlay_proxy_guard =
+        prepare_native_overlay_proxy_for_launch(&dir, use_native_overlay_proxy)?;
     let child = spawn_game_process(
         &app,
         &dir,
@@ -11880,6 +11996,7 @@ async fn launch_game_preset(
         launch_options,
         launch_command_template: launch_command_template_for_state,
         _vanilla_proxy_dll_guards: None,
+        _non_native_overlay_proxy_guard: non_native_overlay_proxy_guard,
     });
     let lcstats_enabled = is_lcstats_enabled(&app)?;
     lcstats_autosheet::start_for_launch(app.clone(), lcstats_enabled, &lcstats_state);
