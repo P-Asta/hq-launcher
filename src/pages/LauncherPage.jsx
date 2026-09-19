@@ -29,1500 +29,158 @@ import { Input } from "../components/ui/input";
 import { Checkbox } from "../components/ui/checkbox";
 import { Switch } from "../components/ui/switch";
 import { Slider } from "../components/ui/slider";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectSeparator,
-  SelectTrigger,
-  SelectValue,
-} from "../components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { cn } from "../lib/cn";
+import { ModCover } from "../components/launcher/ModCover";
+import { ScrollableDropdownContent } from "../components/launcher/ScrollableDropdownContent";
+import { LauncherPageSkeleton } from "../components/launcher/Skeletons";
+import { isAuthError } from "../lib/errors";
+import { clamp, fmtBytes, formatExtractProgress, formatTransferProgress, sleep, valueLabel } from "../lib/format";
+import { BASE_VLOG_MOD_KEY, DEFAULT_MOD_PANEL_WIDTH, DISCORD_DOWNLOAD_URL, ECLIPSED_FORCED_MOD_KEYS, ECLIPSED_HQ_OPTIONAL_MOD_KEYS, EVENT_VLOG_MOD, LAUNCH_OPTIONS_STORAGE_KEY, MIN_CONFIG_PANEL_WIDTH, MIN_MOD_PANEL_WIDTH, MOD_PANEL_WIDTH_STORAGE_KEY, PRACTICE_LOCKED_MOD_KEYS, RUN_MODE_VALUES, SMHQ_FORCED_MOD_KEYS, RUN_OPTIONS } from "./launcher/constants";
+import { clampVersionToEvent, eventAllowsTester, eventAllowsVersion, formatEventTimeRemaining, getInitialEventsEnabled, getInitialSelectedEventId, isEventActive, normalizeEventPreset, parseUtcEventTime, saveEventsEnabled, saveSelectedEventId, saveSelectedVersion } from "./launcher/events";
+import { extractSpreadsheetId, findSheetInfoByTitle, findSheetTitleByGid, findSimilarSheetInfoByTitle, normalizeSheetColumn, normalizeSheetColumnList, normalizeSheetInfos, parseSpreadsheetInput } from "./launcher/googleSheets";
+import { getInitialLaunchOptionsConfig, makeDeleteVersionPromptState, normalizeLaunchCommandTemplate, normalizeLaunchOptionsEntries } from "./launcher/launchOptions";
+import { CUSTOM_TIME_FORMAT_OPTIONS, DEFAULT_CUSTOM_LCSTATS_LAYOUT, DEFAULT_LCSTATS_SETTINGS, LCSTATS_LAYOUTS, hasCustomGoogleOauthSettings, isLcStatsTrackerMod, lcstatsLayoutUsesColumnFields, normalizeCustomLcstatsLayout, parseCustomLcstatsLayoutPreset, requiresGoogleOauthForMod } from "./launcher/lcstats";
+import { configPathMatchesMod, isLockedCfgEntry, isModCompatibleWithTags, isModCompatibleWithVersion, isPresetSummaryMod, isUiHiddenMod, listEntryKey, modHasRunModeAffinity, modKey, modKeyLower, filterForcedMods
+} from "./launcher/mods";
+import { clampVersionToRange, getInitialRunMode, getLaunchRequestForRunMode, getPresetModulePriority, getPresetSummarySpec, getPresetVersionRange, isEclipsedHqRunMode, isEclipsedRunMode, isPracticeRunMode, isSmhqRunMode, isVersionWithinRange, saveSelectedRunMode, shouldResetFreeMoonsOnRunModeChange } from "./launcher/runModes";
+import { useDismissableContextMenu } from "../hooks/useContextMenu";
+import { ProgressBar, TaskProgressPanel } from "../components/launcher/TaskProgress";
+import { PrepareCancelButton } from "../components/launcher/PrepareCancelButton";
+import { reconcileEventsEnabled } from "../lib/eventsSetting";
+import { resolveUpdateEvent } from "./launcher/updateTask";
 
-function fmtBytes(n) {
-  if (typeof n !== "number" || !Number.isFinite(n)) return "";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let v = n;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i += 1;
-  }
-  const digits = v >= 100 ? 0 : v >= 10 ? 1 : 2;
-  return `${v.toFixed(digits)} ${units[i]}`;
-}
-
-function formatTransferProgress(task) {
-  const downloaded = Number(task?.downloaded_bytes);
-  if (!Number.isFinite(downloaded)) return "";
-  const total = Number(task?.total_bytes);
-  if (Number.isFinite(total) && total > 0) {
-    return `Download ${fmtBytes(downloaded)} / ${fmtBytes(total)}`;
-  }
-  return downloaded > 0 ? `Download ${fmtBytes(downloaded)}` : "";
-}
-
-function formatExtractProgress(task) {
-  const done = Number(task?.extracted_files);
-  const total = Number(task?.total_files);
-  if (Number.isFinite(done) && Number.isFinite(total) && total > 0) {
-    return `Extract ${done.toLocaleString()} / ${total.toLocaleString()} files`;
-  }
-  return "";
-}
-
-function makeDeleteVersionPromptState(overrides = {}) {
-  return {
-    open: false,
-    version: null,
-    error: "",
-    status: "idle",
-    overall_percent: 0,
-    detail: "",
-    deleted_files: 0,
-    total_files: 0,
-    ...overrides,
-  };
-}
-
-const MOD_PANEL_WIDTH_STORAGE_KEY = "launcherModPanelWidthPercent";
-const LAUNCH_OPTIONS_STORAGE_KEY = "launcherLaunchOptions";
-const DEFAULT_MOD_PANEL_WIDTH = 40;
-const MIN_MOD_PANEL_WIDTH = 260;
-const MIN_CONFIG_PANEL_WIDTH = 320;
-
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function modKey(mod) {
-  return `${mod.dev}::${mod.name}`;
-}
-
-function modKeyLower(mod) {
-  return `${String(mod?.dev ?? "").toLowerCase()}::${String(
-    mod?.name ?? ""
-  ).toLowerCase()}`;
-}
-
-function isUnityExplorerModName(name) {
-  return String(name ?? "")
-    .replace(/[^a-z0-9]/gi, "")
-    .toLowerCase()
-    .includes("unityexplorer");
-}
-
-function configPathMatchesMod(path, mod) {
-  const pathLower = String(path ?? "").toLowerCase();
-  const devLower = String(mod?.dev ?? "").toLowerCase();
-  const nameLower = String(mod?.name ?? "").toLowerCase();
-  if (
-    (devLower && pathLower.includes(devLower)) ||
-    (nameLower && pathLower.includes(nameLower))
-  ) {
-    return true;
-  }
-
-  const fileName = pathLower.split("/").pop();
-  return (
-    isUnityExplorerModName(mod?.name) &&
-    fileName === "com.sinai.unityexplorer.cfg"
-  );
-}
-
-function isLockedCfgEntry(configPath, sectionName, entryName) {
-  return (
-    String(configPath ?? "").toLowerCase() === "asta.evlog.cfg" &&
-    String(sectionName ?? "") === "HQ Launcher" &&
-    String(entryName ?? "") === "EventId"
-  );
-}
-
-function isPracticeRunMode(mode) {
-  return String(mode ?? "").toLowerCase().includes("practice");
-}
-
-function isSmhqRunMode(mode) {
-  return String(mode ?? "").toLowerCase().includes("smhq");
-}
-
-function isEclipsedRunMode(mode) {
-  return String(mode ?? "").toLowerCase().includes("eclipsed");
-}
-
-function isEclipsedHqRunMode(mode) {
-  return String(mode ?? "").toLowerCase() === "eclipsed_hq";
-}
-
-function shouldResetFreeMoonsOnRunModeChange(mode) {
-  return isSmhqRunMode(mode) || isEclipsedHqRunMode(mode);
-}
-
-function isUiHiddenMod(mod) {
-  return Array.isArray(mod?.tags)
-    ? mod.tags.some((tag) => String(tag).toLowerCase() === "ui_hidden")
-    : false;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-function toOptionalNumber(value) {
-  if (value == null || value === "") return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
-
-function isModCompatibleWithVersion(mod, version) {
-  const v = Number(version);
-  if (!Number.isFinite(v)) return true;
-  const lowCap = toOptionalNumber(mod?.low_cap);
-  const highCap = toOptionalNumber(mod?.high_cap);
-  if (lowCap != null && v < lowCap) return false;
-  if (highCap != null && v > highCap) return false;
-  return true;
-}
-
-function getRunModePresetTags(mode) {
-  if (mode === "brutal" || mode === "brutal_practice") return ["Brutal"];
-  if (mode === "brutal_smhq") return ["Brutal", "SMHQ"];
-  if (mode === "brutal_eclipsed") return ["Brutal", "Eclipsed"];
-  if (mode === "c_moons" || mode === "c_moons_practice" || mode === "c_moons_smhq")
-    return ["C.Moons"];
-  if (mode === "c_moons_eclipsed") return ["C.Moons", "Eclipsed"];
-  if (mode === "wesley" || mode === "wesley_practice" || mode === "wesley_smhq")
-    return ["Wesley"];
-  if (mode === "wesley_eclipsed") return ["Wesley", "Eclipsed"];
-  if (mode === "eclipsed_hq") return ["Eclipsed"];
-  return [];
-}
-
-function getManifestPresetConstraint(manifest, tag) {
-  const entries = Object.entries(manifest?.preset_tag_constraints ?? {});
-  const match = entries.find(([key]) => String(key).toLowerCase() === String(tag).toLowerCase());
-  return match?.[1] ?? null;
-}
-
-function getPresetVersionRange(manifest, mode) {
-  const tags = getRunModePresetTags(mode);
-  let low = null;
-  let high = null;
-
-  for (const tag of tags) {
-    const rule = getManifestPresetConstraint(manifest, tag);
-    if (!rule) continue;
-    const lowCap = toOptionalNumber(rule?.low_cap);
-    const highCap = toOptionalNumber(rule?.high_cap);
-    if (lowCap != null) low = low == null ? lowCap : Math.max(low, lowCap);
-    if (highCap != null) high = high == null ? highCap : Math.min(high, highCap);
-  }
-
-  if (low == null && high == null) return null;
-  return { low, high };
-}
-
-function isVersionWithinRange(version, range) {
-  const v = Number(version);
-  if (!Number.isFinite(v) || !range) return true;
-  if (range.low != null && v < range.low) return false;
-  if (range.high != null && v > range.high) return false;
-  return true;
-}
-
-function clampVersionToRange(version, range) {
-  const v = Number(version);
-  if (!Number.isFinite(v) || !range) return v;
-  if (range.low != null && v < range.low) return range.low;
-  if (range.high != null && v > range.high) return range.high;
-  return v;
-}
-
-const PRACTICE_LOCKED_MOD_KEYS = new Set([
-  "hqhqteam::vlog",
-  "asta::evlog",
-]);
-
-const BASE_VLOG_MOD_KEY = "hqhqteam::vlog";
-const EVENT_VLOG_MOD = {
-  dev: "asta",
-  name: "EVlog",
-  tags: [],
-  enabled: true,
-};
-
-const SMHQ_FORCED_MOD_KEYS = new Set([
-  "slushyrh::freeeeeemoooooons",
-]);
-
-const ECLIPSED_HQ_OPTIONAL_MOD_KEYS = new Set([
-  "slushyrh::freeeeeemoooooons",
-]);
-
-const ECLIPSED_FORCED_MOD_KEYS = new Set([
-  "stormytuna::eclipseonly",
-  "stormytuna::eclipsedonly",
-]);
-
-const GOOGLE_OAUTH_MOD_KEYS = new Set([
-  "mikuoreo::lcstatstracker",
-]);
-
-const LCSTATS_LAYOUTS = [
-  "Custom Layout",
-  // "AutoSheetModel",
-  "BreadSheet",
-  "WafrodyAutoSheet",
-  // "SerenadeSheet",
-  "CharlyAutoSheet",
-  "EvieAutoSheet",
-  "Evilsheet",
-  "MakuSheet 1.0",
-  "ModdedSheet",
-];
-
-const LCSTATS_LAYOUT_COLUMN_FIELDS = new Set([
-  "AutoSheetModel",
-]);
-
-const DEFAULT_CUSTOM_LCSTATS_LAYOUT = {
-  startRow: 3,
-  checkColumn: "O",
-  textCase: "Original",
-  timeFormat: "12-hour",
-  quotaColumn: "B",
-  seedColumn: "",
-  moonColumn: "F",
-  weatherColumn: "G",
-  layoutColumn: "H",
-  itemCountColumn: "I",
-  apparatusColumn: "",
-  beeAmountColumn: "J",
-  splitHiveCount: false,
-  beehiveCollectedColumn: "",
-  beehiveCollectedValueColumn: "",
-  beehiveCollectedNotesEnabled: true,
-  beeValueColumn: "K",
-  cheapHiveColumn: "",
-  expensiveHiveColumn: "",
-  writeZeroForMissingHives: false,
-  eggColumn: "L",
-  eggNotesEnabled: false,
-  availableEggValueColumn: "",
-  availableOutdoorValueColumn: "",
-  collectedEggColumn: "",
-  collectedEggNotesEnabled: true,
-  nutColumn: "M",
-  nutCollectColumn: "",
-  nutNotesEnabled: false,
-  butlerColumn: "N",
-  butlerCollectColumn: "",
-  butlerNotesEnabled: false,
-  collectedColumn: "O",
-  availableColumn: "P",
-  realAvailableColumn: "",
-  collectedNoExtraColumn: "",
-  missingColumn: "Q",
-  filterCollectedGiftScrapFromMissing: true,
-  outsideItemsColumn: "",
-  soldColumn: "X",
-  sidColumn: "Y",
-  sidItemColumn: "",
-  sidNotesEnabled: true,
-  sidWriteFalse: false,
-  infestationColumn: "Z",
-  infestationWriteFalse: false,
-  lostScrapColumn: "AB",
-  takeoffTimeColumn: "",
-  turretColumn: "",
-  landmineColumn: "",
-  spiketrapColumn: "",
-  appLessColumn: "",
-  deathColumns: "AC,AD,AE,AF",
-  playerNameColumns: "",
-  playerNameRow: 1,
-  aliveState: "S",
-  deadState: "X",
-  missingState: "M",
-  disconnectedState: "DC",
-  lateDeadState: "SX",
-  deathNotesEnabled: true,
-  playerNamesAsNotes: false,
-  deathEnemyNotesEnabled: false,
-  enemyWriteFalse: false,
-  enemyWriteZero: false,
-  jesterColumn: "",
-  barberColumn: "",
-  bunkerSpiderColumn: "",
-  brackenColumn: "",
-  cadaverColumn: "",
-  ghostGirlColumn: "",
-  maneaterColumn: "",
-  backwaterGunkfishColumn: "",
-  coilHeadColumn: "",
-  hoardingBugColumn: "",
-  maskedColumn: "",
-  snareFleaColumn: "",
-  sporeLizardColumn: "",
-  thumperColumn: "",
-  earthLeviathanColumn: "",
-  forestGiantColumn: "",
-  baboonHawkColumn: "",
-  oldBirdColumn: "",
-  bushWolfColumn: "",
-  feioparColumn: "",
-  eyelessDogColumn: "",
-  fogColumn: "AG",
-  fogWriteFalse: false,
-  meteorColumn: "AH",
-  meteorWriteFalse: false,
-  giftsColumn: "AI",
-  giftBoxesNetOnly: false,
-};
-
-const DEFAULT_LCSTATS_SETTINGS = {
-  useLcstatsApi: true,
-  spreadsheetId: "",
-  activeSheetName: "",
-  activeSheetId: "",
-  startColumn: "D",
-  quotaColumn: "B",
-  sellColumn: "AE",
-  layout: "AutoSheetModel",
-  customLayout: DEFAULT_CUSTOM_LCSTATS_LAYOUT,
-  googleClientId: "",
-  googleClientSecret: "",
-  googlePickerApiKey: "",
-  googlePickerAppId: "",
-  allowWithoutGoogle: false,
-};
-
-const CUSTOM_TIME_FORMAT_OPTIONS = [
-  { value: "12-hour", label: "7:40 AM" },
-  { value: "12-hour compact", label: "7:40AM" },
-  { value: "24-hour", label: "19:40" },
-];
-
-const GOOGLE_PICKER_SCRIPT_SRC = "https://apis.google.com/js/api.js";
-const GOOGLE_SPREADSHEET_MIME_TYPE = "application/vnd.google-apps.spreadsheet";
-
-let googlePickerApiPromise = null;
-
-function requiresGoogleOauthForMod(mod) {
-  return GOOGLE_OAUTH_MOD_KEYS.has(modKeyLower(mod));
-}
-
-function isLcStatsTrackerMod(mod) {
-  return requiresGoogleOauthForMod(mod);
-}
-
-function lcstatsLayoutUsesColumnFields(layout) {
-  return LCSTATS_LAYOUT_COLUMN_FIELDS.has(layout);
-}
-
-function hasCustomGoogleOauthSettings(settings) {
-  return Boolean(
-    String(settings?.googleClientId ?? "").trim() ||
-      String(settings?.googleClientSecret ?? "").trim()
-  );
-}
-
-function extractSpreadsheetId(value) {
-  const text = String(value ?? "").trim();
-  const match = text.match(/\/spreadsheets\/d\/([^/?#]+)/);
-  return match?.[1] ?? text;
-}
-
-function decodeUrlPart(value) {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
-function parseSpreadsheetInput(value) {
-  const text = String(value ?? "").trim();
-  const spreadsheetMatch = text.match(/\/spreadsheets\/d\/([^/?#]+)/);
-  const gidMatch = text.match(/[?&#]gid=([^&#]+)/);
-  return {
-    spreadsheetId: spreadsheetMatch?.[1] ?? text,
-    sheetGid: gidMatch ? decodeUrlPart(gidMatch[1]) : "",
-    hasSpreadsheetUrl: !!spreadsheetMatch,
-  };
-}
-
-function normalizeSheetInfo(info) {
-  if (typeof info === "string") {
-    return info ? { sheetId: "", title: info } : null;
-  }
-  const title = info?.title ?? info?.name;
-  if (title == null || String(title) === "") return null;
-  const sheetId = info?.sheetId ?? info?.sheet_id ?? info?.id ?? "";
-  return {
-    sheetId: sheetId == null ? "" : String(sheetId),
-    title: String(title),
-  };
-}
-
-function normalizeSheetInfos(value) {
-  if (!Array.isArray(value)) return [];
-  return value.map(normalizeSheetInfo).filter(Boolean);
-}
-
-function findSheetTitleByGid(sheetInfos, sheetGid) {
-  const gid = String(sheetGid ?? "").trim();
-  if (!gid) return "";
-  return sheetInfos.find((sheet) => sheet.sheetId === gid)?.title ?? "";
-}
-
-function findSheetInfoByTitle(sheetInfos, title) {
-  const text = String(title ?? "");
-  if (!text) return null;
-  return sheetInfos.find((sheet) => sheet.title === text) ?? null;
-}
-
-function normalizeSheetMatchName(value) {
-  return String(value ?? "").replace(/[^a-z0-9]/gi, "").toLowerCase();
-}
-
-function findSimilarSheetInfoByTitle(sheetInfos, title) {
-  const preferred = normalizeSheetMatchName(title);
-  if (!preferred) return null;
-  return (
-    sheetInfos.find((sheet) => normalizeSheetMatchName(sheet.title) === preferred) ??
-    sheetInfos.find((sheet) => {
-      const candidate = normalizeSheetMatchName(sheet.title);
-      return candidate.includes(preferred) || preferred.includes(candidate);
-    }) ??
-    null
-  );
-}
-
-function loadGooglePickerApi() {
-  if (typeof window === "undefined") {
-    return Promise.reject(new Error("Google Picker is unavailable."));
-  }
-  if (window.google?.picker && window.gapi) {
-    return Promise.resolve();
-  }
-  if (googlePickerApiPromise) {
-    return googlePickerApiPromise;
-  }
-  googlePickerApiPromise = new Promise((resolve, reject) => {
-    const loadPicker = () => {
-      if (!window.gapi?.load) {
-        googlePickerApiPromise = null;
-        reject(new Error("Google Picker failed to initialize."));
-        return;
-      }
-      window.gapi.load("picker", {
-        callback: resolve,
-        onerror: () => {
-          googlePickerApiPromise = null;
-          reject(new Error("Google Picker failed to load."));
-        },
-        ontimeout: () => {
-          googlePickerApiPromise = null;
-          reject(new Error("Google Picker load timed out."));
-        },
-        timeout: 10000,
-      });
-    };
-
-    const existing = document.querySelector(
-      `script[src="${GOOGLE_PICKER_SCRIPT_SRC}"]`
-    );
-    if (existing) {
-      existing.addEventListener("load", loadPicker, { once: true });
-      existing.addEventListener(
-        "error",
-        () => {
-          googlePickerApiPromise = null;
-          reject(new Error("Google Picker script failed to load."));
-        },
-        { once: true }
-      );
-      if (window.gapi?.load) loadPicker();
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.src = GOOGLE_PICKER_SCRIPT_SRC;
-    script.async = true;
-    script.onload = loadPicker;
-    script.onerror = () => {
-      googlePickerApiPromise = null;
-      reject(new Error("Google Picker script failed to load."));
-    };
-    document.head.appendChild(script);
-  });
-  return googlePickerApiPromise;
-}
-
-function pickerDataValue(source, key, fallback) {
-  return source?.[key] ?? source?.[fallback];
-}
-
-function pickGoogleSpreadsheet({ accessToken, apiKey, appId }) {
-  return new Promise((resolve, reject) => {
-    const picker = window.google?.picker;
-    if (!picker) {
-      reject(new Error("Google Picker is unavailable."));
-      return;
-    }
-    const viewId = picker.ViewId.SPREADSHEETS || picker.ViewId.DOCS;
-    const view = new picker.DocsView(viewId);
-    if (typeof view.setMimeTypes === "function") {
-      view.setMimeTypes(GOOGLE_SPREADSHEET_MIME_TYPE);
-    }
-    if (typeof view.setMode === "function" && picker.DocsViewMode?.LIST) {
-      view.setMode(picker.DocsViewMode.LIST);
-    }
-    if (typeof view.setIncludeFolders === "function") {
-      view.setIncludeFolders(false);
-    }
-    if (typeof view.setSelectFolderEnabled === "function") {
-      view.setSelectFolderEnabled(false);
-    }
-
-    try {
-      const builder = new picker.PickerBuilder()
-        .addView(view)
-        .setOAuthToken(accessToken)
-        .setDeveloperKey(apiKey)
-        .setAppId(appId)
-        .setCallback((data) => {
-          const action = pickerDataValue(data, picker.Response.ACTION, "action");
-          if (action === picker.Action.CANCEL) {
-            resolve(null);
-            return;
-          }
-          if (action !== picker.Action.PICKED) return;
-          const docs = pickerDataValue(data, picker.Response.DOCUMENTS, "docs") ?? [];
-          const doc = docs[0];
-          if (!doc) {
-            resolve(null);
-            return;
-          }
-          resolve({
-            id: pickerDataValue(doc, picker.Document.ID, "id") ?? "",
-            name: pickerDataValue(doc, picker.Document.NAME, "name") ?? "",
-            url: pickerDataValue(doc, picker.Document.URL, "url") ?? "",
-          });
-        });
-      const origin = window.location?.origin;
-      if (origin && origin !== "null" && typeof builder.setOrigin === "function") {
-        builder.setOrigin(origin);
-      }
-      builder.build().setVisible(true);
-    } catch (error) {
-      reject(error);
-    }
-  });
-}
-
-function normalizeSheetColumn(value, fallback) {
-  const text = String(value ?? "")
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z]/g, "");
-  return text || fallback;
-}
-
-function normalizeSheetColumnList(value, fallback) {
-  const text = String(value ?? "")
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z,]/g, "")
-    .replace(/,{2,}/g, ",");
-  return text || fallback;
-}
-
-function normalizeCustomTimeFormat(value) {
-  const text = String(value ?? "").trim();
-  const normalized = text.toLowerCase().replace(/\s+/g, "");
-  if (text === "7:40 AM") return "12-hour";
-  if (normalized === "7:40am") return "12-hour compact";
-  if (text === "19:40") return "24-hour";
-  if (normalized === "keeporiginal" || normalized === "original") return "12-hour";
-  return CUSTOM_TIME_FORMAT_OPTIONS.some((option) => option.value === text)
-    ? text
-    : "12-hour";
-}
-
-function normalizeCustomLcstatsLayout(layout = {}) {
-  const source = { ...DEFAULT_CUSTOM_LCSTATS_LAYOUT, ...(layout ?? {}) };
-  const allowedTextCases = new Set([
-    "Original",
-    "UPPERCASE",
-    "lowercase",
-    "Title Case",
-    "camelCase",
-    "PascalCase",
-  ]);
-  const textCase = allowedTextCases.has(source.textCase)
-    ? source.textCase
-    : "Original";
-  const timeFormat = normalizeCustomTimeFormat(source.timeFormat);
-  return {
-    ...source,
-    startRow: Math.max(1, Math.floor(Number(source.startRow) || 1)),
-    checkColumn: normalizeSheetColumn(source.checkColumn, ""),
-    textCase,
-    timeFormat,
-    quotaColumn: normalizeSheetColumn(source.quotaColumn, ""),
-    seedColumn: normalizeSheetColumn(source.seedColumn, ""),
-    moonColumn: normalizeSheetColumn(source.moonColumn, ""),
-    weatherColumn: normalizeSheetColumn(source.weatherColumn, ""),
-    layoutColumn: normalizeSheetColumn(source.layoutColumn, ""),
-    itemCountColumn: normalizeSheetColumn(source.itemCountColumn, ""),
-    apparatusColumn: normalizeSheetColumn(source.apparatusColumn, ""),
-    beeAmountColumn: normalizeSheetColumn(source.beeAmountColumn, ""),
-    splitHiveCount: source.splitHiveCount === true,
-    beehiveCollectedColumn: normalizeSheetColumn(source.beehiveCollectedColumn, ""),
-    beehiveCollectedValueColumn: normalizeSheetColumn(
-      source.beehiveCollectedValueColumn,
-      "",
-    ),
-    beehiveCollectedNotesEnabled: source.beehiveCollectedNotesEnabled !== false,
-    beeValueColumn: normalizeSheetColumn(source.beeValueColumn, ""),
-    cheapHiveColumn: normalizeSheetColumn(source.cheapHiveColumn, ""),
-    expensiveHiveColumn: normalizeSheetColumn(source.expensiveHiveColumn, ""),
-    writeZeroForMissingHives: source.writeZeroForMissingHives === true,
-    eggColumn: normalizeSheetColumn(source.eggColumn, ""),
-    eggNotesEnabled: source.eggNotesEnabled === true,
-    availableEggValueColumn: normalizeSheetColumn(source.availableEggValueColumn, ""),
-    availableOutdoorValueColumn: normalizeSheetColumn(
-      source.availableOutdoorValueColumn,
-      "",
-    ),
-    collectedEggColumn: normalizeSheetColumn(source.collectedEggColumn, ""),
-    collectedEggNotesEnabled: source.collectedEggNotesEnabled !== false,
-    nutColumn: normalizeSheetColumn(source.nutColumn, ""),
-    nutCollectColumn: normalizeSheetColumn(source.nutCollectColumn, ""),
-    nutNotesEnabled:
-      source.nutNotesEnabled === true || source.shotgunNotesEnabled === true,
-    butlerColumn: normalizeSheetColumn(source.butlerColumn, ""),
-    butlerCollectColumn: normalizeSheetColumn(source.butlerCollectColumn, ""),
-    butlerNotesEnabled:
-      source.butlerNotesEnabled === true || source.knifeNotesEnabled === true,
-    collectedColumn: normalizeSheetColumn(source.collectedColumn, ""),
-    availableColumn: normalizeSheetColumn(source.availableColumn, ""),
-    realAvailableColumn: normalizeSheetColumn(source.realAvailableColumn, ""),
-    collectedNoExtraColumn: normalizeSheetColumn(source.collectedNoExtraColumn, ""),
-    missingColumn: normalizeSheetColumn(source.missingColumn, ""),
-    filterCollectedGiftScrapFromMissing:
-      source.filterCollectedGiftScrapFromMissing !== false,
-    outsideItemsColumn: normalizeSheetColumn(source.outsideItemsColumn, ""),
-    soldColumn: normalizeSheetColumn(source.soldColumn, ""),
-    sidColumn: normalizeSheetColumn(source.sidColumn, ""),
-    sidItemColumn: normalizeSheetColumn(source.sidItemColumn, ""),
-    sidNotesEnabled: source.sidNotesEnabled !== false,
-    sidWriteFalse: source.sidWriteFalse === true,
-    infestationColumn: normalizeSheetColumn(source.infestationColumn, ""),
-    infestationWriteFalse: source.infestationWriteFalse === true,
-    lostScrapColumn: normalizeSheetColumn(source.lostScrapColumn, ""),
-    takeoffTimeColumn: normalizeSheetColumn(source.takeoffTimeColumn, ""),
-    turretColumn: normalizeSheetColumn(source.turretColumn, ""),
-    landmineColumn: normalizeSheetColumn(source.landmineColumn, ""),
-    spiketrapColumn: normalizeSheetColumn(source.spiketrapColumn, ""),
-    appLessColumn: normalizeSheetColumn(
-      source.appLessColumn ?? source.appyLessColumn,
-      ""
-    ),
-    deathColumns: normalizeSheetColumnList(source.deathColumns, ""),
-    playerNameColumns: normalizeSheetColumnList(source.playerNameColumns, ""),
-    playerNameRow: Math.max(1, Math.floor(Number(source.playerNameRow) || 1)),
-    aliveState: String(source.aliveState ?? "S"),
-    deadState: String(source.deadState ?? "X"),
-    missingState: String(source.missingState ?? "M"),
-    disconnectedState: String(source.disconnectedState ?? "DC"),
-    lateDeadState: String(source.lateDeadState ?? "SX"),
-    deathNotesEnabled: source.deathNotesEnabled !== false,
-    playerNamesAsNotes: source.playerNamesAsNotes === true,
-    deathEnemyNotesEnabled: source.deathEnemyNotesEnabled === true,
-    enemyWriteFalse: source.enemyWriteFalse === true,
-    enemyWriteZero: source.enemyWriteZero === true,
-    jesterColumn: normalizeSheetColumn(source.jesterColumn, ""),
-    barberColumn: normalizeSheetColumn(source.barberColumn, ""),
-    bunkerSpiderColumn: normalizeSheetColumn(source.bunkerSpiderColumn, ""),
-    brackenColumn: normalizeSheetColumn(source.brackenColumn, ""),
-    cadaverColumn: normalizeSheetColumn(source.cadaverColumn, ""),
-    ghostGirlColumn: normalizeSheetColumn(source.ghostGirlColumn, ""),
-    maneaterColumn: normalizeSheetColumn(source.maneaterColumn, ""),
-    backwaterGunkfishColumn: normalizeSheetColumn(source.backwaterGunkfishColumn, ""),
-    coilHeadColumn: normalizeSheetColumn(source.coilHeadColumn, ""),
-    hoardingBugColumn: normalizeSheetColumn(source.hoardingBugColumn, ""),
-    maskedColumn: normalizeSheetColumn(source.maskedColumn, ""),
-    snareFleaColumn: normalizeSheetColumn(source.snareFleaColumn, ""),
-    sporeLizardColumn: normalizeSheetColumn(source.sporeLizardColumn, ""),
-    thumperColumn: normalizeSheetColumn(source.thumperColumn, ""),
-    earthLeviathanColumn: normalizeSheetColumn(source.earthLeviathanColumn, ""),
-    forestGiantColumn: normalizeSheetColumn(source.forestGiantColumn, ""),
-    baboonHawkColumn: normalizeSheetColumn(source.baboonHawkColumn, ""),
-    oldBirdColumn: normalizeSheetColumn(source.oldBirdColumn, ""),
-    bushWolfColumn: normalizeSheetColumn(source.bushWolfColumn, ""),
-    feioparColumn: normalizeSheetColumn(source.feioparColumn, ""),
-    eyelessDogColumn: normalizeSheetColumn(source.eyelessDogColumn, ""),
-    fogColumn: normalizeSheetColumn(source.fogColumn, ""),
-    fogWriteFalse: source.fogWriteFalse === true,
-    meteorColumn: normalizeSheetColumn(source.meteorColumn, ""),
-    meteorWriteFalse: source.meteorWriteFalse === true,
-    giftsColumn: normalizeSheetColumn(source.giftsColumn, ""),
-    giftBoxesNetOnly: source.giftBoxesNetOnly === true,
-  };
-}
-
-function parseCustomLcstatsLayoutPreset(text) {
-  const parsed = JSON.parse(text);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return null;
-  }
-  const allowedKeys = new Set(Object.keys(DEFAULT_CUSTOM_LCSTATS_LAYOUT));
-  if (!Object.keys(parsed).some((key) => allowedKeys.has(key))) {
-    return null;
-  }
-  return normalizeCustomLcstatsLayout(parsed);
-}
-
-function valueLabel(v) {
-  if (!v) return "";
-  if (v.type === "Bool") return v.data ? "true" : "false";
-  if (v.type === "String") return v.data ?? "";
-  if (v.type === "Int") return String(v.data?.value ?? "");
-  if (v.type === "Float") return String(v.data?.value ?? "");
-  if (v.type === "Enum") return v.data?.options?.[v.data?.index ?? 0] ?? "";
-  if (v.type === "Flags")
-    return (v.data?.indicies ?? [])
-      .map((i) => v.data?.options?.[i])
-      .filter(Boolean)
-      .join(", ");
-  return "";
-}
-
-function isAuthError(e) {
-  const msg = e?.message ?? String(e ?? "");
-  const m = msg.toLowerCase();
-  return (
-    m.includes("not logged in") ||
-    m.includes("two-factor") ||
-    m.includes("steam guard") ||
-    m.includes("missing username for remembered login")
-  );
-}
-
-const RUN_MODE_VALUES = [
-  "hq",
-  "smhq",
-  "c_moons",
-  "c_moons_smhq",
-  "c_moons_eclipsed",
-  "c_moons_practice",
-  "practice",
-  "eclipsed_hq",
-  "brutal",
-  "brutal_smhq",
-  "brutal_eclipsed",
-  "brutal_practice",
-  "wesley",
-  "wesley_smhq",
-  "wesley_eclipsed",
-  "wesley_practice",
-];
-
-const DISCORD_DOWNLOAD_URL = "https://asta.rs/hq-launcher/";
-const EVENTS_ENABLED_STORAGE_KEY = "launcherEventsEnabled";
-const SELECTED_EVENT_STORAGE_KEY = "selectedEventId";
-
-function getInitialRunMode() {
-  const savedRunMode = localStorage.getItem("selectedRunMode");
-  return RUN_MODE_VALUES.includes(savedRunMode) ? savedRunMode : "hq";
-}
-
-function saveSelectedRunMode(mode) {
-  if (typeof window === "undefined") return;
-  if (RUN_MODE_VALUES.includes(mode)) {
-    localStorage.setItem("selectedRunMode", mode);
-    invoke("set_selected_run_mode", { runMode: mode }).catch(() => {});
-  }
-}
-
-function normalizeEventPreset(value) {
-  const text = String(value ?? "hq").trim().toLowerCase();
-  return RUN_MODE_VALUES.includes(text) ? text : "hq";
-}
-
-function getInitialSelectedEventId() {
-  if (typeof window === "undefined") return "";
-  return localStorage.getItem(SELECTED_EVENT_STORAGE_KEY) ?? "";
-}
-
-function saveSelectedEventId(eventId) {
-  if (typeof window === "undefined") return;
-  const normalized = String(eventId ?? "").trim();
-  if (normalized) {
-    localStorage.setItem(SELECTED_EVENT_STORAGE_KEY, normalized);
-  } else {
-    localStorage.removeItem(SELECTED_EVENT_STORAGE_KEY);
-  }
-}
-
-function getInitialEventsEnabled() {
-  if (typeof window === "undefined") return true;
-  const stored = localStorage.getItem(EVENTS_ENABLED_STORAGE_KEY);
-  return stored == null ? true : stored === "true";
-}
-
-function saveEventsEnabled(enabled) {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(EVENTS_ENABLED_STORAGE_KEY, enabled ? "true" : "false");
-  invoke("set_events_enabled", { enabled: !!enabled }).catch(() => {});
-}
-
-function parseUtcEventTime(value) {
-  const text = String(value ?? "").trim();
-  if (!text) return null;
-  const parsed = Date.parse(text);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function formatEventTimeRemaining(event, nowMs = Date.now()) {
-  const endsAt = parseUtcEventTime(event?.ends_at);
-  if (endsAt === null) return "";
-
-  const remainingMs = endsAt - nowMs;
-  if (remainingMs <= 0) return "Ending now";
-
-  if (remainingMs < 86_400_000) {
-    const totalSeconds = Math.ceil(remainingMs / 1000);
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
-    const secondText = String(seconds).padStart(2, "0");
-    if (hours > 0) return `Ends in ${hours}h ${minutes}m ${secondText}s`;
-    return `Ends in ${minutes}m ${secondText}s`;
-  }
-
-  const totalMinutes = Math.ceil(remainingMs / 60_000);
-  if (totalMinutes <= 1) return "Ends soon";
-
-  const days = Math.floor(totalMinutes / 1440);
-  const hours = Math.floor((totalMinutes % 1440) / 60);
-  const minutes = totalMinutes % 60;
-
-  if (days > 0) {
-    return `Ends in ${days}d${hours > 0 ? ` ${hours}h` : ""}`;
-  }
-  if (hours > 0) {
-    return `Ends in ${hours}h${minutes > 0 ? ` ${minutes}m` : ""}`;
-  }
-  return `Ends in ${minutes}m`;
-}
-
-function isEventActive(event, nowMs = Date.now(), testerAllowed = false) {
-  const startsAt = parseUtcEventTime(event?.starts_at);
-  if (!testerAllowed && startsAt !== null && nowMs < startsAt) return false;
-
-  const endsAt = parseUtcEventTime(event?.ends_at);
-  if (endsAt === null) return true;
-  return nowMs <= endsAt;
-}
-
-function normalizeSteamId(value) {
-  const digits = String(value ?? "").replace(/\D/g, "");
-  return digits.length === 17 && digits.startsWith("7656") ? digits : "";
-}
-
-function eventAllowsTester(event, loginState) {
-  const testerValues = Array.isArray(event?.testers) ? event.testers : [];
-  const testerSteamIds = testerValues.map(normalizeSteamId).filter(Boolean);
-  const testerNames = testerValues
-    .filter((value) => !normalizeSteamId(value))
-    .map((value) => String(value ?? "").trim().toLowerCase())
-    .filter(Boolean);
-  if (testerSteamIds.length === 0 && testerNames.length === 0) return true;
-
-  const steamId = normalizeSteamId(loginState?.steam_id ?? loginState?.steamId);
-  const username = String(loginState?.username ?? "").trim().toLowerCase();
-  return (
-    (!!steamId && testerSteamIds.includes(steamId)) ||
-    (!!username && testerNames.includes(username))
-  );
-}
-
-function eventAllowsVersion(event, version) {
-  const versions = Array.isArray(event?.versions)
-    ? event.versions.map((v) => Number(v)).filter((v) => Number.isFinite(v))
-    : [];
-  if (versions.length === 0) return true;
-  return versions.includes(Number(version));
-}
-
-function clampVersionToEvent(version, event, fallbackVersions = []) {
-  if (!event || eventAllowsVersion(event, version)) return Number(version);
-  const allowed = Array.isArray(event.versions)
-    ? event.versions.map((v) => Number(v)).filter((v) => Number.isFinite(v))
-    : [];
-  if (allowed.length === 0) return Number(version);
-  const installedAllowed = allowed
-    .filter((v) => fallbackVersions.includes(v))
-    .sort((a, b) => b - a);
-  return installedAllowed[0] ?? allowed.sort((a, b) => b - a)[0];
-}
-
-function saveSelectedVersion(version) {
-  if (typeof window === "undefined") return;
-  const numeric = Number(version);
-  if (Number.isFinite(numeric) && numeric > 0) {
-    localStorage.setItem("selectedVersion", String(numeric));
-    invoke("set_selected_version", { version: numeric }).catch(() => {});
-  }
-}
-
-function normalizeLaunchOptionsEntries(entries) {
-  if (!Array.isArray(entries)) return [];
-  return entries
-    .map((entry) => String(entry ?? "").trim())
-    .filter(Boolean);
-}
-
-function normalizeLaunchCommandTemplate(value) {
-  return String(value ?? "").trim();
-}
-
-function getInitialLaunchOptionsConfig() {
-  if (typeof window === "undefined") {
-    return { enabled: false, entries: [], commandTemplate: "" };
-  }
-
-  try {
-    const raw = localStorage.getItem(LAUNCH_OPTIONS_STORAGE_KEY);
-    if (!raw) return { enabled: false, entries: [], commandTemplate: "" };
-    const parsed = JSON.parse(raw);
-    return {
-      enabled: !!parsed?.enabled,
-      entries: normalizeLaunchOptionsEntries(parsed?.entries),
-      commandTemplate: normalizeLaunchCommandTemplate(parsed?.commandTemplate),
-    };
-  } catch {
-    return { enabled: false, entries: [], commandTemplate: "" };
-  }
-}
-
-function getLaunchRequestForRunMode(mode, version) {
-  if (mode === "vanilla") {
-    return {
-      command: "launch_game_vanilla",
-      args: { version },
-    };
-  }
-  if (mode === "practice") {
-    return {
-      command: "launch_game_practice",
-      args: { version },
-    };
-  }
-  if (mode === "brutal") {
-    return {
-      command: "launch_game_preset",
-      args: { version, preset: "brutal", practice: false },
-    };
-  }
-  if (mode === "brutal_practice") {
-    return {
-      command: "launch_game_preset",
-      args: { version, preset: "brutal", practice: true },
-    };
-  }
-  if (mode === "brutal_smhq") {
-    return {
-      command: "launch_game_preset",
-      args: { version, preset: "brutal_smhq", practice: false },
-    };
-  }
-  if (mode === "brutal_eclipsed") {
-    return {
-      command: "launch_game_preset",
-      args: { version, preset: "brutal_eclipsed", practice: false },
-    };
-  }
-  if (mode === "wesley") {
-    return {
-      command: "launch_game_preset",
-      args: { version, preset: "wesley", practice: false },
-    };
-  }
-  if (mode === "wesley_practice") {
-    return {
-      command: "launch_game_preset",
-      args: { version, preset: "wesley", practice: true },
-    };
-  }
-  if (mode === "wesley_smhq") {
-    return {
-      command: "launch_game_preset",
-      args: { version, preset: "wesley_smhq", practice: false },
-    };
-  }
-  if (mode === "wesley_eclipsed") {
-    return {
-      command: "launch_game_preset",
-      args: { version, preset: "wesley_eclipsed", practice: false },
-    };
-  }
-  if (mode === "smhq") {
-    return {
-      command: "launch_game_preset",
-      args: { version, preset: "smhq", practice: false },
-    };
-  }
-  if (mode === "c_moons") {
-    return {
-      command: "launch_game_preset",
-      args: { version, preset: "c_moons", practice: false },
-    };
-  }
-  if (mode === "c_moons_practice") {
-    return {
-      command: "launch_game_preset",
-      args: { version, preset: "c_moons", practice: true },
-    };
-  }
-  if (mode === "c_moons_smhq") {
-    return {
-      command: "launch_game_preset",
-      args: { version, preset: "c_moons_smhq", practice: false },
-    };
-  }
-  if (mode === "c_moons_eclipsed") {
-    return {
-      command: "launch_game_preset",
-      args: { version, preset: "c_moons_eclipsed", practice: false },
-    };
-  }
-  if (mode === "eclipsed_hq") {
-    return {
-      command: "launch_game_preset",
-      args: { version, preset: "eclipsed_hq", practice: false },
-    };
-  }
-  return {
-    command: "launch_game",
-    args: { version },
-  };
-}
-
-function isPresetSummaryMod(mod) {
-  return mod?.isPresetSummary === true;
-}
-
-function listEntryKey(entry) {
-  return entry?.summary_id ?? modKey(entry);
-}
-
-function matchesVersionCaps(version, lowCap, highCap) {
-  const v = Number(version);
-  if (!Number.isFinite(v)) return true;
-  const low = toOptionalNumber(lowCap);
-  const high = toOptionalNumber(highCap);
-  if (low != null && v < low) return false;
-  if (high != null && v > high) return false;
-  return true;
-}
-
-function findTagConstraint(mod, activeTag) {
-  const constraints = mod?.tag_constraints;
-  if (!constraints || typeof constraints !== "object") return null;
-  for (const [tag, rule] of Object.entries(constraints)) {
-    if (String(tag).toLowerCase() === String(activeTag).toLowerCase()) {
-      return rule ?? null;
-    }
-  }
-  return null;
-}
-
-function modAppliesToTag(mod, activeTag) {
-  const modTags = Array.isArray(mod?.tags) ? mod.tags : [];
-  const matchesTag = modTags.some(
-    (tag) => String(tag).toLowerCase() === String(activeTag).toLowerCase()
-  );
-  return matchesTag || findTagConstraint(mod, activeTag) != null;
-}
-
-function modHasRunModeAffinity(mod) {
-  const modTags = Array.isArray(mod?.tags) ? mod.tags : [];
-  if (
-    modTags.some((tag) => {
-      const value = String(tag).toLowerCase();
-      return (
-        value === "brutal" ||
-        value === "wesley" ||
-        value === "smhq" ||
-        value === "eclipsed" ||
-        value === "c.moons"
-      );
-    })
-  ) {
-    return true;
-  }
-
-  const constraints = mod?.tag_constraints;
-  if (!constraints || typeof constraints !== "object") return false;
-  return Object.keys(constraints).some((tag) => {
-    const value = String(tag).toLowerCase();
-    return (
-      value === "brutal" ||
-      value === "wesley" ||
-      value === "smhq" ||
-      value === "eclipsed" ||
-      value === "c.moons"
-    );
-  });
-}
-
-function isModCompatibleWithTags(mod, version, activeTags) {
-  for (const activeTag of Array.isArray(activeTags) ? activeTags : []) {
-    if (!modAppliesToTag(mod, activeTag)) continue;
-
-    const constraint = findTagConstraint(mod, activeTag);
-    const lowCap = constraint?.low_cap ?? mod?.low_cap ?? null;
-    const highCap = constraint?.high_cap ?? mod?.high_cap ?? null;
-    if (matchesVersionCaps(version, lowCap, highCap)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function getPresetSummarySpec(mode) {
-  if (mode === "brutal" || mode === "brutal_practice") {
-    return {
-      summary_id: "preset::brutal",
-      name: "Brutal Mods",
-      subtitle: "",
-      activeTags: ["Brutal"],
-      iconKey: "drinkablewater::brutal_company_minus",
-    };
-  }
-
-  if (mode === "brutal_smhq") {
-    return {
-      summary_id: "preset::brutal_smhq",
-      name: "Brutal Mods",
-      subtitle: "",
-      activeTags: ["Brutal", "SMHQ"],
-      iconKey: "drinkablewater::brutal_company_minus",
-    };
-  }
-
-  if (mode === "brutal_eclipsed") {
-    return {
-      summary_id: "preset::brutal_eclipsed",
-      name: "Brutal Mods",
-      subtitle: "",
-      activeTags: ["Brutal", "Eclipsed"],
-      iconKey: "drinkablewater::brutal_company_minus",
-    };
-  }
-
-  if (mode === "wesley" || mode === "wesley_practice") {
-    return {
-      summary_id: "preset::wesley",
-      name: "Wesley's Mods",
-      subtitle: "",
-      activeTags: ["Wesley"],
-      iconKey: "magic_wesley::wesleys_moons",
-    };
-  }
-
-  if (mode === "wesley_smhq") {
-    return {
-      summary_id: "preset::wesley_smhq",
-      name: "Wesley's Mods",
-      subtitle: "",
-      activeTags: ["Wesley", "SMHQ"],
-      iconKey: "magic_wesley::wesleys_moons",
-    };
-  }
-
-  if (mode === "wesley_eclipsed") {
-    return {
-      summary_id: "preset::wesley_eclipsed",
-      name: "Wesley's Mods",
-      subtitle: "",
-      activeTags: ["Wesley", "Eclipsed"],
-      iconKey: "magic_wesley::wesleys_moons",
-    };
-  }
-
-  if (mode === "c_moons" || mode === "c_moons_practice") {
-    return {
-      summary_id: "preset::c_moons",
-      name: "C.Moons Mods",
-      subtitle: "",
-      activeTags: ["C.Moons"],
-      iconKey: "willowpillows::5_tandraus",
-    };
-  }
-
-  if (mode === "c_moons_smhq") {
-    return {
-      summary_id: "preset::c_moons_smhq",
-      name: "C.Moons Mods",
-      subtitle: "",
-      activeTags: ["C.Moons", "SMHQ"],
-      iconKey: "willowpillows::5_tandraus",
-    };
-  }
-
-  if (mode === "c_moons_eclipsed") {
-    return {
-      summary_id: "preset::c_moons_eclipsed",
-      name: "C.Moons Mods",
-      subtitle: "",
-      activeTags: ["C.Moons", "Eclipsed"],
-      iconKey: "willowpillows::5_tandraus",
-    };
-  }
-
-  return null;
-}
-
-function getPresetModulePriority(mod, activeTags) {
-  if (String(mod?.dev ?? "").toLowerCase() !== "tomatobird") return 1;
-  const name = String(mod?.name ?? "").toLowerCase();
-  const tags = Array.isArray(activeTags) ? activeTags : [];
-
-  if (tags.includes("Brutal") && name === "bcmhqmodule") return 0;
-  if (tags.includes("Wesley") && name === "wesleysmoonshqmodule") return 0;
-  if (tags.includes("C.Moons") && name === "classicmoonshqmodule") return 0;
-
-  return 1;
-}
-
-function SkeletonBlock({ className }) {
-  return (
-    <div
-      className={cn(
-        "animate-pulse rounded-xl border border-panel-outline bg-white/[0.06]",
-        className
-      )}
-    />
-  );
-}
-
-function ScrollableDropdownContent({
-  className,
-  scrollAreaClassName,
-  children,
-  ...props
-}) {
-  const scrollRef = useRef(null);
-  const hideTimerRef = useRef(null);
-  const [scrollState, setScrollState] = useState({
-    visible: false,
-    scrollable: false,
-    thumbHeight: 0,
-    thumbOffset: 0,
-  });
-
-  const showScrollbar = useCallback(() => {
-    setScrollState((prev) => ({ ...prev, visible: true }));
-    if (hideTimerRef.current) {
-      window.clearTimeout(hideTimerRef.current);
-    }
-    hideTimerRef.current = window.setTimeout(() => {
-      setScrollState((prev) => ({ ...prev, visible: false }));
-      hideTimerRef.current = null;
-    }, 500);
-  }, []);
-
-  const syncScrollbar = useCallback((shouldFlash = false) => {
-    const el = scrollRef.current;
-    if (!el) return;
-
-    const scrollable = el.scrollHeight > el.clientHeight + 1;
-    if (!scrollable) {
-      setScrollState({
-        visible: false,
-        scrollable: false,
-        thumbHeight: 0,
-        thumbOffset: 0,
-      });
-      return;
-    }
-
-    const trackInset = 4;
-    const trackHeight = Math.max(0, el.clientHeight - trackInset * 2);
-    const thumbHeight = Math.max(
-      24,
-      Math.round((el.clientHeight / el.scrollHeight) * trackHeight),
-    );
-    const maxScroll = Math.max(1, el.scrollHeight - el.clientHeight);
-    const maxOffset = Math.max(0, trackHeight - thumbHeight);
-    const thumbOffset =
-      trackInset + Math.round((el.scrollTop / maxScroll) * maxOffset);
-
-    setScrollState((prev) => ({
-      visible: shouldFlash ? true : prev.visible,
-      scrollable: true,
-      thumbHeight,
-      thumbOffset,
-    }));
-
-    if (shouldFlash) {
-      showScrollbar();
-    }
-  }, [showScrollbar]);
-
-  useEffect(() => {
-    syncScrollbar(true);
-    const el = scrollRef.current;
-    if (!el || typeof ResizeObserver === "undefined") {
-      return () => {
-        if (hideTimerRef.current) {
-          window.clearTimeout(hideTimerRef.current);
-          hideTimerRef.current = null;
-        }
-      };
-    }
-
-    const observer = new ResizeObserver(() => {
-      syncScrollbar(false);
-    });
-    observer.observe(el);
-
-    return () => {
-      observer.disconnect();
-      if (hideTimerRef.current) {
-        window.clearTimeout(hideTimerRef.current);
-        hideTimerRef.current = null;
-      }
-    };
-  }, [syncScrollbar]);
-
-  return (
-    <DropdownMenu.Content
-      className={cn(
-        "relative overflow-hidden",
-        className,
-      )}
-      {...props}
-    >
-      <div
-        ref={scrollRef}
-        onScroll={() => syncScrollbar(true)}
-        className={cn(
-          "dropdown-scroll-area overflow-y-auto",
-          scrollAreaClassName,
-        )}
-      >
-        {children}
-      </div>
-      {scrollState.scrollable ? (
-        <div
-          className={cn(
-            "pointer-events-none absolute bottom-1 right-1 top-1 w-1 transition-opacity duration-150",
-            scrollState.visible ? "opacity-100" : "opacity-0",
-          )}
-        >
-          <div
-            className="absolute right-0 w-1 rounded-full bg-white/35"
-            style={{
-              height: `${scrollState.thumbHeight}px`,
-              transform: `translateY(${scrollState.thumbOffset}px)`,
-            }}
-          />
-        </div>
-      ) : null}
-    </DropdownMenu.Content>
-  );
-}
-
-function ModCover({ src, initials, onMissing }) {
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    setFailed(false);
-  }, [src]);
-
-  if (src && !failed) {
-    return (
-      <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-panel-outline bg-black/25">
-        <img
-          src={src}
-          alt=""
-          className="h-full w-full object-contain"
-          loading="lazy"
-          onError={() => {
-            console.warn("Failed to load mod icon:", src);
-            if (typeof onMissing === "function") {
-              onMissing(src);
-            }
-            setFailed(true);
-          }}
-        />
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-panel-outline bg-white/10 text-base font-bold text-white/80">
-      {initials}
-    </div>
-  );
-}
-
-function LauncherPageSkeleton({ statusText }) {
-  return (
-    <>
-      <div className="flex flex-wrap items-center gap-3">
-        <SkeletonBlock className="h-11 w-[220px] rounded-xl" />
-        <SkeletonBlock className="h-11 w-28 rounded-xl" />
-        <SkeletonBlock className="h-11 min-w-[220px] flex-1 rounded-xl" />
-        <SkeletonBlock className="h-11 w-11 rounded-xl" />
-      </div>
-
-      <div className="rounded-2xl border border-panel-outline bg-black/20 px-4 py-3">
-        <div className="flex items-center gap-2 text-sm font-medium text-white/85">
-          <LoaderCircle className="h-4 w-4 animate-spin text-white/65" />
-          <span>Preparing launcher</span>
-        </div>
-        <div className="mt-1 text-xs text-white/50">
-          {statusText || "Loading local versions and mod manifest..."}
-        </div>
-      </div>
-
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4">
-        <div className="min-h-0 rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-3">
-          <div className="mb-3 flex items-center justify-between px-1">
-            <SkeletonBlock className="h-4 w-20 rounded-md" />
-            <SkeletonBlock className="h-4 w-14 rounded-md" />
-          </div>
-
-          <div className="flex flex-col gap-2">
-            {Array.from({ length: 6 }).map((_, index) => (
-              <div
-                key={index}
-                className="flex items-start gap-3 rounded-2xl border border-panel-outline bg-black/10 px-3 py-3"
-              >
-                <SkeletonBlock className="h-11 w-11 shrink-0 rounded-xl" />
-                <div className="min-w-0 flex-1 space-y-2">
-                  <SkeletonBlock className="h-5 w-36 rounded-md" />
-                  <SkeletonBlock className="h-4 w-24 rounded-md" />
-                  <SkeletonBlock className="h-4 w-full rounded-md" />
-                </div>
-                <SkeletonBlock className="mt-2 h-6 w-10 shrink-0 rounded-full" />
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 export default function LauncherPage({
   loginState,
@@ -1612,6 +270,9 @@ export default function LauncherPage({
   const [lcstatsSheets, setLcstatsSheets] = useState([]);
   const [lcstatsSheetInfos, setLcstatsSheetInfos] = useState([]);
   const [lcstatsBusy, setLcstatsBusy] = useState(false);
+  const [lcstatsResetBusy, setLcstatsResetBusy] = useState(false);
+  const lcstatsResetInFlight = useRef(false);
+  const [lcstatsResetEndRow, setLcstatsResetEndRow] = useState("93");
   const [lcstatsRefreshBusy, setLcstatsRefreshBusy] = useState(false);
   const [lcstatsPickerBusy, setLcstatsPickerBusy] = useState(false);
   const lcstatsSaveTimerRef = useRef(null);
@@ -1934,18 +595,7 @@ export default function LauncherPage({
     invoke("get_events_enabled")
       .then((enabled) => {
         if (cancelled) return;
-        const stored =
-          typeof window !== "undefined"
-            ? localStorage.getItem(EVENTS_ENABLED_STORAGE_KEY)
-            : null;
-        const nextEnabled = stored == null ? !!enabled : stored === "true";
-        setEventsEnabled(nextEnabled);
-        if (typeof window !== "undefined") {
-          localStorage.setItem(EVENTS_ENABLED_STORAGE_KEY, nextEnabled ? "true" : "false");
-        }
-        if (nextEnabled !== !!enabled) {
-          invoke("set_events_enabled", { enabled: nextEnabled }).catch(() => {});
-        }
+        setEventsEnabled(reconcileEventsEnabled(enabled));
         setEventClock(Date.now());
       })
       .catch(() => {});
@@ -1970,151 +620,11 @@ export default function LauncherPage({
     };
   }, [isResizingPanels]);
 
-  useEffect(() => {
-    if (!modContextMenu.open) return;
+  useDismissableContextMenu(modContextMenu, setModContextMenu, modContextMenuRef, { mod: null });
 
-    const close = () =>
-      setModContextMenu((prev) => ({ ...prev, open: false, mod: null }));
+  useDismissableContextMenu(versionContextMenu, setVersionContextMenu, versionContextMenuRef, { version: null });
 
-    const handlePointerDown = (event) => {
-      if (modContextMenuRef.current?.contains(event.target)) return;
-      close();
-    };
-
-    const handleEscape = (event) => {
-      if (event.key === "Escape") close();
-    };
-
-    const handleWindowChange = () => close();
-
-    const adjustPosition = () => {
-      const menu = modContextMenuRef.current;
-      if (!menu) return;
-      const rect = menu.getBoundingClientRect();
-      const nextX = Math.min(
-        modContextMenu.x,
-        Math.max(8, window.innerWidth - rect.width - 8)
-      );
-      const nextY = Math.min(
-        modContextMenu.y,
-        Math.max(8, window.innerHeight - rect.height - 8)
-      );
-      if (nextX !== modContextMenu.x || nextY !== modContextMenu.y) {
-        setModContextMenu((prev) => ({ ...prev, x: nextX, y: nextY }));
-      }
-    };
-
-    const raf = window.requestAnimationFrame(adjustPosition);
-    window.addEventListener("pointerdown", handlePointerDown);
-    window.addEventListener("keydown", handleEscape);
-    window.addEventListener("resize", handleWindowChange);
-    window.addEventListener("scroll", handleWindowChange, true);
-
-    return () => {
-      window.cancelAnimationFrame(raf);
-      window.removeEventListener("pointerdown", handlePointerDown);
-      window.removeEventListener("keydown", handleEscape);
-      window.removeEventListener("resize", handleWindowChange);
-      window.removeEventListener("scroll", handleWindowChange, true);
-    };
-  }, [modContextMenu.open, modContextMenu.x, modContextMenu.y]);
-
-  useEffect(() => {
-    if (!versionContextMenu.open) return;
-
-    const close = () =>
-      setVersionContextMenu((prev) => ({ ...prev, open: false, version: null }));
-
-    const handlePointerDown = (event) => {
-      if (versionContextMenuRef.current?.contains(event.target)) return;
-      close();
-    };
-
-    const handleEscape = (event) => {
-      if (event.key === "Escape") close();
-    };
-
-    const handleWindowChange = () => close();
-
-    const adjustPosition = () => {
-      const menu = versionContextMenuRef.current;
-      if (!menu) return;
-      const rect = menu.getBoundingClientRect();
-      const nextX = Math.min(
-        versionContextMenu.x,
-        Math.max(8, window.innerWidth - rect.width - 8)
-      );
-      const nextY = Math.min(
-        versionContextMenu.y,
-        Math.max(8, window.innerHeight - rect.height - 8)
-      );
-      if (nextX !== versionContextMenu.x || nextY !== versionContextMenu.y) {
-        setVersionContextMenu((prev) => ({ ...prev, x: nextX, y: nextY }));
-      }
-    };
-
-    const raf = window.requestAnimationFrame(adjustPosition);
-    window.addEventListener("pointerdown", handlePointerDown);
-    window.addEventListener("keydown", handleEscape);
-    window.addEventListener("resize", handleWindowChange);
-    window.addEventListener("scroll", handleWindowChange, true);
-
-    return () => {
-      window.cancelAnimationFrame(raf);
-      window.removeEventListener("pointerdown", handlePointerDown);
-      window.removeEventListener("keydown", handleEscape);
-      window.removeEventListener("resize", handleWindowChange);
-      window.removeEventListener("scroll", handleWindowChange, true);
-    };
-  }, [versionContextMenu.open, versionContextMenu.x, versionContextMenu.y]);
-
-  useEffect(() => {
-    if (!launchContextMenu.open) return;
-
-    const close = () => setLaunchContextMenu((prev) => ({ ...prev, open: false }));
-
-    const handlePointerDown = (event) => {
-      if (launchContextMenuRef.current?.contains(event.target)) return;
-      close();
-    };
-
-    const handleEscape = (event) => {
-      if (event.key === "Escape") close();
-    };
-
-    const handleWindowChange = () => close();
-
-    const adjustPosition = () => {
-      const menu = launchContextMenuRef.current;
-      if (!menu) return;
-      const rect = menu.getBoundingClientRect();
-      const nextX = Math.min(
-        launchContextMenu.x,
-        Math.max(8, window.innerWidth - rect.width - 8)
-      );
-      const nextY = Math.min(
-        launchContextMenu.y,
-        Math.max(8, window.innerHeight - rect.height - 8)
-      );
-      if (nextX !== launchContextMenu.x || nextY !== launchContextMenu.y) {
-        setLaunchContextMenu((prev) => ({ ...prev, x: nextX, y: nextY }));
-      }
-    };
-
-    const raf = window.requestAnimationFrame(adjustPosition);
-    window.addEventListener("pointerdown", handlePointerDown);
-    window.addEventListener("keydown", handleEscape);
-    window.addEventListener("resize", handleWindowChange);
-    window.addEventListener("scroll", handleWindowChange, true);
-
-    return () => {
-      window.cancelAnimationFrame(raf);
-      window.removeEventListener("pointerdown", handlePointerDown);
-      window.removeEventListener("keydown", handleEscape);
-      window.removeEventListener("resize", handleWindowChange);
-      window.removeEventListener("scroll", handleWindowChange, true);
-    };
-  }, [launchContextMenu.open, launchContextMenu.x, launchContextMenu.y]);
+  useDismissableContextMenu(launchContextMenu, setLaunchContextMenu, launchContextMenuRef);
 
   const isInstalled = useMemo(() => {
     const s = new Set(installedVersions);
@@ -2332,47 +842,33 @@ export default function LauncherPage({
     );
   }, [practiceMods, selectedVersion]);
 
-  const smhqReferenceMods = useMemo(() => {
-    if (!isSmhqRunMode(runMode)) return [];
-    const mods = Array.isArray(manifest.mods) ? manifest.mods : [];
-    return mods.filter((m) => {
-      const key = modKeyLower(m);
-      return (
-        SMHQ_FORCED_MOD_KEYS.has(key) &&
-        m?.enabled !== false &&
-        !isUiHiddenMod(m) &&
-        isModCompatibleWithVersion(m, selectedVersion)
-      );
-    });
-  }, [manifest.mods, runMode, selectedVersion]);
+  const smhqReferenceMods = useMemo(
+    () =>
+      isSmhqRunMode(runMode)
+        ? filterForcedMods(manifest.mods, SMHQ_FORCED_MOD_KEYS, selectedVersion)
+        : [],
+    [manifest.mods, runMode, selectedVersion]
+  );
 
-  const eclipsedReferenceMods = useMemo(() => {
-    if (!isEclipsedRunMode(runMode)) return [];
-    const mods = Array.isArray(manifest.mods) ? manifest.mods : [];
-    return mods.filter((m) => {
-      const key = modKeyLower(m);
-      return (
-        ECLIPSED_FORCED_MOD_KEYS.has(key) &&
-        m?.enabled !== false &&
-        !isUiHiddenMod(m) &&
-        isModCompatibleWithVersion(m, selectedVersion)
-      );
-    });
-  }, [manifest.mods, runMode, selectedVersion]);
+  const eclipsedReferenceMods = useMemo(
+    () =>
+      isEclipsedRunMode(runMode)
+        ? filterForcedMods(manifest.mods, ECLIPSED_FORCED_MOD_KEYS, selectedVersion)
+        : [],
+    [manifest.mods, runMode, selectedVersion]
+  );
 
-  const eclipsedHqOptionalMods = useMemo(() => {
-    if (!isEclipsedHqRunMode(runMode)) return [];
-    const mods = Array.isArray(manifest.mods) ? manifest.mods : [];
-    return mods.filter((m) => {
-      const key = modKeyLower(m);
-      return (
-        ECLIPSED_HQ_OPTIONAL_MOD_KEYS.has(key) &&
-        m?.enabled !== false &&
-        !isUiHiddenMod(m) &&
-        isModCompatibleWithVersion(m, selectedVersion)
-      );
-    });
-  }, [manifest.mods, runMode, selectedVersion]);
+  const eclipsedHqOptionalMods = useMemo(
+    () =>
+      isEclipsedHqRunMode(runMode)
+        ? filterForcedMods(
+            manifest.mods,
+            ECLIPSED_HQ_OPTIONAL_MOD_KEYS,
+            selectedVersion
+          )
+        : [],
+    [manifest.mods, runMode, selectedVersion]
+  );
 
   const modsForList = useMemo(() => {
     const regularMods = (Array.isArray(manifest.mods) ? manifest.mods : []).filter(
@@ -3249,25 +1745,7 @@ export default function LauncherPage({
             })
           );
         }
-        if (isEnableModStep) {
-          setUpdatePrompt({ open: true });
-          setTask((t) => ({
-            ...t,
-            status: didFinish ? "done" : "working",
-            ...p,
-            error: null,
-          }));
-        }
-        if (isManifestSyncStep) {
-          setUpdatePrompt({ open: true });
-          setTask((t) => ({
-            ...t,
-            status: didFinish ? "done" : "working",
-            ...p,
-            error: null,
-          }));
-        }
-        if (isStorageMoveStep) {
+        if (isEnableModStep || isManifestSyncStep || isStorageMoveStep) {
           setUpdatePrompt({ open: true });
           setTask((t) => ({
             ...t,
@@ -3386,18 +1864,11 @@ export default function LauncherPage({
         "updatable://progress",
         (event) => {
           setCheckUpdateTask((t) => {
-            const eventVersion = Number(event.payload?.version ?? t.version);
-            const eventRunMode =
-              typeof event.payload?.run_mode === "string" && event.payload.run_mode
-                ? event.payload.run_mode
-                : t.run_mode;
-            const taskVersion = Number(t.version);
-            if (
-              (Number.isFinite(taskVersion) && eventVersion !== taskVersion) ||
-              (t.run_mode && eventRunMode && eventRunMode !== t.run_mode)
-            ) {
-              return t;
-            }
+            const { stale, runMode: eventRunMode } = resolveUpdateEvent(
+              t,
+              event.payload
+            );
+            if (stale) return t;
 
             const total = Number(event.payload?.total ?? 0);
             const checked = Number(event.payload?.checked ?? 0);
@@ -3421,18 +1892,11 @@ export default function LauncherPage({
         "updatable://finished",
         (event) => {
           setCheckUpdateTask((t) => {
-            const eventVersion = Number(event.payload?.version ?? t.version);
-            const eventRunMode =
-              typeof event.payload?.run_mode === "string" && event.payload.run_mode
-                ? event.payload.run_mode
-                : t.run_mode;
-            const taskVersion = Number(t.version);
-            if (
-              (Number.isFinite(taskVersion) && eventVersion !== taskVersion) ||
-              (t.run_mode && eventRunMode && eventRunMode !== t.run_mode)
-            ) {
-              return t;
-            }
+            const { stale, runMode: eventRunMode } = resolveUpdateEvent(
+              t,
+              event.payload
+            );
+            if (stale) return t;
 
             return {
               ...t,
@@ -3452,18 +1916,11 @@ export default function LauncherPage({
       );
       unlistenCheckUpdateError = await listen("updatable://error", (event) => {
         setCheckUpdateTask((t) => {
-          const eventVersion = Number(event.payload?.version ?? t.version);
-          const eventRunMode =
-            typeof event.payload?.run_mode === "string" && event.payload.run_mode
-              ? event.payload.run_mode
-              : t.run_mode;
-          const taskVersion = Number(t.version);
-          if (
-            (Number.isFinite(taskVersion) && eventVersion !== taskVersion) ||
-            (t.run_mode && eventRunMode && eventRunMode !== t.run_mode)
-          ) {
-            return t;
-          }
+          const { stale, runMode: eventRunMode } = resolveUpdateEvent(
+            t,
+            event.payload
+          );
+          if (stale) return t;
 
           return {
             ...t,
@@ -5077,6 +3534,26 @@ export default function LauncherPage({
     );
   }
 
+  async function resetLcstatsSheet() {
+    if (lcstatsResetInFlight.current) return;
+    lcstatsResetInFlight.current = true;
+    setLcstatsResetBusy(true);
+    setLcstatsError("");
+    setLcstatsSaved("");
+    try {
+      await invoke("reset_lcstats_sheet", {
+        settings: normalizeLcstatsSettings(lcstatsSettings),
+        endRow: lcstatsSettings.layout === "WafrodyAutoSheet" ? 93 : Number(lcstatsResetEndRow),
+      });
+      setLcstatsSaved("Reset complete.");
+    } catch (e) {
+      setLcstatsError(e?.message ?? String(e));
+    } finally {
+      lcstatsResetInFlight.current = false;
+      setLcstatsResetBusy(false);
+    }
+  }
+
   function renderLcStatsSettingsPanel() {
     const spreadsheetId = extractSpreadsheetId(lcstatsSettings.spreadsheetId);
     const listedSpreadsheet = lcstatsSpreadsheets.find(
@@ -5089,7 +3566,7 @@ export default function LauncherPage({
     const useSpreadsheetPicker = !hasCustomGoogleOauthSettings(lcstatsSettings);
     const settingsLocked = modEnabled && !googleOauthStatus.authenticated;
     const settingsDisabled =
-      settingsLocked || lcstatsBusy || lcstatsRefreshBusy || lcstatsPickerBusy;
+      settingsLocked || lcstatsBusy || lcstatsRefreshBusy || lcstatsPickerBusy || lcstatsResetBusy;
     const googleButtonLabel = googleOauthStatus.authenticated
       ? "Google Logout"
       : "Google Login";
@@ -5104,7 +3581,7 @@ export default function LauncherPage({
 
     return (
       <div className="min-h-0 flex flex-1 flex-col gap-3 overflow-hidden">
-        <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+        <div className="grid shrink-0 grid-cols-1 gap-2">
           <Button
             variant={googleOauthStatus.authenticated ? "secondary" : "default"}
             className="h-10 w-full"
@@ -5113,10 +3590,11 @@ export default function LauncherPage({
           >
             {googleButtonLabel}
           </Button>
+          <div className="grid grid-cols-2 gap-2">
           <Button
             variant="secondary"
             className="h-10 w-full"
-            disabled={lcstatsTrackingBusy || !selectedLcStatsTracker || !lcstatsSettings.useLcstatsApi}
+            disabled={lcstatsResetBusy || lcstatsTrackingBusy || !selectedLcStatsTracker || !lcstatsSettings.useLcstatsApi}
             onClick={() => {
               toggleLcstatsAutosheetTracking().catch(console.error);
             }}
@@ -5134,6 +3612,14 @@ export default function LauncherPage({
                 ? "Stop Tracking"
                 : "Track Current Game"}
           </Button>
+              <Button
+                variant="secondary"
+                className="h-10 w-full"
+                title="Reset the selected sheet"
+                disabled={settingsDisabled || lcstatsTrackingBusy || lcstatsTrackingEnabled || !googleOauthStatus.authenticated || !spreadsheetId || !lcstatsSettings.activeSheetName}
+                onClick={resetLcstatsSheet}
+              >{lcstatsResetBusy ? "Resetting…" : "Reset Sheet"}</Button>
+          </div>
         </div>
         <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-panel-outline bg-[var(--theme-surface)] p-4">
           <div className="space-y-5">
@@ -5352,6 +3838,15 @@ export default function LauncherPage({
                   </div>
                 ))}
               </div>
+              ) : null}
+
+              {lcstatsSettings.layout !== "WafrodyAutoSheet" ? (
+                <label className="block space-y-2 text-xs text-white/60">
+                  Reset last data row (inclusive)
+                  <Input type="number" min="1" max="10000" value={lcstatsResetEndRow}
+                    disabled={settingsDisabled}
+                    onChange={(event) => setLcstatsResetEndRow(event.target.value)} />
+                </label>
               ) : null}
 
               {renderCustomLcstatsLayoutFields({ locked: settingsLocked })}
@@ -5864,154 +4359,6 @@ export default function LauncherPage({
   const updateIsError = updatePrompt.open && task.status === "error";
   const updateIsStorageMove = updatePrompt.open && task.step_name === "Move Storage";
 
-  const RUN_OPTIONS = useMemo(
-    () => [
-      {
-        value: "hq",
-        label: "HQ Run",
-        buttonLabel: "HQ Run",
-        preset: "hq",
-        practice: false,
-        title: "Normal run (HQ): practice mods are disabled",
-      },
-      {
-        value: "smhq",
-        label: "SMHQ Run",
-        preset: "smhq",
-        practice: false,
-        title: "SMHQ preset run",
-      },
-      {
-        value: "eclipsed_hq",
-        label: "Eclipsed HQ",
-        preset: "eclipsed_hq",
-        practice: false,
-        title: "HQ run with EclipsedOnly enabled",
-      },
-      {
-        value: "practice",
-        label: "Normal Practice",
-        buttonLabel: "Normal Practice",
-        preset: "hq",
-        practice: true,
-        title: "Practice run: installs/enables practice mods for this run",
-      },
-      {
-        type: "separator",
-        key: "run-group-brutal",
-      },
-      {
-        value: "brutal",
-        label: "Brutal Run",
-        preset: "brutal",
-        practice: false,
-        title: "Brutal preset: installs Brutal-tagged mods (v49+)",
-      },
-      {
-        value: "brutal_smhq",
-        label: "Brutal SMHQ",
-        preset: "brutal_smhq",
-        practice: false,
-        title:
-          "Brutal + SMHQ preset: installs Brutal-tagged and SMHQ-tagged mods (v49+)",
-      },
-      {
-        value: "brutal_eclipsed",
-        label: "Brutal Eclipsed",
-        preset: "brutal_eclipsed",
-        practice: false,
-        title: "Brutal preset with EclipsedOnly enabled",
-      },
-      {
-        value: "brutal_practice",
-        label: "Brutal Practice",
-        preset: "brutal",
-        practice: true,
-        title:
-          "Brutal preset: installs Brutal-tagged mods + practice mods (v49+)",
-      },
-      {
-        type: "separator",
-        key: "run-group-wesley",
-      },
-      {
-        value: "wesley",
-        label: "Wesley's Run",
-        preset: "wesley",
-        practice: false,
-        title: "Wesley preset: installs Wesley-tagged mods (v69+)",
-      },
-      {
-        value: "wesley_smhq",
-        label: "Wesley's SMHQ",
-        preset: "wesley_smhq",
-        practice: false,
-        title:
-          "Wesley + SMHQ preset: installs Wesley-tagged and SMHQ-tagged mods (v69+)",
-      },
-      {
-        value: "wesley_eclipsed",
-        label: "Wesley Eclipsed",
-        preset: "wesley_eclipsed",
-        practice: false,
-        title: "Wesley preset with EclipsedOnly enabled",
-      },
-      {
-        value: "wesley_practice",
-        label: "Wesley's Practice",
-        preset: "wesley",
-        practice: true,
-        title:
-          "Wesley preset: installs Wesley-tagged mods + practice mods (v69+)",
-      },
-      {
-        type: "separator",
-        key: "run-group-cmoons",
-      },
-      {
-        value: "c_moons",
-        label: "C.Moons Run",
-        preset: "c_moons",
-        practice: false,
-        title: "C.Moons preset: installs C.Moons-tagged mods",
-      },
-      {
-        value: "c_moons_smhq",
-        label: "C.Moons SMHQ",
-        preset: "c_moons_smhq",
-        practice: false,
-        title: "C.Moons + SMHQ preset: installs C.Moons-tagged and SMHQ-tagged mods",
-      },
-      {
-        value: "c_moons_eclipsed",
-        label: "C.Moons Eclipsed",
-        preset: "c_moons_eclipsed",
-        practice: false,
-        title: "C.Moons preset with EclipsedOnly enabled",
-      },
-      {
-        value: "c_moons_practice",
-        label: "C.Moons Practice",
-        preset: "c_moons",
-        practice: true,
-        title: "C.Moons preset: installs C.Moons-tagged mods + practice mods",
-      },
-      {
-        type: "separator",
-        key: "run-group-vanilla",
-      },
-      {
-        value: "vanilla",
-        label: "Vanilla Run",
-        buttonLabel: "Vanilla Run",
-        preset: "hq",
-        practice: false,
-        vanilla: true,
-        title: "Vanilla run: launches without BepInEx or mods",
-      },
-    ],
-    [],
-  );
 
   const selectedRunOption = useMemo(() => {
     return (
@@ -6019,7 +4366,7 @@ export default function LauncherPage({
       RUN_OPTIONS.find((o) => o.value === "hq") ??
       RUN_OPTIONS[0]
     );
-  }, [RUN_OPTIONS, runMode]);
+  }, [runMode]);
 
   const selectedLaunchLabel = selectedEvent?.name
     ? selectedEvent.name
@@ -8073,52 +6420,15 @@ export default function LauncherPage({
 
             {/* Progress (from Rust emit) */}
             {(promptIsWorking || promptIsDone || promptIsError) && (
-              <div className="mt-4 rounded-2xl border border-panel-outline bg-black/20 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold">
-                      {statusText}
-                    </div>
-                    <div className="truncate text-xs text-white/50">
-                      {task.detail ||
-                        (bytesText ? `Downloaded: ${bytesText}` : "")}
-                    </div>
-                    {(formatTransferProgress(task) ||
-                      formatExtractProgress(task)) && (
-                      <div className="mt-1 text-xs text-white/40">
-                        {[
-                          formatTransferProgress(task),
-                          formatExtractProgress(task),
-                        ]
-                          .filter(Boolean)
-                          .join(" • ")}
-                      </div>
-                    )}
-                    {task.error && (
-                      <div className="mt-1 text-xs text-red-300">
-                        {task.error}
-                      </div>
-                    )}
-                  </div>
-                  <div className="shrink-0 text-sm text-white/70">
-                    {progressText}
-                  </div>
-                </div>
-                <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-white/10">
-                  <div
-                    className={cn(
-                      "h-full rounded-full transition-[width]",
-                      task.status === "error" ? "bg-red-400" : "bg-[var(--theme-accent)]"
-                    )}
-                    style={{
-                      width: `${Math.max(
-                        0,
-                        Math.min(100, task.overall_percent ?? 0)
-                      )}%`,
-                    }}
-                  />
-                </div>
-              </div>
+              <TaskProgressPanel
+                title={statusText}
+                detail={task.detail || (bytesText ? `Downloaded: ${bytesText}` : "")}
+                task={task}
+                error={task.error}
+                percent={task.overall_percent}
+                percentText={progressText}
+                barError={task.status === "error"}
+              />
             )}
 
             <div className="mt-5 flex items-center justify-end gap-2">
@@ -8239,37 +6549,20 @@ export default function LauncherPage({
             {(deleteVersionBusy ||
               deleteVersionPrompt.status === "working" ||
               deleteVersionPrompt.status === "done") && (
-              <div className="mt-4 rounded-2xl border border-panel-outline bg-black/20 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold">
-                      {deleteVersionPrompt.detail || "Deleting files..."}
-                    </div>
-                    <div className="truncate text-xs text-white/50">
-                      {Number.isFinite(Number(deleteVersionPrompt.total_files)) &&
-                      Number(deleteVersionPrompt.total_files) > 0
-                        ? `${Number(deleteVersionPrompt.deleted_files ?? 0)} / ${Number(
-                            deleteVersionPrompt.total_files ?? 0
-                          )} items removed`
-                        : "Scanning files..."}
-                    </div>
-                  </div>
-                  <div className="shrink-0 text-sm text-white/70">
-                    {Math.round(Number(deleteVersionPrompt.overall_percent ?? 0))}%
-                  </div>
-                </div>
-                <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-white/10">
-                  <div
-                    className="h-full rounded-full bg-[var(--theme-accent)] transition-[width]"
-                    style={{
-                      width: `${Math.max(
-                        0,
-                        Math.min(100, Number(deleteVersionPrompt.overall_percent ?? 0))
-                      )}%`,
-                    }}
-                  />
-                </div>
-              </div>
+              <TaskProgressPanel
+                title={deleteVersionPrompt.detail || "Deleting files..."}
+                detail={
+                  Number.isFinite(Number(deleteVersionPrompt.total_files)) &&
+                  Number(deleteVersionPrompt.total_files) > 0
+                    ? `${Number(deleteVersionPrompt.deleted_files ?? 0)} / ${Number(
+                        deleteVersionPrompt.total_files ?? 0
+                      )} items removed`
+                    : "Scanning files..."
+                }
+                task={null}
+                percent={deleteVersionPrompt.overall_percent}
+                percentText={`${Math.round(Number(deleteVersionPrompt.overall_percent ?? 0))}%`}
+              />
             )}
 
             {deleteVersionPrompt.error ? (
@@ -8350,22 +6643,11 @@ export default function LauncherPage({
             {(checkUpdateTask.status === "working" ||
               checkUpdateTask.status === "error") && (
               <div className="mt-4 rounded-2xl">
-                <div className="h-2 w-full overflow-hidden rounded-full bg-gray-500">
-                  <div
-                    className={cn(
-                      "h-full rounded-full transition-[width]",
-                      checkUpdateTask.status === "error"
-                        ? "bg-red-400"
-                        : "bg-[var(--theme-accent)]"
-                    )}
-                    style={{
-                      width: `${Math.max(
-                        0,
-                        Math.min(100, checkUpdateTask.overall_percent ?? 0)
-                      )}%`,
-                    }}
-                  />
-                </div>
+                <ProgressBar
+                  percent={checkUpdateTask.overall_percent}
+                  error={checkUpdateTask.status === "error"}
+                  trackClassName="bg-gray-500"
+                />
 
                 <div className="mt-2 flex items-center justify-between gap-3 text-sm text-white/50">
                   {checkUpdateTask.detail}
@@ -8495,51 +6777,15 @@ export default function LauncherPage({
             )}
 
             {(updateIsWorking || updateIsDone || updateIsError) && (
-              <div className="mt-4 rounded-2xl border border-panel-outline bg-black/20 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold">
-                      {statusText}
-                    </div>
-                    <div className="truncate text-xs text-white/50">
-                      {task.detail || ""}
-                    </div>
-                    {(formatTransferProgress(task) ||
-                      formatExtractProgress(task)) && (
-                      <div className="mt-1 text-xs text-white/40">
-                        {[
-                          formatTransferProgress(task),
-                          formatExtractProgress(task),
-                        ]
-                          .filter(Boolean)
-                          .join(" • ")}
-                      </div>
-                    )}
-                    {task.error && (
-                      <div className="mt-1 text-xs text-red-300">
-                        {task.error}
-                      </div>
-                    )}
-                  </div>
-                  <div className="shrink-0 text-sm text-white/70">
-                    {progressText}
-                  </div>
-                </div>
-                <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-white/10">
-                  <div
-                    className={cn(
-                      "h-full rounded-full transition-[width]",
-                      updateIsError ? "bg-red-400" : "bg-[var(--theme-accent)]"
-                    )}
-                    style={{
-                      width: `${Math.max(
-                        0,
-                        Math.min(100, task.overall_percent ?? 0)
-                      )}%`,
-                    }}
-                  />
-                </div>
-              </div>
+              <TaskProgressPanel
+                title={statusText}
+                detail={task.detail || ""}
+                task={task}
+                error={task.error}
+                percent={task.overall_percent}
+                percentText={progressText}
+                barError={updateIsError}
+              />
             )}
 
             <div className="mt-5 flex items-center justify-end gap-2">
@@ -8658,90 +6904,31 @@ export default function LauncherPage({
               </div>
             </div>
 
-            <div className="mt-4 rounded-2xl border border-panel-outline bg-black/20 p-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold">
-                    {practiceTask?.step_name ?? "Practice Mods"}
-                  </div>
-                  <div className="truncate text-xs text-white/50">
-                    {practiceTask?.detail ?? ""}
-                  </div>
-                  {(formatTransferProgress(practiceTask) ||
-                    formatExtractProgress(practiceTask)) && (
-                    <div className="mt-1 text-xs text-white/40">
-                      {[
-                        formatTransferProgress(practiceTask),
-                        formatExtractProgress(practiceTask),
-                      ]
-                        .filter(Boolean)
-                        .join(" • ")}
-                    </div>
-                  )}
-                  {practiceTask?.error && (
-                    <div className="mt-1 text-xs text-red-300">
-                      {practiceTask.error}
-                    </div>
-                  )}
-                </div>
-                <div className="shrink-0 text-sm text-white/70">
-                  {Number.isFinite(Number(practiceTask?.overall_percent))
-                    ? `${Math.round(Number(practiceTask?.overall_percent))}%`
-                    : ""}
-                </div>
-              </div>
-              <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-white/10">
-                <div
-                  className={cn(
-                    "h-full rounded-full transition-[width]",
-                    practiceTask?.status === "error" ? "bg-red-400" : "bg-[var(--theme-accent)]"
-                  )}
-                  style={{
-                    width: `${Math.max(
-                      0,
-                      Math.min(100, Number(practiceTask?.overall_percent ?? 0))
-                    )}%`,
-                  }}
-                />
-              </div>
-            </div>
+            <TaskProgressPanel
+              title={practiceTask?.step_name ?? "Practice Mods"}
+              detail={practiceTask?.detail ?? ""}
+              task={practiceTask}
+              error={practiceTask?.error}
+              percent={practiceTask?.overall_percent}
+              percentText={
+                Number.isFinite(Number(practiceTask?.overall_percent))
+                  ? `${Math.round(Number(practiceTask?.overall_percent))}%`
+                  : ""
+              }
+              barError={practiceTask?.status === "error"}
+            />
 
-            <div className="mt-5 flex items-center justify-end gap-2">
-              <Button
-                variant="secondary"
-                className="h-10 min-w-[120px]"
-                disabled={practiceCancelBusy}
-                onClick={async () => {
-                  const st = practiceTask?.status ?? "working";
-                  if (st === "working") {
-                    explicitCancelKeyRef.current = latestPrepareKeyRef.current;
-                    const v = Number(practiceTask?.version ?? selectedVersion);
-                    if (!Number.isFinite(v)) return;
-                    setPracticeCancelBusy(true);
-                    setPracticeTask((t) => ({
-                      ...(t ?? {}),
-                      status: "working",
-                      detail: "Cancelling...",
-                      error: null,
-                    }));
-                    try {
-                      await invoke("cancel_prepare", { version: v });
-                    } catch (e) {
-                      console.error(e);
-                      setPracticeCancelBusy(false);
-                    }
-                  } else {
-                    setPracticePrompt({ open: false });
-                  }
-                }}
-              >
-                {(practiceTask?.status ?? "working") === "working"
-                  ? practiceCancelBusy
-                    ? "Cancelling..."
-                    : "Cancel"
-                  : "Close"}
-              </Button>
-            </div>
+            <PrepareCancelButton
+              task={practiceTask}
+              setTask={setPracticeTask}
+              cancelBusy={practiceCancelBusy}
+              setCancelBusy={setPracticeCancelBusy}
+              onClose={() => setPracticePrompt({ open: false })}
+              onCancelStart={() => {
+                explicitCancelKeyRef.current = latestPrepareKeyRef.current;
+              }}
+              fallbackVersion={selectedVersion}
+            />
           </div>
         </div>
       )}
@@ -8778,90 +6965,31 @@ export default function LauncherPage({
               </div>
             </div>
 
-            <div className="mt-4 rounded-2xl border border-panel-outline bg-black/20 p-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold">
-                    {presetTask?.step_name ?? "Preset Mods"}
-                  </div>
-                  <div className="truncate text-xs text-white/50">
-                    {presetTask?.detail ?? ""}
-                  </div>
-                  {(formatTransferProgress(presetTask) ||
-                    formatExtractProgress(presetTask)) && (
-                    <div className="mt-1 text-xs text-white/40">
-                      {[
-                        formatTransferProgress(presetTask),
-                        formatExtractProgress(presetTask),
-                      ]
-                        .filter(Boolean)
-                        .join(" • ")}
-                    </div>
-                  )}
-                  {presetTask?.error && (
-                    <div className="mt-1 text-xs text-red-300">
-                      {presetTask.error}
-                    </div>
-                  )}
-                </div>
-                <div className="shrink-0 text-sm text-white/70">
-                  {Number.isFinite(Number(presetTask?.overall_percent))
-                    ? `${Math.round(Number(presetTask?.overall_percent))}%`
-                    : ""}
-                </div>
-              </div>
-              <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-white/10">
-                <div
-                  className={cn(
-                    "h-full rounded-full transition-[width]",
-                    presetTask?.status === "error" ? "bg-red-400" : "bg-[var(--theme-accent)]"
-                  )}
-                  style={{
-                    width: `${Math.max(
-                      0,
-                      Math.min(100, Number(presetTask?.overall_percent ?? 0))
-                    )}%`,
-                  }}
-                />
-              </div>
-            </div>
+            <TaskProgressPanel
+              title={presetTask?.step_name ?? "Preset Mods"}
+              detail={presetTask?.detail ?? ""}
+              task={presetTask}
+              error={presetTask?.error}
+              percent={presetTask?.overall_percent}
+              percentText={
+                Number.isFinite(Number(presetTask?.overall_percent))
+                  ? `${Math.round(Number(presetTask?.overall_percent))}%`
+                  : ""
+              }
+              barError={presetTask?.status === "error"}
+            />
 
-            <div className="mt-5 flex items-center justify-end gap-2">
-              <Button
-                variant="secondary"
-                className="h-10 min-w-[120px]"
-                disabled={presetCancelBusy}
-                onClick={async () => {
-                  const st = presetTask?.status ?? "working";
-                  if (st === "working") {
-                    explicitCancelKeyRef.current = latestPrepareKeyRef.current;
-                    const v = Number(presetTask?.version ?? selectedVersion);
-                    if (!Number.isFinite(v)) return;
-                    setPresetCancelBusy(true);
-                    setPresetTask((t) => ({
-                      ...(t ?? {}),
-                      status: "working",
-                      detail: "Cancelling...",
-                      error: null,
-                    }));
-                    try {
-                      await invoke("cancel_prepare", { version: v });
-                    } catch (e) {
-                      console.error(e);
-                      setPresetCancelBusy(false);
-                    }
-                  } else {
-                    setPresetPrompt({ open: false });
-                  }
-                }}
-              >
-                {(presetTask?.status ?? "working") === "working"
-                  ? presetCancelBusy
-                    ? "Cancelling..."
-                    : "Cancel"
-                  : "Close"}
-              </Button>
-            </div>
+            <PrepareCancelButton
+              task={presetTask}
+              setTask={setPresetTask}
+              cancelBusy={presetCancelBusy}
+              setCancelBusy={setPresetCancelBusy}
+              onClose={() => setPresetPrompt({ open: false })}
+              onCancelStart={() => {
+                explicitCancelKeyRef.current = latestPrepareKeyRef.current;
+              }}
+              fallbackVersion={selectedVersion}
+            />
           </div>
         </div>
       )}

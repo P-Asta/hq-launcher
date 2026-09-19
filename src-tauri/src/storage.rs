@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
+use crate::util::dir_has_any_entries;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct StorageConfig {
@@ -157,13 +158,6 @@ pub fn set_events_enabled(app: &tauri::AppHandle, enabled: bool) -> Result<bool,
     config.events_enabled = Some(enabled);
     write_config(app, &config)?;
     Ok(enabled)
-}
-
-fn dir_has_any_entries(path: &Path) -> bool {
-    std::fs::read_dir(path)
-        .ok()
-        .and_then(|mut rd| rd.next())
-        .is_some()
 }
 
 fn count_copy_entries(path: &Path) -> Result<u64, String> {

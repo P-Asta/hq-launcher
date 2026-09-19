@@ -11,6 +11,7 @@ use crate::lcstats_autosheet::stats::{
     parse_lcstats_time_to_minutes, players_at, strip_apostrophe, strip_moon_number, value_at,
     value_at_any, LcStats,
 };
+use super::common::{blank_or_x, column_to_index, google_user_value, non_false_text, normalize_interior_name};
 
 pub async fn write(
     client: &reqwest::Client,
@@ -1094,18 +1095,6 @@ fn value_with_note_request(sheet_id: i64, cell: &NoteCell, row: usize) -> Value 
     })
 }
 
-fn google_user_value(value: Value) -> Value {
-    if let Some(value) = value.as_bool() {
-        json!({ "boolValue": value })
-    } else if let Some(value) = value.as_i64() {
-        json!({ "numberValue": value })
-    } else if let Some(value) = value.as_f64() {
-        json!({ "numberValue": value })
-    } else {
-        json!({ "stringValue": value.as_str().unwrap_or_default() })
-    }
-}
-
 fn player_death_enemy_note(
     stats: &Value,
     death_time: &str,
@@ -1925,41 +1914,6 @@ fn capitalize_word(value: &str) -> String {
     format!("{}{}", first.to_uppercase(), chars.as_str())
 }
 
-fn normalize_interior_name(value: &str) -> String {
-    let without_flow = value.replace("Flow", "").replace("flow", "");
-    let mut out = String::new();
-    let mut previous_lowercase = false;
-    for ch in without_flow.chars().filter(|ch| !ch.is_ascii_digit()) {
-        if ch.is_ascii_uppercase() && previous_lowercase {
-            out.push(' ');
-        }
-        previous_lowercase = ch.is_ascii_lowercase();
-        out.push(ch);
-    }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn non_false_text(value: &str) -> Option<String> {
-    let value = strip_apostrophe(value).trim().to_string();
-    if value.is_empty()
-        || value.eq_ignore_ascii_case("false")
-        || value.eq_ignore_ascii_case("none")
-        || value == "0"
-    {
-        None
-    } else {
-        Some(value)
-    }
-}
-
-fn blank_or_x(value: &str) -> Value {
-    if value.trim().is_empty() {
-        json!("X")
-    } else {
-        json!(value)
-    }
-}
-
 fn collected_count_or_legacy_int(
     stats: &Value,
     collected_path: &[&str],
@@ -2020,12 +1974,6 @@ fn is_late_death(value: &str) -> bool {
         return false;
     };
     (hour == 22 && minute >= 45) || hour >= 23
-}
-
-fn column_to_index(column: &str) -> usize {
-    column.chars().fold(0, |index, ch| {
-        index * 26 + (ch.to_ascii_uppercase() as usize - 'A' as usize + 1)
-    }) - 1
 }
 
 #[cfg(test)]

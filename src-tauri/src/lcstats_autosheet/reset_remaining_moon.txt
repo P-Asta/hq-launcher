@@ -1,0 +1,13 @@
+=IF(
+   AND($AS$47="Wesley's",$AS$36<>"Single Moon"),
+   "Oldred",
+   SWITCH($AS$38,
+      "Quota 1","",
+      "Quota 3","Assurance",
+      "Quota 6","Assurance",
+      "Quota 10","Assurance",
+      "Classic Ironman","Offense",
+      "Hardcore Ironman","Assurance",
+      $AS$38
+   )
+)

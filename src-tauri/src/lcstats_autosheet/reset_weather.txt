@@ -1,0 +1,37 @@
+=IF(
+   AND($AR$47="HQ",$A$200="D1weather"),
+   LET(
+      version,VALUE(REGEXEXTRACT($AQ$38,"\d+")),
+      weatherSet,SWITCH(
+         version,
+         40,1,45,1,49,1,
+         50,2,56,2,
+         62,3,64,3,69,3,
+         72,4,73,4,
+         0
+      ),
+      IF(
+         weatherSet=0,
+         "",
+         VLOOKUP(
+            G4,
+            {
+               "Experimentation","Clear","Clear","Clear","Clear";
+               "Assurance","Rainy","Clear","Clear","Clear";
+               "Vow","Clear","Flooded","Flooded","Clear";
+               "Offense","Flooded","Flooded","Flooded","Clear";
+               "March","Flooded","Stormy","Clear","Clear";
+               "Adamance","","Flooded","Flooded","Clear";
+               "Rend","Eclipse","Eclipse","Eclipse","Clear";
+               "Dine","Eclipse","Flooded","Flooded","Clear";
+               "Titan","Foggy","Clear","Clear","Clear";
+               "Artifice","","Stormy","Clear","Clear";
+               "Embrion","","Eclipse","Eclipse","Clear"
+            },
+            weatherSet+1,
+            FALSE
+         )
+      )
+   ),
+   ""
+)

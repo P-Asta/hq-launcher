@@ -11,6 +11,7 @@ use crate::lcstats_autosheet::stats::{
     lcstats, parse_lcstats_time_to_minutes, strip_apostrophe, strip_moon_number, LcStats,
     PlayerStats,
 };
+use super::common::{google_user_value, value_with_note_request};
 
 const START_ROW: usize = 4;
 const CHECK_COLUMN: &str = "L";
@@ -332,6 +333,7 @@ async fn write_death_notes(
             row,
             json!(status),
             &note,
+            google_user_value,
         ));
     }
 
@@ -370,45 +372,6 @@ async fn handle_gordion(
         updates.push((QUOTA_COLUMN.to_string(), target_line + 3, json!(new_quota)));
     }
     batch_write_cells_user_entered(client, token, spreadsheet_id, sheet_name, updates).await
-}
-
-fn value_with_note_request(
-    sheet_id: i64,
-    column: &str,
-    row: usize,
-    value: Value,
-    note: &str,
-) -> Value {
-    let column_index = column_to_index(column);
-    let mut cell = json!({ "userEnteredValue": google_user_value(value) });
-    if !note.is_empty() {
-        cell["note"] = json!(note);
-    }
-    json!({
-        "updateCells": {
-            "range": {
-                "sheetId": sheet_id,
-                "startRowIndex": row.saturating_sub(1),
-                "endRowIndex": row,
-                "startColumnIndex": column_index,
-                "endColumnIndex": column_index + 1
-            },
-            "rows": [{ "values": [cell] }],
-            "fields": "userEnteredValue,note"
-        }
-    })
-}
-
-fn google_user_value(value: Value) -> Value {
-    if let Some(value) = value.as_bool() {
-        json!({ "boolValue": value })
-    } else if let Some(value) = value.as_i64() {
-        json!({ "numberValue": value })
-    } else if let Some(value) = value.as_f64() {
-        json!({ "numberValue": value })
-    } else {
-        json!({ "stringValue": value.as_str().unwrap_or_default() })
-    }
 }
 
 fn player_death_note(player: &PlayerStats) -> Option<String> {
@@ -452,12 +415,6 @@ fn run_block_start_row(current_row: usize) -> usize {
 
 fn normalize_player_name_key(value: &str) -> String {
     strip_apostrophe(value).trim().to_ascii_lowercase()
-}
-
-fn column_to_index(column: &str) -> usize {
-    column.chars().fold(0, |index, ch| {
-        index * 26 + (ch.to_ascii_uppercase() as usize - 'A' as usize + 1)
-    }) - 1
 }
 
 #[cfg(test)]

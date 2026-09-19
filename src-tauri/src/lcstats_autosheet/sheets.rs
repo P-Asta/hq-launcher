@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use crate::util::url_encode;
 
 #[derive(Debug, Clone)]
 pub struct SheetInfo {
@@ -493,7 +494,7 @@ fn column_to_index(column: &str) -> Option<usize> {
     seen.then_some(index - 1)
 }
 
-fn index_to_column(mut index: usize) -> String {
+pub(crate) fn index_to_column(mut index: usize) -> String {
     index += 1;
     let mut chars = vec![];
     while index > 0 {
@@ -502,20 +503,6 @@ fn index_to_column(mut index: usize) -> String {
         index = (index - 1) / 26;
     }
     chars.iter().rev().collect()
-}
-
-fn url_encode(value: &str) -> String {
-    let mut out = String::new();
-    for b in value.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            b' ' => out.push_str("%20"),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

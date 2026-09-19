@@ -1,0 +1,24 @@
+=IF($AS$36="Single Moon",
+   $AS$38,
+   IF(OR($AS$47="HQ",$AS$47="Brutal"),
+      LET(
+         version,VALUE(REGEXEXTRACT($AR$38,"\d+")),
+         IF(OR(version=81,version<=49),"Assurance","Adamance")
+      ),
+      IF($AS$47="Wesley's",
+         "Motra",
+         IF($AS$47="Classic",
+            "Derelict",
+            SWITCH($AS$38,
+               "Quota 1","Assurance",
+               "Quota 3","Assurance",
+               "Quota 6","Assurance",
+               "Quota 10","Assurance",
+               "Classic Ironman","Assurance",
+               "Hardcore Ironman","Experimentation",
+               $AS$38
+            )
+         )
+      )
+   )
+)

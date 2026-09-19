@@ -4,6 +4,7 @@ mod downloader;
 mod event_config;
 mod google_oauth;
 mod installer;
+mod util;
 mod lcstats_autosheet;
 mod logger;
 mod mod_config;
@@ -78,6 +79,7 @@ use crate::{
     mod_config::ModsConfig,
     progress::{TaskFinishedPayload, TaskUpdatableProgressPayload},
 };
+use crate::util::has_legacy_complete_files;
 
 const INSTALL_COMPLETE_MARKER: &str = ".hq_install_complete";
 const DISABLEMOD_FILE_VERSION: u32 = 6;
@@ -145,14 +147,6 @@ fn manifest_state_has_version(app: &tauri::AppHandle, version: u32) -> bool {
         .get("depot_manifests")
         .and_then(|v| v.get(version.to_string()))
         .is_some()
-}
-
-fn has_legacy_complete_files(path: &Path) -> bool {
-    path.join("Lethal Company.exe").is_file()
-        && path.join("UnityPlayer.dll").is_file()
-        && path.join("Lethal Company_Data").is_dir()
-        && path.join("winhttp.dll").is_file()
-        && path.join("BepInEx").join("core").is_dir()
 }
 
 fn is_complete_version_dir(app: &tauri::AppHandle, version: u32, path: &Path) -> bool {
@@ -446,14 +440,6 @@ fn resolve_native_overlay_dll_linux(app: &tauri::AppHandle) -> Result<std::path:
 
     validate_x64_pe_dll(&destination)?;
     Ok(destination.canonicalize().unwrap_or(destination))
-}
-
-/// Extract the numeric version from a `vNN` version directory name.
-#[cfg(target_os = "linux")]
-fn parse_version_from_dir(path: &std::path::Path) -> Option<u32> {
-    let name = path.file_name()?.to_str()?;
-    let trimmed = name.strip_prefix('v')?;
-    trimmed.parse().ok()
 }
 
 fn validate_x64_pe_dll(path: &Path) -> Result<(), String> {
@@ -13387,13 +13373,6 @@ async fn check_app_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
     })
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct UpdateProgress {
-    downloaded: u64,
-    total: u64,
-    percent: f64,
-}
-
 #[tauri::command]
 async fn download_app_update(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_updater::UpdaterExt;
@@ -13698,6 +13677,7 @@ pub fn run() {
             get_lcstats_latest_payload,
             set_lcstats_autosheet_tracking,
             set_lcstats_settings,
+            lcstats_autosheet::reset_lcstats_sheet,
             list_lcstats_sheet_names,
             list_lcstats_sheet_infos,
             list_lcstats_spreadsheets,

@@ -11,6 +11,7 @@ use crate::lcstats_autosheet::stats::{
     array_at, array_at_any, lcstats, object_at, parse_lcstats_time_to_minutes, players_at,
     strip_apostrophe, strip_moon_number, value_at, value_at_any, LcStats,
 };
+use super::common::{column_to_index, google_user_value, non_false_text};
 
 const CHECK_COLUMN: &str = "X";
 const START_ROW: usize = 4;
@@ -924,18 +925,6 @@ fn row_values_with_notes_request(
     })
 }
 
-fn google_user_value(value: Value) -> Value {
-    if let Some(value) = value.as_bool() {
-        json!({ "boolValue": value })
-    } else if let Some(value) = value.as_i64() {
-        json!({ "numberValue": value })
-    } else if let Some(value) = value.as_f64() {
-        json!({ "numberValue": value })
-    } else {
-        json!({ "stringValue": value.as_str().unwrap_or_default() })
-    }
-}
-
 fn wafrody_weather(value: &str) -> String {
     let weather = strip_apostrophe(value);
     if weather.eq_ignore_ascii_case("Mild") {
@@ -1375,19 +1364,6 @@ fn beehive_price_summary(stats: &Value) -> BeehivePriceSummary {
     }
 }
 
-fn non_false_text(value: &str) -> Option<String> {
-    let value = strip_apostrophe(value).trim().to_string();
-    if value.is_empty()
-        || value.eq_ignore_ascii_case("false")
-        || value.eq_ignore_ascii_case("none")
-        || value == "0"
-    {
-        None
-    } else {
-        Some(value)
-    }
-}
-
 fn indoor_enemy_count(stats: &Value, enemy: &str) -> usize {
     array_at(stats, &["IndoorSpawns"])
         .iter()
@@ -1434,12 +1410,6 @@ fn value_as_i64_option(value: &Value) -> Option<i64> {
                     .map(|value| value as i64)
             })
         })
-}
-
-fn column_to_index(column: &str) -> usize {
-    column.chars().fold(0, |index, ch| {
-        index * 26 + (ch.to_ascii_uppercase() as usize - 'A' as usize + 1)
-    }) - 1
 }
 
 #[cfg(test)]

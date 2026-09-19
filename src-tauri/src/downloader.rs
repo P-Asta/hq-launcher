@@ -19,6 +19,7 @@ use crate::progress::{self, TaskProgressPayload};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+use crate::util::overall_from_step;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -174,12 +175,6 @@ pub struct DownloadTaskContext {
     pub steps_total: u32,
     pub step: u32, // 1-based
     pub step_name: String,
-}
-
-fn overall_from_step(step: u32, step_progress: f64, steps_total: u32) -> f64 {
-    let s = step.max(1).min(steps_total) as f64;
-    let sp = step_progress.clamp(0.0, 1.0);
-    (((s - 1.0) + sp) / (steps_total as f64)) * 100.0
 }
 
 #[derive(Default)]

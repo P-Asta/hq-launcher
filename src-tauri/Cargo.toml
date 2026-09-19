@@ -66,3 +66,11 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 winreg = "0.55.0"
+
+[profile.release]
+# Fat LTO + single codegen unit: noticeably smaller and faster binary at the
+# cost of a longer release build. `strip` drops debug symbols from the
+# shipped binary (MSVC keeps them in the separate .pdb anyway).
+lto = true
+codegen-units = 1
+strip = true

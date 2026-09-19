@@ -4,8 +4,9 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tauri::Manager;
+use crate::util::{now_epoch_secs, url_encode};
 
 const DRIVE_FILE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
 const SHEETS_SCOPE: &str = "https://www.googleapis.com/auth/spreadsheets";
@@ -823,13 +824,6 @@ fn format_google_oauth_error(status: reqwest::StatusCode, body: &str, action: &s
     message
 }
 
-fn now_epoch_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 fn has_required_scope(scope: Option<&str>) -> bool {
     let scopes: std::collections::HashSet<&str> = scope.unwrap_or("").split_whitespace().collect();
     scopes.contains(DRIVE_FILE_SCOPE) || scopes.contains(SHEETS_SCOPE)
@@ -849,20 +843,6 @@ fn requested_oauth_scope(credentials: &OAuthCredentials) -> String {
     } else {
         format!("{SHEETS_SCOPE} {DRIVE_METADATA_SCOPE}")
     }
-}
-
-fn url_encode(value: &str) -> String {
-    let mut out = String::new();
-    for b in value.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            b' ' => out.push_str("%20"),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 fn url_decode(value: &str) -> String {

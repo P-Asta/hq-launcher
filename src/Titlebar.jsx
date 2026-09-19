@@ -9,6 +9,9 @@ import { isRegistered, register, unregister, unregisterAll } from '@tauri-apps/p
 import { Dialog, DialogContent } from './components/ui/dialog';
 import { Button } from './components/ui/button';
 import { Switch } from './components/ui/switch';
+import { SettingRow } from "./components/settings/SettingRow";
+import { ThemeSliderControl } from "./components/settings/ThemeSliderControl";
+import { getInitialEventsEnabled, reconcileEventsEnabled, saveEventsEnabled } from "./lib/eventsSetting";
 import {
     Select,
     SelectContent,
@@ -33,13 +36,6 @@ import {
 
 const SHOW_THEME_SETTINGS = true;
 const SHOW_DEV_SETTINGS = import.meta.env.DEV;
-const EVENTS_ENABLED_STORAGE_KEY = "launcherEventsEnabled";
-
-function loadEventsEnabled() {
-    if (typeof window === "undefined") return true;
-    const stored = localStorage.getItem(EVENTS_ENABLED_STORAGE_KEY);
-    return stored == null ? true : stored === "true";
-}
 
 export default function Titlebar({ installedVersions, ...props }) {
     const [isMaximized, setIsMaximized] = useState(false);
@@ -57,7 +53,7 @@ export default function Titlebar({ installedVersions, ...props }) {
     const [themeHue, setThemeHue] = useState(() => loadStoredThemeHue());
     const [themeBrightness, setThemeBrightness] = useState(() => loadStoredThemeBrightness());
     const [themeMode, setThemeMode] = useState(() => loadStoredThemeMode());
-    const [eventsEnabled, setEventsEnabled] = useState(() => loadEventsEnabled());
+    const [eventsEnabled, setEventsEnabled] = useState(getInitialEventsEnabled);
     const [steamOverlayConfig, setSteamOverlayConfig] = useState({
         enabled: false,
         steam_path: "",
@@ -130,8 +126,7 @@ export default function Titlebar({ installedVersions, ...props }) {
     function setLauncherEventsEnabled(enabled) {
         const nextEnabled = !!enabled;
         setEventsEnabled(nextEnabled);
-        localStorage.setItem(EVENTS_ENABLED_STORAGE_KEY, nextEnabled ? "true" : "false");
-        invoke('set_events_enabled', { enabled: nextEnabled }).catch(() => {});
+        saveEventsEnabled(nextEnabled);
         emit('ui://events-enabled-changed', { enabled: nextEnabled }).catch(() => {});
     }
 
@@ -152,13 +147,8 @@ export default function Titlebar({ installedVersions, ...props }) {
         refreshOverlaySettings();
         invoke('get_events_enabled')
             .then((enabled) => {
-                const stored = localStorage.getItem(EVENTS_ENABLED_STORAGE_KEY);
-                const nextEnabled = stored == null ? !!enabled : stored === "true";
+                const nextEnabled = reconcileEventsEnabled(enabled);
                 setEventsEnabled(nextEnabled);
-                localStorage.setItem(EVENTS_ENABLED_STORAGE_KEY, nextEnabled ? "true" : "false");
-                if (nextEnabled !== !!enabled) {
-                    invoke('set_events_enabled', { enabled: nextEnabled }).catch(() => {});
-                }
                 emit('ui://events-enabled-changed', { enabled: nextEnabled }).catch(() => {});
             })
             .catch(() => {});
@@ -702,86 +692,47 @@ export default function Titlebar({ installedVersions, ...props }) {
                                             </div>
                                         </div>
 
-                                        <div className="rounded-lg border border-panel-outline p-4">
-                                            <div className="flex items-start justify-between gap-4">
-                                                <div className="flex min-w-0 gap-3">
-                                                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-white/10 bg-black/20 text-white/75">
-                                                        <Play size={18} />
-                                                    </div>
-                                                    <div className="min-w-0">
-                                                        <div className="text-sm font-semibold text-white">Events</div>
-                                                        <div className="mt-1 text-sm leading-5 text-white/55">
-                                                            Show active launcher events and event presets.
-                                                        </div>
-                                                    </div>
-                                                </div>
+                                        <SettingRow
+                                          icon={<Play size={18} />}
+                                          title="Events"
+                                          description="Show active launcher events and event presets."
+                                        >
+                                          <Switch
+                                              checked={eventsEnabled}
+                                              onCheckedChange={setLauncherEventsEnabled}
+                                              aria-label="Show launcher events"
+                                          />
+                                        </SettingRow>
 
-                                                <Switch
-                                                    checked={eventsEnabled}
-                                                    onCheckedChange={setLauncherEventsEnabled}
-                                                    aria-label="Show launcher events"
-                                                />
-                                            </div>
-                                        </div>
-
-                                        <div className="rounded-lg border border-panel-outline p-4">
-                                            <div className="flex items-start justify-between gap-4">
-                                                <div className="flex min-w-0 gap-3">
-                                                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-white/10 bg-black/20 text-white/75">
-                                                        <Beaker size={18} />
-                                                    </div>
-                                                    <div className="min-w-0">
-                                                        <div className="text-sm font-semibold text-white">Beta channel</div>
-                                                        <div className="mt-1 text-sm leading-5 text-white/55">
-                                                            Get faster and more frequent updates before they reach stable.
-                                                        </div>
-                                                    </div>
-                                                </div>
-
-                                                <Switch
-                                                    checked={!!releaseChannel?.is_beta}
-                                                    disabled={releaseChannelBusy || !releaseChannel}
-                                                    onCheckedChange={setBetaEnabled}
-                                                    aria-label="Enable beta channel"
-                                                />
-                                            </div>
-
-                                            {releaseChannelError && (
+                                        <SettingRow
+                                          icon={<Beaker size={18} />}
+                                          title="Beta channel"
+                                          description="Get faster and more frequent updates before they reach stable."
+                                          footer={(
+                                            <>
+                                              {releaseChannelError && (
                                                 <div className="mt-3 rounded-md border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
                                                     {releaseChannelError}
                                                 </div>
                                             )}
-                                        </div>
+                                            </>
+                                          )}
+                                        >
+                                          <Switch
+                                              checked={!!releaseChannel?.is_beta}
+                                              disabled={releaseChannelBusy || !releaseChannel}
+                                              onCheckedChange={setBetaEnabled}
+                                              aria-label="Enable beta channel"
+                                          />
+                                        </SettingRow>
 
-                                        <div className="rounded-lg border border-panel-outline p-4">
-                                            <div className="flex items-start justify-between gap-4">
-                                                <div className="flex min-w-0 gap-3">
-                                                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-white/10 bg-black/20 text-white/75">
-                                                        <HardDrive size={18} />
-                                                    </div>
-                                                    <div className="min-w-0">
-                                                        <div className="text-sm font-semibold text-white">Game storage</div>
-                                                        <div className="mt-1 text-sm leading-5 text-white/55">
-                                                            Installed game versions are stored here.
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                                {gameStorage?.is_custom && (
-                                                    <Button
-                                                        variant="outline"
-                                                        className="h-9 shrink-0 px-3"
-                                                        disabled={gameStorageBusy}
-                                                        onClick={() => {
-                                                            void resetGameStorageDir();
-                                                        }}
-                                                    >
-                                                        <RotateCcw className="h-4 w-4" />
-                                                        Reset
-                                                    </Button>
-                                                )}
-                                            </div>
-
-                                            <div className="mt-4 flex items-center gap-2 rounded-md border border-panel-outline bg-black/20 px-3 py-2">
+                                        <SettingRow
+                                          icon={<HardDrive size={18} />}
+                                          title="Game storage"
+                                          description="Installed game versions are stored here."
+                                          footer={(
+                                            <>
+                                              <div className="mt-4 flex items-center gap-2 rounded-md border border-panel-outline bg-black/20 px-3 py-2">
                                                 <div
                                                     className="min-w-0 flex-1 truncate text-xs font-medium text-white/65"
                                                     title={gameStorage?.current_dir ?? ""}
@@ -806,7 +757,23 @@ export default function Titlebar({ installedVersions, ...props }) {
                                                     {gameStorageError}
                                                 </div>
                                             )}
-                                        </div>
+                                            </>
+                                          )}
+                                        >
+                                          {gameStorage?.is_custom && (
+                                              <Button
+                                                  variant="outline"
+                                                  className="h-9 shrink-0 px-3"
+                                                  disabled={gameStorageBusy}
+                                                  onClick={() => {
+                                                      void resetGameStorageDir();
+                                                  }}
+                                              >
+                                                  <RotateCcw className="h-4 w-4" />
+                                                  Reset
+                                              </Button>
+                                          )}
+                                        </SettingRow>
                                     </div>
                                 )}
 
@@ -821,72 +788,66 @@ export default function Titlebar({ installedVersions, ...props }) {
                                             </div>
                                         </div>
 
-                                         <div className="rounded-lg border border-panel-outline p-4">
-                                             <div className="flex items-start justify-between gap-4">
-                                                 <div className="min-w-0">
-                                                    <div className="text-sm font-semibold text-white">Enable HQLC Overlay</div>
-                                                    <div className="mt-1 text-sm leading-5 text-white/55">
-                                                        Shows the editable HQLC in-game overlay while Lethal Company is focused.
-                                                    </div>
-                                                </div>
-                                                <Switch
-                                                    checked={gameOverlayConfig.general?.enabled !== false}
-                                                    disabled={steamOverlayBusy}
-                                                    onCheckedChange={(checked) => {
-                                                        const nextGameOverlayConfig = {
-                                                            ...gameOverlayConfig,
-                                                            general: {
-                                                                ...(gameOverlayConfig.general ?? {}),
-                                                                enabled: checked,
-                                                            },
-                                                        };
-                                                        setGameOverlayConfig(nextGameOverlayConfig);
-                                                        setSteamOverlaySaved("");
-                                                        void persistOverlaySettings(steamOverlayConfig, nextGameOverlayConfig);
-                                                    }}
-                                                    aria-label="Enable HQLC overlay"
-                                                />
-                                             </div>
-                                         </div>
+                                         <SettingRow
+                                           title="Enable HQLC Overlay"
+                                           description="Shows the editable HQLC in-game overlay while Lethal Company is focused."
+                                         >
+                                           <Switch
+                                               checked={gameOverlayConfig.general?.enabled !== false}
+                                               disabled={steamOverlayBusy}
+                                               onCheckedChange={(checked) => {
+                                                   const nextGameOverlayConfig = {
+                                                       ...gameOverlayConfig,
+                                                       general: {
+                                                           ...(gameOverlayConfig.general ?? {}),
+                                                           enabled: checked,
+                                                       },
+                                                   };
+                                                   setGameOverlayConfig(nextGameOverlayConfig);
+                                                   setSteamOverlaySaved("");
+                                                   void persistOverlaySettings(steamOverlayConfig, nextGameOverlayConfig);
+                                               }}
+                                               aria-label="Enable HQLC overlay"
+                                           />
+                                         </SettingRow>
 
-                                         <div className="rounded-lg border border-panel-outline p-4">
-                                            <div className="flex items-start justify-between gap-4">
-                                                <div className="min-w-0">
-                                                    <div className="text-sm font-semibold text-white">Overlay Backend</div>
-                                                    <div className="mt-1 text-sm leading-5 text-white/55">
-                                                        Choose how the in-game overlay is rendered. Changes are applied safely to an active native session and fully take effect on the next launch.
-                                                    </div>
-                                                </div>
-                                                <Select
-                                                    value={gameOverlayConfig.general?.backend ?? "native"}
-                                                    disabled={steamOverlayBusy || gameOverlayConfig.general?.enabled === false}
-                                                    onValueChange={(backend) => {
-                                                        const nextGameOverlayConfig = {
-                                                            ...gameOverlayConfig,
-                                                            general: {
-                                                                ...(gameOverlayConfig.general ?? {}),
-                                                                backend,
-                                                            },
-                                                        };
-                                                        setGameOverlayConfig(nextGameOverlayConfig);
-                                                        setSteamOverlaySaved("");
-                                                        void persistOverlaySettings(steamOverlayConfig, nextGameOverlayConfig);
-                                                    }}
-                                                >
-                                                    <SelectTrigger aria-label="Overlay backend" className="h-11 min-w-[12rem] px-3">
-                                                        <SelectValue />
-                                                    </SelectTrigger>
-                                                    <SelectContent>
-                                                        <SelectItem value="native">Native HTML</SelectItem>
-                                                        <SelectItem value="legacy">Legacy WebView</SelectItem>
-                                                        <SelectItem value="off">Off</SelectItem>
-                                                    </SelectContent>
-                                                </Select>
-                                            </div>
-                                             <div className="mt-3 rounded-md bg-black/20 px-3 py-2 text-xs leading-5 text-white/45">
+                                         <SettingRow
+                                           title="Overlay Backend"
+                                           description="Choose how the in-game overlay is rendered. Changes are applied safely to an active native session and fully take effect on the next launch."
+                                           footer={(
+                                             <>
+                                               <div className="mt-3 rounded-md bg-black/20 px-3 py-2 text-xs leading-5 text-white/45">
                                                  Native loads the overlay as a <span className="font-mono text-white/65">version.dll</span> proxy inside the game directory, hosts the same HTML overlay UI inside the game, and loads <span className="font-mono text-white/65">overlayModule/*.js</span> without BepInEx.
                                              </div>
-                                        </div>
+                                             </>
+                                           )}
+                                         >
+                                           <Select
+                                               value={gameOverlayConfig.general?.backend ?? "native"}
+                                               disabled={steamOverlayBusy || gameOverlayConfig.general?.enabled === false}
+                                               onValueChange={(backend) => {
+                                                   const nextGameOverlayConfig = {
+                                                       ...gameOverlayConfig,
+                                                       general: {
+                                                           ...(gameOverlayConfig.general ?? {}),
+                                                           backend,
+                                                       },
+                                                   };
+                                                   setGameOverlayConfig(nextGameOverlayConfig);
+                                                   setSteamOverlaySaved("");
+                                                   void persistOverlaySettings(steamOverlayConfig, nextGameOverlayConfig);
+                                               }}
+                                           >
+                                               <SelectTrigger aria-label="Overlay backend" className="h-11 min-w-[12rem] px-3">
+                                                   <SelectValue />
+                                               </SelectTrigger>
+                                               <SelectContent>
+                                                   <SelectItem value="native">Native HTML</SelectItem>
+                                                   <SelectItem value="legacy">Legacy WebView</SelectItem>
+                                                   <SelectItem value="off">Off</SelectItem>
+                                               </SelectContent>
+                                           </Select>
+                                         </SettingRow>
 
                                         <div className="rounded-lg border border-panel-outline p-4">
                                             <div className="flex items-start justify-between gap-4">
@@ -903,19 +864,12 @@ export default function Titlebar({ installedVersions, ...props }) {
                                         </div>
 
                                         {gameOverlayConfig.general?.backend === "legacy" ? (
-                                        <div className="rounded-lg border border-panel-outline p-4">
-                                            <div className="flex items-start justify-between gap-4">
-                                                <div className="min-w-0">
-                                                    <div className="text-sm font-semibold text-white">Focus Check Interval</div>
-                                                    <div className="mt-1 text-sm leading-5 text-white/55">
-                                                        How often HQLC checks whether Lethal Company is focused.
-                                                    </div>
-                                                </div>
-                                                <div className="shrink-0 text-sm font-semibold tabular-nums text-white">
-                                                    {Math.round(Number(gameOverlayConfig.general?.monitor_interval_ms ?? 1000) / 100) / 10}s
-                                                </div>
-                                            </div>
-                                            <input
+                                        <SettingRow
+                                          title="Focus Check Interval"
+                                          description="How often HQLC checks whether Lethal Company is focused."
+                                          footer={(
+                                            <>
+                                              <input
                                                 type="range"
                                                 min="500"
                                                 max="5000"
@@ -974,61 +928,57 @@ export default function Titlebar({ installedVersions, ...props }) {
                                                 <span>0.5s</span>
                                                 <span>5s</span>
                                             </div>
-                                        </div>
+                                            </>
+                                          )}
+                                        >
+                                          <div className="shrink-0 text-sm font-semibold tabular-nums text-white">
+                                              {Math.round(Number(gameOverlayConfig.general?.monitor_interval_ms ?? 1000) / 100) / 10}s
+                                          </div>
+                                        </SettingRow>
                                         ) : null}
 
-                                        <div className="rounded-lg border border-panel-outline p-4">
-                                            <div className="flex items-start justify-between gap-4">
-                                                <div className="min-w-0">
-                                                    <div className="text-sm font-semibold text-white">Use StreamOverlays API</div>
-                                                    <div className="mt-1 text-sm leading-5 text-white/55">
-                                                        Lets HQLC overlay modules read StreamOverlays data from its local WebSocket.
-                                                    </div>
-                                                </div>
-                                                <Switch
-                                                    checked={gameOverlayConfig.general?.use_stream_overlays_api === true}
-                                                    disabled={steamOverlayBusy}
-                                                    onCheckedChange={(checked) => {
-                                                        const nextGameOverlayConfig = {
-                                                            ...gameOverlayConfig,
-                                                            general: {
-                                                                ...(gameOverlayConfig.general ?? {}),
-                                                                use_stream_overlays_api: checked,
-                                                            },
-                                                        };
-                                                        setGameOverlayConfig(nextGameOverlayConfig);
-                                                        setSteamOverlaySaved("");
-                                                        void persistOverlaySettings(steamOverlayConfig, nextGameOverlayConfig);
-                                                    }}
-                                                    aria-label="Use StreamOverlays API"
-                                                />
-                                            </div>
-                                        </div>
+                                        <SettingRow
+                                          title="Use StreamOverlays API"
+                                          description="Lets HQLC overlay modules read StreamOverlays data from its local WebSocket."
+                                        >
+                                          <Switch
+                                              checked={gameOverlayConfig.general?.use_stream_overlays_api === true}
+                                              disabled={steamOverlayBusy}
+                                              onCheckedChange={(checked) => {
+                                                  const nextGameOverlayConfig = {
+                                                      ...gameOverlayConfig,
+                                                      general: {
+                                                          ...(gameOverlayConfig.general ?? {}),
+                                                          use_stream_overlays_api: checked,
+                                                      },
+                                                  };
+                                                  setGameOverlayConfig(nextGameOverlayConfig);
+                                                  setSteamOverlaySaved("");
+                                                  void persistOverlaySettings(steamOverlayConfig, nextGameOverlayConfig);
+                                              }}
+                                              aria-label="Use StreamOverlays API"
+                                          />
+                                        </SettingRow>
 
                                         {gameOverlayConfig.general?.backend === "legacy" ? (
-                                        <div className="rounded-lg border border-panel-outline p-4">
-                                            <div className="flex items-start justify-between gap-4">
-                                                <div className="min-w-0">
-                                                    <div className="text-sm font-semibold text-white">OBS Capture Window</div>
-                                                    <div className="mt-1 text-sm leading-5 text-white/55">
-                                                        Shows the game overlay window for OBS selection. Closing settings will hide temporary selector overlays.
-                                                    </div>
-                                                </div>
-                                                <div className="flex shrink-0 items-center gap-2">
-                                                    <Button
-                                                        variant="default"
-                                                        className="h-9 px-3"
-                                                        disabled={steamOverlayBusy || obsOverlayBusy}
-                                                        onClick={() => {
-                                                            void openObsOverlayWindow();
-                                                        }}
-                                                    >
-                                                        <Play className="h-4 w-4" />
-                                                        {obsOverlayBusy ? "Opening..." : "Open Selector"}
-                                                    </Button>
-                                                </div>
-                                            </div>
-                                        </div>
+                                        <SettingRow
+                                          title="OBS Capture Window"
+                                          description="Shows the game overlay window for OBS selection. Closing settings will hide temporary selector overlays."
+                                        >
+                                          <div className="flex shrink-0 items-center gap-2">
+                                              <Button
+                                                  variant="default"
+                                                  className="h-9 px-3"
+                                                  disabled={steamOverlayBusy || obsOverlayBusy}
+                                                  onClick={() => {
+                                                      void openObsOverlayWindow();
+                                                  }}
+                                              >
+                                                  <Play className="h-4 w-4" />
+                                                  {obsOverlayBusy ? "Opening..." : "Open Selector"}
+                                              </Button>
+                                          </div>
+                                        </SettingRow>
                                         ) : null}
 
                                         <div className="rounded-lg border border-panel-outline p-4">
@@ -1061,31 +1011,12 @@ export default function Titlebar({ installedVersions, ...props }) {
                                             ) : null}
                                         </div>
 
-                                        <div className="rounded-lg border border-panel-outline p-4">
-                                            <div className="flex items-start justify-between gap-4">
-                                                <div className="min-w-0">
-                                                    <div className="text-sm font-semibold text-white">Enable Inject Steam Overlay</div>
-                                                    <div className="mt-1 text-sm leading-5 text-white/55">
-                                                        Starts the game suspended, injects Steam overlay DLLs, then resumes the process.
-                                                    </div>
-                                                </div>
-                                                <Switch
-                                                    checked={steamOverlayConfig.enabled}
-                                                    disabled={steamOverlayBusy}
-                                                    onCheckedChange={(checked) => {
-                                                        const nextSteamOverlayConfig = {
-                                                            ...steamOverlayConfig,
-                                                            enabled: checked,
-                                                        };
-                                                        setSteamOverlayConfig(nextSteamOverlayConfig);
-                                                        setSteamOverlaySaved("");
-                                                        void persistOverlaySettings(nextSteamOverlayConfig, gameOverlayConfig);
-                                                    }}
-                                                    aria-label="Enable inject Steam overlay"
-                                                />
-                                            </div>
-
-                                            <div className="mt-4">
+                                        <SettingRow
+                                          title="Enable Inject Steam Overlay"
+                                          description="Starts the game suspended, injects Steam overlay DLLs, then resumes the process."
+                                          footer={(
+                                            <>
+                                              <div className="mt-4">
                                                 <label className="mb-2 block text-sm font-semibold text-white/80" htmlFor="settings-steam-overlay-path">
                                                     Steam path override
                                                 </label>
@@ -1131,7 +1062,24 @@ export default function Titlebar({ installedVersions, ...props }) {
                                                     )}
                                                 </div>
                                             </div>
-                                        </div>
+                                            </>
+                                          )}
+                                        >
+                                          <Switch
+                                              checked={steamOverlayConfig.enabled}
+                                              disabled={steamOverlayBusy}
+                                              onCheckedChange={(checked) => {
+                                                  const nextSteamOverlayConfig = {
+                                                      ...steamOverlayConfig,
+                                                      enabled: checked,
+                                                  };
+                                                  setSteamOverlayConfig(nextSteamOverlayConfig);
+                                                  setSteamOverlaySaved("");
+                                                  void persistOverlaySettings(nextSteamOverlayConfig, gameOverlayConfig);
+                                              }}
+                                              aria-label="Enable inject Steam overlay"
+                                          />
+                                        </SettingRow>
 
                                         {steamOverlayError && (
                                             <div className="rounded-md border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
@@ -1205,91 +1153,53 @@ export default function Titlebar({ installedVersions, ...props }) {
                                                     </div>
                                                 </div>
 
-                                                <div className="flex items-center justify-between gap-3">
-                                                    <div className="text-sm font-semibold text-white">Theme hue</div>
-                                                    <input
-                                                        type="number"
-                                                        min="0"
-                                                        max="360"
-                                                        step="1"
-                                                        value={normalizedThemeHue}
-                                                        onChange={(event) => {
-                                                            const nextHue = normalizeThemeHue(event.target.value);
-                                                            setThemeHue(nextHue);
-                                                            void applyThemeHueValue(nextHue);
-                                                        }}
-                                                        className="h-8 w-16 rounded-md border border-panel-outline bg-black/20 px-2 text-center text-sm font-semibold text-[var(--theme-accent)] outline-none focus:ring-2 focus:ring-panel-outline"
-                                                        aria-label="Theme hue value"
-                                                    />
-                                                </div>
-
-                                                <div className="relative h-7 rounded-md border border-white/10 p-1">
+                                                <ThemeSliderControl
+                                                  label="Theme hue"
+                                                  ariaLabel="Theme hue"
+                                                  value={normalizedThemeHue}
+                                                  min="0"
+                                                  max="360"
+                                                  valueClassName="text-[var(--theme-accent)]"
+                                                  onChange={(raw) => {
+                                                    const nextHue = normalizeThemeHue(raw);
+                                                    setThemeHue(nextHue);
+                                                    void applyThemeHueValue(nextHue);
+                                                  }}
+                                                  track={
                                                     <div
-                                                        className="absolute inset-1 rounded"
-                                                        style={{
-                                                            background:
-                                                                "linear-gradient(90deg, hsl(0 86% 64%), hsl(60 86% 64%), hsl(120 86% 64%), hsl(180 86% 64%), hsl(240 86% 64%), hsl(300 86% 64%), hsl(360 86% 64%))",
-                                                        }}
+                                                      className="absolute inset-1 rounded"
+                                                      style={{
+                                                        background:
+                                                          "linear-gradient(90deg, hsl(0 86% 64%), hsl(60 86% 64%), hsl(120 86% 64%), hsl(180 86% 64%), hsl(240 86% 64%), hsl(300 86% 64%), hsl(360 86% 64%))",
+                                                      }}
                                                     />
-                                                    <input
-                                                        type="range"
-                                                        min="0"
-                                                        max="360"
-                                                        step="1"
-                                                        value={normalizedThemeHue}
-                                                        onChange={(event) => {
-                                                            const nextHue = normalizeThemeHue(event.target.value);
-                                                            setThemeHue(nextHue);
-                                                            void applyThemeHueValue(nextHue);
-                                                        }}
-                                                        className="theme-hue-slider absolute inset-0 h-full w-full cursor-pointer appearance-none bg-transparent"
-                                                        aria-label="Theme hue"
-                                                    />
-                                                </div>
+                                                  }
+                                                />
 
                                                 <div className="space-y-3">
-                                                    <div className="flex items-center justify-between gap-3">
-                                                        <div className="text-sm font-semibold text-white">Brightness</div>
-                                                        <input
-                                                            type="number"
-                                                            min="0"
-                                                            max="100"
-                                                            step="1"
-                                                            value={normalizedThemeBrightness}
-                                                            onChange={(event) => {
-                                                                const nextBrightness = normalizeThemeBrightness(event.target.value);
-                                                                setThemeBrightness(nextBrightness);
-                                                                void applyThemeBrightnessValue(nextBrightness);
-                                                            }}
-                                                            className="h-8 w-16 rounded-md border border-panel-outline bg-black/20 px-2 text-center text-sm font-semibold text-white/70 outline-none focus:ring-2 focus:ring-panel-outline"
-                                                            aria-label="Theme brightness value"
-                                                        />
-                                                    </div>
-
-                                                    <div className="relative h-7 rounded-md border border-white/10 p-1">
-                                                        <div
-                                                            className={cn(
-                                                                "absolute inset-1 rounded",
-                                                                normalizedThemeMode === "light"
-                                                                    ? "bg-gradient-to-r from-white via-[#d8dde3] to-[#7b8794]"
-                                                                    : "bg-gradient-to-r from-black via-[#30343d] to-white"
-                                                            )}
-                                                        />
-                                                        <input
-                                                            type="range"
-                                                            min="0"
-                                                            max="100"
-                                                            step="1"
-                                                            value={normalizedThemeBrightness}
-                                                            onChange={(event) => {
-                                                                const nextBrightness = normalizeThemeBrightness(event.target.value);
-                                                                setThemeBrightness(nextBrightness);
-                                                                void applyThemeBrightnessValue(nextBrightness);
-                                                            }}
-                                                            className="theme-hue-slider absolute inset-0 h-full w-full cursor-pointer appearance-none bg-transparent"
-                                                            aria-label="Theme brightness"
-                                                        />
-                                                    </div>
+                                                  <ThemeSliderControl
+                                                    label="Brightness"
+                                                    ariaLabel="Theme brightness"
+                                                    value={normalizedThemeBrightness}
+                                                    min="0"
+                                                    max="100"
+                                                    valueClassName="text-white/70"
+                                                    onChange={(raw) => {
+                                                      const nextBrightness = normalizeThemeBrightness(raw);
+                                                      setThemeBrightness(nextBrightness);
+                                                      void applyThemeBrightnessValue(nextBrightness);
+                                                    }}
+                                                    track={
+                                                      <div
+                                                        className={cn(
+                                                          "absolute inset-1 rounded",
+                                                          normalizedThemeMode === "light"
+                                                            ? "bg-gradient-to-r from-white via-[#d8dde3] to-[#7b8794]"
+                                                            : "bg-gradient-to-r from-black via-[#30343d] to-white"
+                                                        )}
+                                                      />
+                                                    }
+                                                  />
                                                 </div>
                                             </div>
                                         </div>

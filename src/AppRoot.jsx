@@ -1,9 +1,11 @@
-import { Component, useEffect, useRef, useState } from "react";
+import { Component, Suspense, lazy, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { AlertTriangle, Check, Copy, X } from "lucide-react";
-import GameOverlay from "./GameOverlay";
-import LauncherPage from "./pages/LauncherPage";
+// Each window loads only its own chunk: the game overlay window skips the
+// launcher code entirely, and the launcher window skips the overlay code.
+const GameOverlay = lazy(() => import("./GameOverlay"));
+const LauncherPage = lazy(() => import("./pages/LauncherPage"));
 import { LoginDialog } from "./components/auth/LoginDialog";
 import { UpdateDialog } from "./components/UpdateDialog";
 import Titlebar from "./Titlebar";
@@ -275,13 +277,15 @@ function LauncherRoot() {
         {loginState.status === "loading" ? (
           <Splash message="Starting up..." />
         ) : (
-          <LauncherPage
-            loginState={loginState}
-            onLogout={logout}
-            onRequireLogin={requestLogin}
-            bootstrapError={bootstrapError}
-            onInstalledVersionsChange={setInstalledVersions}
-          />
+          <Suspense fallback={<Splash message="Starting up..." />}>
+            <LauncherPage
+              loginState={loginState}
+              onLogout={logout}
+              onRequireLogin={requestLogin}
+              bootstrapError={bootstrapError}
+              onInstalledVersionsChange={setInstalledVersions}
+            />
+          </Suspense>
         )}
 
         <LoginDialog
@@ -449,7 +453,10 @@ export default function AppRoot() {
     invoke("report_game_overlay_frontend_info", { message: `AppRoot rendering ${windowMode}` }).catch(console.error);
     return (
       <OverlayErrorBoundary>
-        <GameOverlay captureOnly={isObsOverlay} />
+        {/* fallback must stay empty: this window is transparent over the game */}
+        <Suspense fallback={null}>
+          <GameOverlay captureOnly={isObsOverlay} />
+        </Suspense>
       </OverlayErrorBoundary>
     );
   }

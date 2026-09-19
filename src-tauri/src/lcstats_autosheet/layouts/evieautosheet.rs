@@ -9,6 +9,7 @@ use crate::lcstats_autosheet::sheets::{
 use crate::lcstats_autosheet::stats::{
     lcstats, parse_lcstats_time_to_minutes, strip_apostrophe, strip_moon_number, LcStats,
 };
+use crate::lcstats_autosheet::sheets::index_to_column;
 
 const QUOTA_COLUMN: &str = "C";
 const START_STATS_COLUMN: &str = "H";
@@ -550,17 +551,6 @@ fn parse_interior(value: &str) -> String {
         "Toystore" => "Toy Store".to_string(),
         _ => interior,
     }
-}
-
-fn index_to_column(mut index: usize) -> String {
-    index += 1;
-    let mut chars = vec![];
-    while index > 0 {
-        let offset = (index - 1) % 26;
-        chars.push((b'A' + offset as u8) as char);
-        index = (index - 1) / 26;
-    }
-    chars.iter().rev().collect()
 }
 
 #[cfg(test)]

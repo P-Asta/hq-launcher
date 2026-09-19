@@ -1,4 +1,5 @@
 mod layouts;
+mod reset;
 mod sheets;
 mod stats;
 
@@ -10,8 +11,9 @@ use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tauri::{Emitter, Manager};
+use crate::util::now_epoch_secs;
 
 const LCSTATS_SSE_URL: &str = "http://localhost:2145/";
 const LCSTATS_RETRY_DELAY: Duration = Duration::from_secs(3);
@@ -29,6 +31,7 @@ const LCSTATS_WRITE_TIMEOUT_ERROR: &str = "Timed out writing LCStatsTracker stat
 
 #[derive(Clone, Default)]
 pub struct LcStatsAutosheetState {
+    operation: Arc<tokio::sync::Mutex<()>>,
     running: Arc<AtomicBool>,
     listener_running: Arc<AtomicBool>,
     next_request_id: Arc<AtomicU64>,
@@ -229,6 +232,7 @@ async fn run_listener(app: tauri::AppHandle, state: LcStatsAutosheetState) -> Re
                 continue;
             }
         };
+        let _operation = state.operation.lock().await;
         if !state.running.load(Ordering::Acquire) {
             log::debug!("LCStatsTracker AutoSheet payload ignored: tracking is stopped");
             continue;
@@ -636,13 +640,6 @@ fn next_request_id(state: &LcStatsAutosheetState) -> u64 {
     state.next_request_id.fetch_add(1, Ordering::AcqRel) + 1
 }
 
-fn now_epoch_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 async fn receive_lcstats_payload(client: &reqwest::Client) -> Result<String, String> {
     let response = client
         .get(LCSTATS_SSE_URL)
@@ -947,4 +944,22 @@ mod tests {
         assert_eq!(reconnect_backoff_delay(4), Duration::from_secs(3));
         assert_eq!(reconnect_backoff_delay(u32::MAX), Duration::from_secs(3));
     }
+}
+
+/// The same gate covers payload processing, pending retries, and reset.
+#[tauri::command]
+pub async fn reset_lcstats_sheet(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, LcStatsAutosheetState>,
+    settings: crate::google_oauth::LcStatsSettings,
+    end_row: usize,
+) -> Result<(), String> {
+    let _operation = state.operation.try_lock().map_err(|_| "A sheet write or reset is still running. Wait for it to finish.".to_string())?;
+    if state.running.load(Ordering::Acquire) {
+        return Err("Stop Tracking before resetting a sheet.".into());
+    }
+    if !state.pending_stats.lock().map_err(|e|e.to_string())?.is_empty() {
+        return Err("Pending sheet writes must finish before reset. Resume tracking and resolve the write error first.".into());
+    }
+    reset::execute(app,settings,end_row).await
 }

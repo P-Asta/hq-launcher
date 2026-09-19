@@ -16,6 +16,9 @@ use crate::mods;
 use crate::progress::{self, TaskErrorPayload, TaskFinishedPayload, TaskProgressPayload};
 use crate::zip_utils::{self, extract_zip_with_progress};
 use progress::{emit_error, emit_finished, emit_progress};
+#[cfg(target_os = "linux")]
+use crate::util::dir_has_any_entries;
+use crate::util::{has_legacy_complete_files, overall_from_step};
 
 // BepInEx installation via Thunderstore BepInExPack (Mono, preconfigured).
 // We download the Thunderstore package zip and extract the contents of the `BepInExPack/` folder
@@ -47,12 +50,6 @@ const PROTON_GE_VERSION: &str = "GE-Proton10-28";
 #[cfg(target_os = "linux")]
 const PROTON_GE_URL: &str =
     "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton10-28/GE-Proton10-28.tar.gz";
-
-fn overall_from_step(step: u32, step_progress: f64, steps_total: u32) -> f64 {
-    let s = step.max(1).min(steps_total) as f64;
-    let sp = step_progress.clamp(0.0, 1.0);
-    (((s - 1.0) + sp) / (steps_total as f64)) * 100.0
-}
 
 fn is_run_mode_tag(tag: &str) -> bool {
     tag.eq_ignore_ascii_case("brutal")
@@ -95,14 +92,6 @@ fn raw_manifest_state_has_version(app: &tauri::AppHandle, version: u32) -> bool 
         .is_some()
 }
 
-fn has_legacy_complete_files(path: &Path) -> bool {
-    path.join("Lethal Company.exe").is_file()
-        && path.join("UnityPlayer.dll").is_file()
-        && path.join("Lethal Company_Data").is_dir()
-        && path.join("winhttp.dll").is_file()
-        && path.join("BepInEx").join("core").is_dir()
-}
-
 fn is_complete_version_dir(app: &tauri::AppHandle, version: u32, path: &Path) -> bool {
     path.join(INSTALL_COMPLETE_MARKER).is_file()
         || (raw_manifest_state_has_version(app, version) && has_legacy_complete_files(path))
@@ -126,14 +115,6 @@ fn sanitize_tar_rel_path(p: &Path) -> Option<PathBuf> {
     } else {
         Some(out)
     }
-}
-
-#[cfg(target_os = "linux")]
-fn dir_has_any_entries(path: &Path) -> bool {
-    std::fs::read_dir(path)
-        .ok()
-        .and_then(|mut rd| rd.next())
-        .is_some()
 }
 
 #[cfg(target_os = "linux")]
@@ -730,19 +711,6 @@ async fn install_app_patcher(
 
     if wants_stop {
         return Err("Cancelled".to_string());
-    }
-
-    Ok(())
-}
-
-///Runs the unity app patcher on all instances below v73.
-pub async fn patch_all_instances(app: &tauri::AppHandle) -> Result<(), String> {
-    for dir in &installed_version_dirs(app)? {
-        if dir.0 > 72 {
-            continue;
-        }
-
-        patch_single_instance(app, None, &dir.1, None).await?;
     }
 
     Ok(())

@@ -11,6 +11,7 @@ use crate::lcstats_autosheet::stats::{
     lcstats, parse_lcstats_time_to_minutes, strip_apostrophe, strip_moon_number, LcStats,
     PlayerStats,
 };
+use super::common::value_with_note_request;
 
 const CHECK_COLUMN: &str = "K";
 const START_ROW: usize = 3;
@@ -439,7 +440,7 @@ async fn write_death_notes(
     let sheet_id = get_sheet_id(client, token, spreadsheet_id, sheet_name).await?;
     let requests = death_cells
         .into_iter()
-        .map(|(column, note)| value_with_note_request(sheet_id, &column, row, json!("X"), &note))
+        .map(|(column, note)| value_with_note_request(sheet_id, &column, row, json!("X"), &note, google_user_value))
         .collect::<Vec<_>>();
     batch_update_spreadsheet(client, token, spreadsheet_id, requests).await
 }
@@ -464,35 +465,6 @@ fn death_note(player: &PlayerStats) -> String {
     parts.join("\n")
 }
 
-fn value_with_note_request(
-    sheet_id: i64,
-    column: &str,
-    row: usize,
-    value: Value,
-    note: &str,
-) -> Value {
-    let column_index = column_to_index(column);
-    let mut cell = json!({ "userEnteredValue": google_user_value(value) });
-    if !note.is_empty() {
-        cell["note"] = json!(note);
-    }
-    json!({
-        "updateCells": {
-            "range": {
-                "sheetId": sheet_id,
-                "startRowIndex": row.saturating_sub(1),
-                "endRowIndex": row,
-                "startColumnIndex": column_index,
-                "endColumnIndex": column_index + 1
-            },
-            "rows": [{
-                "values": [cell]
-            }],
-            "fields": "userEnteredValue,note"
-        }
-    })
-}
-
 fn google_user_value(value: Value) -> Value {
     if let Some(value) = value.as_i64() {
         json!({ "numberValue": value })
@@ -501,12 +473,6 @@ fn google_user_value(value: Value) -> Value {
     } else {
         json!({ "stringValue": value.as_str().unwrap_or_default() })
     }
-}
-
-fn column_to_index(column: &str) -> usize {
-    column.chars().fold(0, |index, ch| {
-        index * 26 + (ch.to_ascii_uppercase() as usize - 'A' as usize + 1)
-    }) - 1
 }
 
 #[cfg(test)]

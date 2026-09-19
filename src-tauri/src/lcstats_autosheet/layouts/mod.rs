@@ -1,3 +1,4 @@
+pub(super) mod common;
 pub mod autosheetmodel;
 pub mod breadsheet;
 pub mod charlyautosheet;

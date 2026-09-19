@@ -4,7 +4,6 @@ export const PRIMARY_COLOR_STORAGE_KEY = "hq-launcher-primary-color";
 export const THEME_HUE_STORAGE_KEY = "hq-launcher-theme-hue";
 export const THEME_BRIGHTNESS_STORAGE_KEY = "hq-launcher-theme-brightness";
 export const THEME_MODE_STORAGE_KEY = "hq-launcher-theme-mode";
-export const PRIMARY_COLOR_EVENT = "theme://primary-color-changed";
 export const THEME_HUE_EVENT = "theme://hue-changed";
 export const THEME_SETTINGS_EVENT = "theme://settings-changed";
 export const DEFAULT_PRIMARY_COLOR = "#00c896";
@@ -59,22 +58,7 @@ export function normalizeThemeMode(value, fallback = DEFAULT_THEME_MODE) {
   return THEME_MODES.includes(value) ? value : fallback;
 }
 
-export function normalizePrimaryColor(value, fallback = DEFAULT_PRIMARY_COLOR) {
-  if (typeof value !== "string") return fallback;
-  const trimmed = value.trim();
-  if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) return trimmed.toLowerCase();
-  return fallback;
-}
 
-export function loadStoredPrimaryColor() {
-  if (typeof window === "undefined") return DEFAULT_PRIMARY_COLOR;
-  try {
-    const raw = window.localStorage.getItem(PRIMARY_COLOR_STORAGE_KEY);
-    return normalizePrimaryColor(raw, DEFAULT_PRIMARY_COLOR);
-  } catch {
-    return DEFAULT_PRIMARY_COLOR;
-  }
-}
 
 export function loadStoredThemeHue() {
   if (typeof window === "undefined") return DEFAULT_THEME_HUE;
@@ -121,17 +105,7 @@ export function saveThemeBrightness(brightness) {
   return normalized;
 }
 
-export function savePrimaryColor(primaryColor) {
-  const normalized = normalizePrimaryColor(primaryColor);
-  window.localStorage.setItem(PRIMARY_COLOR_STORAGE_KEY, normalized);
-  return normalized;
-}
 
-export function applyPrimaryColor(primaryColor) {
-  const normalized = normalizePrimaryColor(primaryColor);
-  document.documentElement.style.setProperty("--theme-accent", normalized);
-  return normalized;
-}
 
 export function saveThemeMode(mode) {
   const normalized = normalizeThemeMode(mode);
@@ -182,19 +156,6 @@ export function applyThemeSettings({ hue, brightness, mode } = {}) {
   return { hue: normalized, brightness: normalizedBrightness, mode: normalizedMode };
 }
 
-export function applyThemeHue(hue) {
-  return applyThemeSettings({
-    hue,
-    brightness: loadStoredThemeBrightness(),
-    mode: loadStoredThemeMode(),
-  }).hue;
-}
-
-export async function persistAndBroadcastPrimaryColor(primaryColor) {
-  const normalized = applyPrimaryColor(savePrimaryColor(primaryColor));
-  await emit(PRIMARY_COLOR_EVENT, { primaryColor: normalized });
-  return normalized;
-}
 
 export async function persistAndBroadcastThemeHue(hue) {
   const normalized = saveThemeHue(hue);
