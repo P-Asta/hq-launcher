@@ -40,13 +40,13 @@ jobs:
       matrix:
         include:
           - platform: ubuntu-latest
-            args: ''
+            args: '-- --locked'
             targets: 'x86_64-pc-windows-gnu'
           - platform: windows-latest
-            args: ''
+            args: '-- --locked'
             targets: ''
           - platform: macos-latest
-            args: '--target universal-apple-darwin --bundles app,dmg'
+            args: '--target universal-apple-darwin --bundles app,dmg -- --locked'
             targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
 
     env:
@@ -65,7 +65,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 'lts/*'
-          cache: 'yarn'
+
+      - name: Enable pinned Yarn
+        run: |
+          npm install --global corepack@0.33.0 --force
+          corepack enable
+          yarn --version
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly
@@ -100,7 +105,10 @@ jobs:
             librsvg2-dev
 
       - name: Install frontend dependencies
-        run: yarn install
+        run: yarn install --immutable
+
+      - name: Check Tauri JS and Rust versions
+        run: node scripts/check-tauri-versions.mjs
 
       # =========================
       # 🔹 BRANCH CI (tauri ❌)
@@ -113,8 +121,8 @@ jobs:
         if: ${{ github.ref_type == 'branch' && matrix.platform == 'macos-latest' }}
         working-directory: src-tauri
         run: |
-          cargo test --lib
-          cargo check --target x86_64-apple-darwin
+          cargo test --locked --lib
+          cargo check --locked --target x86_64-apple-darwin
 
       # =========================
       # 🔹 TAG RELEASE (tauri ✅)
