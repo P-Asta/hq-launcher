@@ -97,17 +97,42 @@ export default function Titlebar({ installedVersions, ...props }) {
     
     const appWindow = getCurrentWindow();
     useEffect(() => {
-        const handleResize = async () => {
-            const maximized = await appWindow.isMaximized();
-            setIsMaximized(maximized);
+        let disposed = false;
+        let timer;
+        let querying = false;
+        let lastSize;
+        const handleResize = () => {
+            clearTimeout(timer);
+            timer = setTimeout(refreshMaximized, 100);
         };
-
+        const refreshMaximized = async () => {
+            if (disposed) return;
+            if (querying) {
+                handleResize();
+                return;
+            }
+            querying = true;
+            try {
+                // On macOS, isMaximized temporarily changes a borderless window's
+                // style and emits resize events. Query only when its settled
+                // dimensions changed, otherwise those events create a busy loop.
+                const size = await appWindow.innerSize();
+                if (disposed || (lastSize?.width === size.width && lastSize?.height === size.height)) return;
+                lastSize = size;
+                const maximized = await appWindow.isMaximized();
+                if (!disposed) setIsMaximized(maximized);
+            } catch (error) {
+                console.warn('Failed to read window maximized state:', error);
+            } finally {
+                querying = false;
+            }
+        };
         handleResize();
-        const unlisten = appWindow.onResized(() => {
-            handleResize();
-        });
+        const unlisten = appWindow.onResized(handleResize);
 
         return () => {
+            disposed = true;
+            clearTimeout(timer);
             unlisten.then(fn => fn());
         };
     }, []);

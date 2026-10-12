@@ -8,6 +8,7 @@
     "build": "vite build",
     "build:embedded-overlay": "vite build --configLoader runner --config vite.embedded-overlay.config.js",
     "test:embedded-overlay-bridge": "node scripts/test-embedded-overlay-bridge.mjs",
+    "test:replay-warning": "node scripts/test-replay-warning.mjs",
     "preview": "vite preview",
     "tauri": "node ./scripts/tauri-wrapper.mjs",
     "tauri:build": "tauri build",

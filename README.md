@@ -66,6 +66,22 @@ AppImages and other package formats are available in [Releases](https://github.c
 
 Want to build it yourself? See the [Development](#development) section below.
 
+### macOS
+
+macOS release builds include a universal `.app` and `.dmg` for Apple Silicon and Intel Macs. Open the disk image and move HQ Launcher to Applications.
+
+HQ Launcher automatically downloads its managed Wine runtime, graphics support, and media libraries, then creates a separate Windows environment for the game. You do not need to install Wine or CrossOver manually. Download progress appears in the launcher, and **Launch → macOS game support** shows setup status and lets you retry installation.
+
+On the first run, the launcher installs Windows Steam automatically and opens the client. Wait for Steam to finish updating and sign in, then press **Run** again. Steam for macOS does not replace this step: Windows Steam and the game must run in the same Wine environment. On Apple Silicon, macOS may also ask you to install Rosetta when the runtime first starts.
+
+On Apple Silicon with macOS 26 or later, the managed game runtime automatically uses DXMT to translate Direct3D 11 directly to Metal. **Launch → Game graphics** can switch back to DXVK for compatibility. The Metal runtime is installed separately, keeps Steam's runtime intact, and reuses shader caches between launches. Unity runs with four job workers to reduce the intermittent stalls observed under Wine/Rosetta on M1. Other Macs continue using DXVK. Custom Wine/CrossOver paths keep their own graphics configuration.
+
+The Metal support package is pinned by SHA-256 and includes the matching Wine 11 driver, licenses, and a link to its corresponding sources: [Soju Steam support v1](https://github.com/BCD1210/soju/releases/tag/steam-support-v1), based on the [notpop DXMT fork](https://github.com/notpop/dxmt). Performance and shader/asset loading pauses vary by hardware, scene, and mods.
+
+If you already use Wine or CrossOver, **Launch → Advanced: custom Wine / CrossOver** lets you select an existing runtime and prefix or bottle. **Use automatic setup** restores the launcher-managed defaults.
+
+The Windows DLL-based game overlay is disabled on macOS; the launcher uses its legacy overlay window instead. Game and mod compatibility depends on the Wine runtime and your Mac.
+
 ## Screenshots
 
 _Main Interface_

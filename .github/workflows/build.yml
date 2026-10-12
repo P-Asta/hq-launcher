@@ -41,8 +41,13 @@ jobs:
         include:
           - platform: ubuntu-latest
             args: ''
+            targets: 'x86_64-pc-windows-gnu'
           - platform: windows-latest
             args: ''
+            targets: ''
+          - platform: macos-latest
+            args: '--target universal-apple-darwin --bundles app,dmg'
+            targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
 
     env:
       CI: true
@@ -65,7 +70,7 @@ jobs:
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly
         with:
-          targets: ${{ matrix.platform == 'ubuntu-latest' && 'x86_64-pc-windows-gnu' || '' }}
+          targets: ${{ matrix.targets }}
 
       - name: Install MinGW (Linux cross-compile)
         if: matrix.platform == 'ubuntu-latest'
@@ -103,6 +108,13 @@ jobs:
       - name: Frontend Build (branch only)
         if: ${{ github.ref_type == 'branch' }}
         run: yarn build
+
+      - name: Test macOS backend (branch only)
+        if: ${{ github.ref_type == 'branch' && matrix.platform == 'macos-latest' }}
+        working-directory: src-tauri
+        run: |
+          cargo test --lib
+          cargo check --target x86_64-apple-darwin
 
       # =========================
       # 🔹 TAG RELEASE (tauri ✅)

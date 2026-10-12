@@ -4,15 +4,20 @@ mod downloader;
 mod event_config;
 mod google_oauth;
 mod installer;
-mod util;
 mod lcstats_autosheet;
 mod logger;
+mod macos_runtime;
+#[cfg(any(target_os = "macos", test))]
+mod macos_steam;
+#[cfg(target_os = "macos")]
+mod macos_wine_install;
 mod mod_config;
 mod mods;
 mod progress;
 mod release_channel;
 mod storage;
 mod thunderstore;
+mod util;
 mod variable;
 mod zip_utils;
 
@@ -75,14 +80,14 @@ use winreg::RegKey;
 
 use crate::bepinex_cfg::read_manifest;
 use crate::progress::{TaskErrorPayload, TaskProgressPayload};
+use crate::util::has_legacy_complete_files;
 use crate::{
     mod_config::ModsConfig,
     progress::{TaskFinishedPayload, TaskUpdatableProgressPayload},
 };
-use crate::util::has_legacy_complete_files;
 
 const INSTALL_COMPLETE_MARKER: &str = ".hq_install_complete";
-const DISABLEMOD_FILE_VERSION: u32 = 6;
+const DISABLEMOD_FILE_VERSION: u32 = 7;
 const GAME_OVERLAY_WINDOW_LABEL: &str = "game-overlay";
 const GAME_OVERLAY_WINDOW_TITLE: &str = "HQ Overlay - OBS Capture";
 const GAME_OVERLAY_OPEN_HINT_FOCUS_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
@@ -975,9 +980,7 @@ fn stage_bundled_dll_to_app_data(
     }
 
     let needs_copy = match std::fs::metadata(destination) {
-        Ok(meta) => {
-            meta.len() != std::fs::metadata(&source).map(|m| m.len()).unwrap_or(0)
-        }
+        Ok(meta) => meta.len() != std::fs::metadata(&source).map(|m| m.len()).unwrap_or(0),
         Err(_) => true,
     };
     if !needs_copy {
@@ -1093,7 +1096,10 @@ fn stage_native_overlay_as_proxy(
         }
         Err(_) => true,
     };
-    let version_differs = match (&installed_version, std::fs::read_to_string(&stamp_path).ok()) {
+    let version_differs = match (
+        &installed_version,
+        std::fs::read_to_string(&stamp_path).ok(),
+    ) {
         (Some(installed), Some(stamped)) => installed.trim() != stamped.trim(),
         // No stamp on disk but we know the installed version: treat as stale.
         (Some(_), None) => true,
@@ -3798,7 +3804,11 @@ impl GameOverlayBackend {
 
 impl Default for GameOverlayBackend {
     fn default() -> Self {
-        Self::Native
+        if cfg!(target_os = "macos") {
+            Self::Legacy
+        } else {
+            Self::Native
+        }
     }
 }
 
@@ -3809,7 +3819,7 @@ fn migrate_game_overlay_native_backend(cfg: &mut GameOverlayConfig) -> bool {
     // Configs written before the injected HTML renderer existed either lack a
     // backend or were materialized as Legacy by the transitional build. Move
     // both to Native exactly once; later explicit Legacy choices are kept.
-    cfg.general.backend = GameOverlayBackend::Native;
+    cfg.general.backend = GameOverlayBackend::default();
     cfg.general.backend_migration_version = GAME_OVERLAY_NATIVE_BACKEND_MIGRATION_VERSION;
     true
 }
@@ -4594,7 +4604,7 @@ impl Default for GameOverlayGeneralConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            backend: GameOverlayBackend::Native,
+            backend: GameOverlayBackend::default(),
             backend_migration_version: GAME_OVERLAY_NATIVE_BACKEND_MIGRATION_VERSION,
             inject_all_processes: false,
             use_stream_overlays_api: false,
@@ -4642,14 +4652,14 @@ mod game_overlay_backend_tests {
     use super::*;
 
     #[test]
-    fn missing_backend_migrates_to_native_defaults() {
+    fn missing_backend_uses_platform_defaults() {
         let general: GameOverlayGeneralConfig = serde_json::from_value(serde_json::json!({
             "enabled": true,
             "overlay_key": "Insert"
         }))
         .unwrap();
 
-        assert_eq!(general.backend, GameOverlayBackend::Native);
+        assert_eq!(general.backend, GameOverlayBackend::default());
         assert_eq!(general.backend_migration_version, 0);
         assert!(!general.inject_all_processes);
     }
@@ -4667,11 +4677,27 @@ mod game_overlay_backend_tests {
     }
 
     #[test]
-    fn retired_auto_backend_is_sanitized_to_native() {
+    fn retired_auto_backend_is_sanitized_to_platform_default() {
         let mut config = GameOverlayConfig::default();
         config.general.backend = GameOverlayBackend::Auto;
         let sanitized = sanitize_game_overlay_config(config);
-        assert_eq!(sanitized.general.backend, GameOverlayBackend::Native);
+        assert_eq!(sanitized.general.backend, GameOverlayBackend::default());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_uses_legacy_for_windows_overlay_but_preserves_off() {
+        let mut config = GameOverlayConfig::default();
+        config.general.backend = GameOverlayBackend::Native;
+        assert_eq!(
+            sanitize_game_overlay_config(config.clone()).general.backend,
+            GameOverlayBackend::Legacy
+        );
+        config.general.backend = GameOverlayBackend::Off;
+        assert_eq!(
+            sanitize_game_overlay_config(config).general.backend,
+            GameOverlayBackend::Off
+        );
     }
 
     #[test]
@@ -4680,7 +4706,7 @@ mod game_overlay_backend_tests {
         old.general.backend = GameOverlayBackend::Legacy;
         old.general.backend_migration_version = 0;
         assert!(migrate_game_overlay_native_backend(&mut old));
-        assert_eq!(old.general.backend, GameOverlayBackend::Native);
+        assert_eq!(old.general.backend, GameOverlayBackend::default());
         assert_eq!(old.general.backend_migration_version, 1);
 
         old.general.backend = GameOverlayBackend::Legacy;
@@ -5009,13 +5035,14 @@ pub(crate) fn thunderstore_cache_path(
 fn read_disablemod(app: &tauri::AppHandle) -> Result<DisableModFile, String> {
     let path = disablemod_path(app)?;
     let mut default_mods = vec![
+        normalize_mod_id("asta", "Replay"),
         normalize_mod_id("asta", "StreamChats"),
         normalize_mod_id("SlushyRH", "FreeeeeeMoooooons"),
         normalize_mod_id("stormytuna", "EclipseOnly"),
     ];
     default_mods.sort_by(|a, b| a.dev.cmp(&b.dev).then(a.name.cmp(&b.name)));
     if !path.exists() {
-        // v4: include default disabled layer mods and StreamChats.
+        // Include opt-in mods and default disabled layer mods.
         let f = DisableModFile {
             version: DISABLEMOD_FILE_VERSION,
             mods: default_mods,
@@ -5062,18 +5089,54 @@ fn read_disablemod(app: &tauri::AppHandle) -> Result<DisableModFile, String> {
     if f.version == 4 {
         f.mods
             .retain(|m| m != &normalize_mod_id("MikuOreo", "LCStatsTracker"));
-        f.version = DISABLEMOD_FILE_VERSION;
+        f.version = 5;
         let _ = write_disablemod(app, &f);
     }
     if original_version <= 5 {
         if let Err(e) = migrate_disablemod_v6_unity_explorer_cfg(app) {
             log::warn!("Failed to migrate UnityExplorer config for disablemod v6: {e}");
         }
-        f.version = DISABLEMOD_FILE_VERSION;
+        f.version = 6;
         let _ = write_disablemod(app, &f);
+    }
+    if migrate_replay_default(&mut f) {
+        write_disablemod(app, &f)?;
     }
 
     Ok(f)
+}
+
+fn migrate_replay_default(file: &mut DisableModFile) -> bool {
+    if file.version >= 7 {
+        return false;
+    }
+    add_disabled_mod(file, "asta", "Replay");
+    file.version = 7;
+    true
+}
+
+#[cfg(test)]
+mod replay_default_tests {
+    use super::*;
+
+    #[test]
+    fn existing_settings_disable_replay_once_and_preserve_other_choices() {
+        for version in 1..7 {
+            let other = normalize_mod_id("asta", "StreamChats");
+            let replay = normalize_mod_id("asta", "Replay");
+            let mut file = DisableModFile {
+                version,
+                mods: vec![other.clone()],
+            };
+            assert!(migrate_replay_default(&mut file));
+            assert!(file.mods.contains(&other));
+            assert!(file.mods.contains(&replay));
+            assert!(!migrate_replay_default(&mut file));
+            file.mods.retain(|id| id != &replay);
+            assert!(!migrate_replay_default(&mut file));
+            assert!(!file.mods.contains(&replay));
+        }
+    }
 }
 
 async fn migrate_disablemod_v4_on_startup(app: &tauri::AppHandle) -> Result<(), String> {
@@ -5441,8 +5504,10 @@ fn sanitize_game_overlay_config(mut cfg: GameOverlayConfig) -> GameOverlayConfig
     let fallback = GameOverlayConfig::default();
     // Auto remains deserializable for configs written by older builds, but it
     // is no longer a user-facing/runtime mode.
-    if cfg.general.backend == GameOverlayBackend::Auto {
-        cfg.general.backend = GameOverlayBackend::Native;
+    if cfg.general.backend == GameOverlayBackend::Auto
+        || (cfg!(target_os = "macos") && cfg.general.backend == GameOverlayBackend::Native)
+    {
+        cfg.general.backend = GameOverlayBackend::default();
     }
     cfg.general.overlay_key = sanitize_overlay_key(&cfg.general.overlay_key);
     cfg.general.end_summary_duration_ms = cfg.general.end_summary_duration_ms.clamp(2_000, 30_000);
@@ -8888,7 +8953,7 @@ fn ensure_storage_can_move(
                 .try_wait()
                 .map_err(|e| e.to_string())?
                 .is_none()
-                || linux_lingering_game_pid(app, active.version).is_some()
+                || compatibility_game_pid(app, active.version).is_some()
             {
                 return Err("Cannot change game storage while the game is running.".to_string());
             }
@@ -9287,7 +9352,7 @@ fn delete_installed_version(
             {
                 return Err("Cannot delete a version while the game is running.".to_string());
             }
-            if active.version == version && linux_lingering_game_pid(&app, version).is_some() {
+            if active.version == version && compatibility_game_pid(&app, version).is_some() {
                 return Err("Cannot delete a version while the game is running.".to_string());
             }
         }
@@ -9927,7 +9992,7 @@ fn ensure_game_not_running(
             .is_none()
         {
             has_running = true;
-        } else if linux_lingering_game_pid(app, active.version).is_some() {
+        } else if compatibility_game_pid(app, active.version).is_some() {
             has_running = true;
         }
     }
@@ -9974,7 +10039,7 @@ fn cleanup_active_games(
         match active.child.try_wait().map_err(|e| e.to_string())? {
             None => kept.push(active),
             Some(_) => {
-                if linux_lingering_game_pid(app, active.version).is_some() {
+                if compatibility_game_pid(app, active.version).is_some() {
                     kept.push(active);
                 } else {
                     let finished_pid = active.child.id();
@@ -10120,7 +10185,7 @@ fn apply_custom_launch_options(command: &mut std::process::Command, launch_optio
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn put_command_in_new_process_group(command: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
 
@@ -10134,10 +10199,10 @@ fn put_command_in_new_process_group(command: &mut std::process::Command) {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn put_command_in_new_process_group(_command: &mut std::process::Command) {}
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn terminate_child_process_tree(child: &mut std::process::Child) {
     let pgid = child.id() as libc::pid_t;
     unsafe {
@@ -10157,7 +10222,7 @@ fn terminate_child_process_tree(child: &mut std::process::Child) {
     let _ = child.kill();
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn terminate_child_process_tree(child: &mut std::process::Child) {
     let _ = child.kill();
 }
@@ -10234,7 +10299,7 @@ fn pid_is_alive(pid: libc::pid_t) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn terminate_linux_game_processes_for_version(app: &tauri::AppHandle, version: u32) {
+fn terminate_compatibility_game_processes_for_version(app: &tauri::AppHandle, version: u32) {
     let pids = collect_linux_game_processes(app, version);
     if pids.is_empty() {
         return;
@@ -10270,20 +10335,58 @@ fn terminate_linux_game_processes_for_version(app: &tauri::AppHandle, version: u
 }
 
 #[cfg(target_os = "linux")]
-fn linux_lingering_game_pid(app: &tauri::AppHandle, version: u32) -> Option<u32> {
+fn compatibility_game_pid(app: &tauri::AppHandle, version: u32) -> Option<u32> {
     collect_linux_game_processes(app, version)
         .into_iter()
         .next()
         .map(|pid| pid as u32)
 }
 
-#[cfg(not(target_os = "linux"))]
-fn linux_lingering_game_pid(_app: &tauri::AppHandle, _version: u32) -> Option<u32> {
+#[cfg(target_os = "macos")]
+fn compatibility_game_pid(app: &tauri::AppHandle, version: u32) -> Option<u32> {
+    macos_runtime::game_pids(&version_dir(app, version).ok()?)
+        .into_iter()
+        .next()
+}
+
+#[cfg(target_os = "macos")]
+fn terminate_compatibility_game_processes_for_version(app: &tauri::AppHandle, version: u32) {
+    let Ok(dir) = version_dir(app, version) else {
+        return;
+    };
+    // Only this version's game processes, never its shared wineserver or Windows Steam.
+    let pids = macos_runtime::game_pids(&dir);
+    for pid in &pids {
+        unsafe {
+            libc::kill(*pid as libc::pid_t, libc::SIGTERM);
+        }
+    }
+    for _ in 0..15 {
+        if pids
+            .iter()
+            .all(|pid| unsafe { libc::kill(*pid as libc::pid_t, 0) != 0 })
+        {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    for pid in pids {
+        // Recheck ownership before escalation, in case a PID was reused.
+        if macos_runtime::game_pids(&dir).contains(&pid) {
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn compatibility_game_pid(_app: &tauri::AppHandle, _version: u32) -> Option<u32> {
     None
 }
 
-#[cfg(not(target_os = "linux"))]
-fn terminate_linux_game_processes_for_version(_app: &tauri::AppHandle, _version: u32) {}
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn terminate_compatibility_game_processes_for_version(_app: &tauri::AppHandle, _version: u32) {}
 
 fn build_wrapped_launch_command(
     template: Option<&str>,
@@ -10447,15 +10550,8 @@ fn spawn_game_process(
     };
 
     #[cfg(target_os = "macos")]
-    let mut command = {
-        let default_program = OsString::from("open");
-        let default_args = vec![OsString::from("-a"), exe_path.as_os_str().to_os_string()];
-        let (program, args) =
-            build_wrapped_launch_command(launch_command_template, &default_program, &default_args)?;
-        let mut cmd = std::process::Command::new(program);
-        cmd.args(args);
-        cmd
-    };
+    let mut command =
+        macos_runtime::game_command(_app, exe_path, launch_command_template, load_bepinex)?;
 
     #[cfg(target_os = "linux")]
     let mut command = {
@@ -10514,20 +10610,21 @@ fn spawn_game_process(
     // exe before the Wine process starts, so Wine's PE loader resolves it at
     // load time just like the native Windows loader. Windows already staged it
     // inside the command-build block above.
-    #[cfg(not(target_os = "windows"))]
-    let native_dll_path: Option<std::path::PathBuf> = if native_requested
-        && game_overlay_config.general.enabled
-    {
-        match stage_native_overlay_as_proxy(_app, _version_dir) {
-            Ok(path) => Some(path),
-            Err(error) => {
-                log::warn!("failed to stage native overlay proxy on Linux: {error}");
-                None
+    #[cfg(target_os = "linux")]
+    let native_dll_path: Option<std::path::PathBuf> =
+        if native_requested && game_overlay_config.general.enabled {
+            match stage_native_overlay_as_proxy(_app, _version_dir) {
+                Ok(path) => Some(path),
+                Err(error) => {
+                    log::warn!("failed to stage native overlay proxy on Linux: {error}");
+                    None
+                }
             }
-        }
-    } else {
-        None
-    };
+        } else {
+            None
+        };
+    #[cfg(target_os = "macos")]
+    let native_dll_path: Option<std::path::PathBuf> = None;
     #[cfg(target_os = "windows")]
     let _ = native_requested;
 
@@ -10885,8 +10982,9 @@ fn spawn_game_process(
                     );
                 }
                 None => {
-                    native_error =
-                        Some("Native HQ overlay proxy could not be staged as version.dll".to_string());
+                    native_error = Some(
+                        "Native HQ overlay proxy could not be staged as version.dll".to_string(),
+                    );
                 }
             }
         }
@@ -11057,9 +11155,15 @@ impl Drop for VanillaProxyDllGuard {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn native_overlay_proxy_enabled_for_launch(app: &tauri::AppHandle) -> Result<bool, String> {
     let config = read_game_overlay_config(app)?;
     Ok(config.general.enabled && config.general.backend.requests_native())
+}
+
+#[cfg(target_os = "macos")]
+fn native_overlay_proxy_enabled_for_launch(_app: &tauri::AppHandle) -> Result<bool, String> {
+    Ok(false)
 }
 
 fn prepare_native_overlay_proxy_for_launch(
@@ -11608,6 +11712,8 @@ async fn launch_game(
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
     wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
+    #[cfg(target_os = "macos")]
+    macos_runtime::prepare_launch(&app).await?;
     let has_event = event_id.as_deref().is_some_and(|id| !id.trim().is_empty());
     let event_id_for_cfg = event_id.as_deref().unwrap_or_default().trim().to_string();
     let event_forced_ids = event_forced_enabled_mods_for_launch(&app, version, event_id).await?;
@@ -11643,12 +11749,7 @@ async fn launch_game(
         .lock()
         .map_err(|_| "game launch lock poisoned".to_string())?;
     let use_native_overlay_proxy = native_overlay_proxy_enabled_for_launch(&app)?;
-    ensure_launch_compatible_with_active_games(
-        &app,
-        &state,
-        version,
-        !use_native_overlay_proxy,
-    )?;
+    ensure_launch_compatible_with_active_games(&app, &state, version, !use_native_overlay_proxy)?;
     if !allow_multiple.unwrap_or(false) {
         ensure_game_not_running(&app, &state)?;
     }
@@ -11699,6 +11800,8 @@ async fn launch_game_vanilla(
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
     wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
+    #[cfg(target_os = "macos")]
+    macos_runtime::prepare_launch(&app).await?;
     let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
 
     let _launch_guard = state
@@ -11759,6 +11862,8 @@ async fn launch_game_practice(
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
     wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
+    #[cfg(target_os = "macos")]
+    macos_runtime::prepare_launch(&app).await?;
     clear_event_mods_for_version(&app, version)?;
     let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
 
@@ -11787,12 +11892,7 @@ async fn launch_game_practice(
         .lock()
         .map_err(|_| "game launch lock poisoned".to_string())?;
     let use_native_overlay_proxy = native_overlay_proxy_enabled_for_launch(&app)?;
-    ensure_launch_compatible_with_active_games(
-        &app,
-        &state,
-        version,
-        !use_native_overlay_proxy,
-    )?;
+    ensure_launch_compatible_with_active_games(&app, &state, version, !use_native_overlay_proxy)?;
     if !allow_multiple.unwrap_or(false) {
         ensure_game_not_running(&app, &state)?;
     }
@@ -11847,6 +11947,8 @@ async fn launch_game_preset(
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
     wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
+    #[cfg(target_os = "macos")]
+    macos_runtime::prepare_launch(&app).await?;
     let has_event = event_id.as_deref().is_some_and(|id| !id.trim().is_empty());
     let event_id_for_cfg = event_id.as_deref().unwrap_or_default().trim().to_string();
     let event_forced_ids = event_forced_enabled_mods_for_launch(&app, version, event_id).await?;
@@ -11940,12 +12042,7 @@ async fn launch_game_preset(
         .lock()
         .map_err(|_| "game launch lock poisoned".to_string())?;
     let use_native_overlay_proxy = native_overlay_proxy_enabled_for_launch(&app)?;
-    ensure_launch_compatible_with_active_games(
-        &app,
-        &state,
-        version,
-        !use_native_overlay_proxy,
-    )?;
+    ensure_launch_compatible_with_active_games(&app, &state, version, !use_native_overlay_proxy)?;
     if !allow_multiple.unwrap_or(false) {
         ensure_game_not_running(&app, &state)?;
     }
@@ -12166,7 +12263,7 @@ fn get_game_status(
         .map_err(|_| "game state lock poisoned".to_string())?;
     let any_finished = cleanup_active_games(&app, &mut guard)?;
     let running_pid = guard.first().map(|active| {
-        linux_lingering_game_pid(&app, active.version).unwrap_or_else(|| active.child.id())
+        compatibility_game_pid(&app, active.version).unwrap_or_else(|| active.child.id())
     });
 
     if let Some(pid) = running_pid {
@@ -12242,10 +12339,17 @@ fn stop_game_instance(
     let _ = active.child.wait();
     clear_native_overlay_runtime_for_pid(&app, active.child.id())?;
 
+    #[cfg(target_os = "macos")]
+    if !guard.iter().any(|other| other.version == active.version) {
+        // Wine can outlive its wrapper even while another game version runs.
+        terminate_compatibility_game_processes_for_version(&app, active.version);
+    }
+
     if guard.is_empty() {
         lcstats_autosheet::stop(&lcstats_state);
         hide_game_overlay(&app);
-        terminate_linux_game_processes_for_version(&app, active.version);
+        #[cfg(not(target_os = "macos"))]
+        terminate_compatibility_game_processes_for_version(&app, active.version);
         if let Err(e) = restore_hqol_wesley_dont_store_backup_if_present(&app) {
             log::warn!(
                 "Failed to restore HQoL Wesley dont-store backup after stopping instance: {e}"
@@ -12284,7 +12388,7 @@ fn stop_game(
         versions.sort_unstable();
         versions.dedup();
         for version in versions {
-            terminate_linux_game_processes_for_version(&app, version);
+            terminate_compatibility_game_processes_for_version(&app, version);
         }
         lcstats_autosheet::stop(&lcstats_state);
         hide_game_overlay(&app);
@@ -13599,6 +13703,17 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             start_native_overlay_process_monitor(app.handle());
 
+            // Match Linux's managed Proton setup; startup and first Run share one installer.
+            #[cfg(target_os = "macos")]
+            {
+                let runtime_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = macos_runtime::ensure_runtime(&runtime_app).await {
+                        log::warn!("Failed to prepare macOS Wine runtime: {error}");
+                    }
+                });
+            }
+
             // Startup housekeeping (best-effort, won't block UI):
             // - Disable installed base mods that remote manifest marks as enabled=false
             // - Ensure default config is downloaded if shared config dir is empty
@@ -13709,6 +13824,11 @@ pub fn run() {
             set_bepinex_cfg_entry,
             set_bepinex_cfg_entry_for_version,
             write_config_file,
+            macos_runtime::get_macos_runtime_status,
+            macos_runtime::set_macos_runtime_settings,
+            macos_runtime::choose_macos_runtime_path,
+            macos_runtime::install_macos_runtime,
+            macos_runtime::start_macos_steam,
             get_steam_overlay_config,
             set_steam_overlay_config,
             pick_steam_overlay_path,

@@ -1,5 +1,5 @@
 {
-    "version": 8,
+    "version": 9,
     "chain_config": [
         [
             "OreoM.ShipLootCruiser.cfg",
@@ -51,6 +51,14 @@
             "dev": "HQHQTeam",
             "enabled": true,
             "switch_group": "scrap-selling",
+            "low_cap": null,
+            "high_cap": null,
+            "version_config": {}
+        },
+        {
+            "name": "Replay",
+            "dev": "asta",
+            "enabled": true,
             "low_cap": null,
             "high_cap": null,
             "version_config": {}

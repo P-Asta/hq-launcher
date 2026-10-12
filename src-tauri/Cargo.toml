@@ -18,7 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset"] }
+tauri = { version = "2", features = ["protocol-asset", "macos-private-api"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -47,6 +47,9 @@ tungstenite = { version = "0.24", default-features = false, features = ["handsha
 rfd = "0.15"
 shlex = "1"
 libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+xz2 = { version = "0.1", features = ["static"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-global-shortcut = "2"

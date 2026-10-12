@@ -3,6 +3,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { Title as DialogTitle, Description as DialogDescription } from "@radix-ui/react-dialog";
 import {
   ArrowLeftRight,
   Check,
@@ -47,8 +48,10 @@ import { clampVersionToRange, getInitialRunMode, getLaunchRequestForRunMode, get
 import { useDismissableContextMenu } from "../hooks/useContextMenu";
 import { ProgressBar, TaskProgressPanel } from "../components/launcher/TaskProgress";
 import { PrepareCancelButton } from "../components/launcher/PrepareCancelButton";
+import { MacRuntimeProgress, MacRuntimeSettings } from "../components/launcher/MacRuntimeSettings";
 import { reconcileEventsEnabled } from "../lib/eventsSetting";
 import { resolveUpdateEvent } from "./launcher/updateTask";
+import { hasAcceptedReplayWarning, acceptReplayWarning, needsReplayWarning } from "./launcher/replay";
 
 
 
@@ -214,6 +217,8 @@ export default function LauncherPage({
   const [lcstatsTrackingEnabled, setLcstatsTrackingEnabled] = useState(false);
   const [modToggleBusyKeys, setModToggleBusyKeys] = useState(() => new Set());
   const [disabledMods, setDisabledMods] = useState([]); // [{dev,name}] normalized by backend
+  const [replayWarningAccepted, setReplayWarningAccepted] = useState(hasAcceptedReplayWarning);
+  const [replayEnablePrompt, setReplayEnablePrompt] = useState(null);
   const [installedModVersionsByVersion, setInstalledModVersionsByVersion] =
     useState({}); // version -> { key(dev::name lower) -> version }
   const [installedModIconsByVersion, setInstalledModIconsByVersion] =
@@ -3945,6 +3950,11 @@ export default function LauncherPage({
       return true;
     });
 
+    if (needsReplayWarning(modsToToggle, nextEnabled, replayWarningAccepted) && !opts?.skipReplayWarning) {
+      setReplayEnablePrompt({ mod, nextEnabled, opts });
+      return;
+    }
+
     const toggledKeys = modsToToggle.map(
       (m) => `${String(m.dev).toLowerCase()}::${String(m.name).toLowerCase()}`
     );
@@ -3969,6 +3979,10 @@ export default function LauncherPage({
           })
         )
       );
+      if (opts?.skipReplayWarning && needsReplayWarning(modsToToggle, nextEnabled, replayWarningAccepted)) {
+        acceptReplayWarning();
+        setReplayWarningAccepted(true);
+      }
       // refresh disabled list (source of truth)
       const dm = await invoke("get_disabled_mods");
       setDisabledMods(Array.isArray(dm) ? dm : []);
@@ -5276,6 +5290,8 @@ export default function LauncherPage({
             </Button>
           </div>}
         </div>
+
+        <MacRuntimeProgress onOpenSettings={() => setLaunchOptionsDialogOpen(true)} />
 
         {nativeOverlayUpdateError && (
           <div className="flex items-center justify-between gap-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
@@ -6995,6 +7011,37 @@ export default function LauncherPage({
       )}
 
       <Dialog
+        open={replayEnablePrompt != null}
+        onOpenChange={(open) => { if (!open) setReplayEnablePrompt(null); }}
+      >
+        <DialogContent>
+          <DialogTitle className="text-lg font-semibold tracking-[-0.02em]">
+            Enable Replay by asta
+          </DialogTitle>
+          <DialogDescription className="mt-3 text-sm leading-relaxed text-white/65">
+            Enabling Replay may reduce your game's frame rate (FPS) by about 10%.
+            Click Confirm to enable Replay.
+          </DialogDescription>
+          <div className="mt-6 flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setReplayEnablePrompt(null)}>
+              Cancel
+            </Button>
+            <Button variant="default" onClick={() => {
+              const pending = replayEnablePrompt;
+              if (!pending) return;
+              setReplayEnablePrompt(null);
+              void toggleModEnabledForMod(pending.mod, pending.nextEnabled, {
+                ...pending.opts,
+                skipReplayWarning: true,
+              });
+            }}>
+              Confirm
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
         open={launchOptionsDialogOpen}
         onOpenChange={setLaunchOptionsDialogOpen}
       >
@@ -7022,6 +7069,7 @@ export default function LauncherPage({
             </div>
 
             <div className="mt-6 flex-1 space-y-5 overflow-y-auto px-6 pb-6">
+              <MacRuntimeSettings />
               <div className="flex items-center justify-between gap-4 rounded-2xl border border-panel-outline bg-black/20 px-4 py-3">
                 <div>
                   <div className="text-sm font-medium text-white">
