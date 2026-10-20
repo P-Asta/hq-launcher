@@ -1,0 +1,1 @@
+Node 24.15.0, bundled Corepack 0.34.6, npm prefix under AppData/Roaming/npm. corepack enable --install-directory <npm-prefix> yarn overwrites existing Yarn v1 wrappers, including PowerShell wrapper, without protected Program Files writes or touching pnpm shims. corepack install cached yarn@3.6.4.

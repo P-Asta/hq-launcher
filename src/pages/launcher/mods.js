@@ -1,4 +1,4 @@
-import { toOptionalNumber } from "../../lib/format";
+import { toOptionalNumber } from "../../lib/format.js";
 
 export function modKey(mod) {
   return `${mod.dev}::${mod.name}`;
@@ -8,6 +8,16 @@ export function modKeyLower(mod) {
   return `${String(mod?.dev ?? "").toLowerCase()}::${String(
     mod?.name ?? ""
   ).toLowerCase()}`;
+}
+
+export function isReplayMod(mod) {
+  return modKeyLower(mod) === "asta::replay";
+}
+
+export function isCullFactoryBlockedByReplay(mod, mods, disabledKeys, version) {
+  return modKeyLower(mod) === "fumiko::cullfactory" &&
+    mods.some((entry) => isReplayMod(entry) && entry.enabled !== false &&
+      isModCompatibleWithVersion(entry, version) && !disabledKeys.has(modKeyLower(entry)));
 }
 
 export function isUnityExplorerModName(name) {

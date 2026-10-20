@@ -1,0 +1,1 @@
+User reset removed all prior edits and untracked tests/plans. Same baseline as previous turn: asta-Replay exists in manifest, consent helpers in replay.js, no conflict rules. Preserve default-off migration and FPS consent.

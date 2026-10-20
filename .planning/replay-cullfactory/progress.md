@@ -1,0 +1,3 @@
+Restoration requested after reset. Clean working tree inspected. Reuse established design and tests.
+
+Restored same prior solution. JS predicate and 2 Rust conflict regressions failed before implementation; now cargo test full suite 124 passed. npm ci restored deleted dependencies; unrelated yarn.lock mutation reverted to original tracked content. Build and all three JS checks passed. Playwright checked 500MB dialog text, Cancel unchanged state, Confirm Replay on/Cull off+locked, Replay off unlocks Cull, repeated enable preserves consent and disables Cull. Review found no product omissions. Existing compiler/Browserslist warnings remain. Actual game not launched.

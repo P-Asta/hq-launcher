@@ -42,7 +42,7 @@ import { clampVersionToEvent, eventAllowsTester, eventAllowsVersion, formatEvent
 import { extractSpreadsheetId, findSheetInfoByTitle, findSheetTitleByGid, findSimilarSheetInfoByTitle, normalizeSheetColumn, normalizeSheetColumnList, normalizeSheetInfos, parseSpreadsheetInput } from "./launcher/googleSheets";
 import { getInitialLaunchOptionsConfig, makeDeleteVersionPromptState, normalizeLaunchCommandTemplate, normalizeLaunchOptionsEntries } from "./launcher/launchOptions";
 import { CUSTOM_TIME_FORMAT_OPTIONS, DEFAULT_CUSTOM_LCSTATS_LAYOUT, DEFAULT_LCSTATS_SETTINGS, LCSTATS_LAYOUTS, hasCustomGoogleOauthSettings, isLcStatsTrackerMod, lcstatsLayoutUsesColumnFields, normalizeCustomLcstatsLayout, parseCustomLcstatsLayoutPreset, requiresGoogleOauthForMod } from "./launcher/lcstats";
-import { configPathMatchesMod, isLockedCfgEntry, isModCompatibleWithTags, isModCompatibleWithVersion, isPresetSummaryMod, isUiHiddenMod, listEntryKey, modHasRunModeAffinity, modKey, modKeyLower, filterForcedMods
+import { configPathMatchesMod, isLockedCfgEntry, isModCompatibleWithTags, isModCompatibleWithVersion, isPresetSummaryMod, isUiHiddenMod, listEntryKey, modHasRunModeAffinity, modKey, modKeyLower, filterForcedMods, isReplayMod, isCullFactoryBlockedByReplay
 } from "./launcher/mods";
 import { clampVersionToRange, getInitialRunMode, getLaunchRequestForRunMode, getPresetModulePriority, getPresetSummarySpec, getPresetVersionRange, isEclipsedHqRunMode, isEclipsedRunMode, isPracticeRunMode, isSmhqRunMode, isVersionWithinRange, saveSelectedRunMode, shouldResetFreeMoonsOnRunModeChange } from "./launcher/runModes";
 import { useDismissableContextMenu } from "../hooks/useContextMenu";
@@ -51,7 +51,7 @@ import { PrepareCancelButton } from "../components/launcher/PrepareCancelButton"
 import { MacRuntimeProgress, MacRuntimeSettings } from "../components/launcher/MacRuntimeSettings";
 import { reconcileEventsEnabled } from "../lib/eventsSetting";
 import { resolveUpdateEvent } from "./launcher/updateTask";
-import { hasAcceptedReplayWarning, acceptReplayWarning, needsReplayWarning } from "./launcher/replay";
+import { hasAcceptedReplayWarning, acceptReplayWarning, needsReplayWarning, REPLAY_STORAGE_WARNING } from "./launcher/replay";
 
 
 
@@ -3887,6 +3887,9 @@ export default function LauncherPage({
     const baseKey = `${String(mod.dev).toLowerCase()}::${String(
       mod.name
     ).toLowerCase()}`;
+    if (nextEnabled && isCullFactoryBlockedByReplay(mod, modsForList, disabledSet, selectedVersion)) {
+      return;
+    }
     if (isPracticeRunMode(runMode) && nextEnabled && practiceLockedModKeys.has(baseKey)) {
       return;
     }
@@ -3941,6 +3944,7 @@ export default function LauncherPage({
     const seen = new Set();
     modsToToggle = modsToToggle.filter((m) => {
       const k = `${String(m.dev).toLowerCase()}::${String(m.name).toLowerCase()}`;
+      if (nextEnabled && isCullFactoryBlockedByReplay(m, modsForList, disabledSet, selectedVersion)) return false;
       if (seen.has(k)) return false;
       seen.add(k);
       if (k !== baseKey) {
@@ -5466,7 +5470,8 @@ export default function LauncherPage({
                   const baseDescription = presetSummary
                     ? m.description
                     : installedModDescriptions[keyLower] || "Click to edit config";
-                  const description = baseDescription;
+                  const replayLocked = isCullFactoryBlockedByReplay(m, modsForList, disabledSet, selectedVersion);
+                  const description = replayLocked ? "Disabled while Replay is enabled" : baseDescription;
                   const smhqEnableLocked =
                     isSmhqRunMode(runMode) && smhqForcedModKeys.has(keyLower);
                   const eclipsedEnableLocked =
@@ -5482,16 +5487,17 @@ export default function LauncherPage({
                     );
                   });
                   const enabled =
-                    smhqEnableLocked ||
+                    !replayLocked && (smhqEnableLocked ||
                     eclipsedEnableLocked ||
                     eventEnableLocked ||
-                    (!disabledSet.has(keyLower) && !practiceLockedModKeys.has(keyLower));
+                    (!disabledSet.has(keyLower) && !practiceLockedModKeys.has(keyLower)));
                   const installedVer = installedModVersions[keyLower];
                   const busy = modSwitchMods
                     ? modSwitchMods.some((entry) =>
                         modToggleBusyKeys.has(modKeyLower(entry))
                       )
                     : modToggleBusyKeys.has(keyLower);
+                  const replayToggleBusy = keyLower === "fumiko::cullfactory" && modToggleBusyKeys.has("asta::replay");
                   const isPracticeMod =
                     isPracticeRunMode(runMode) && practiceModKeys.has(keyLower);
                   const practiceEnableLocked =
@@ -5604,6 +5610,9 @@ export default function LauncherPage({
                         >
                           {description}
                         </div>
+                        {isReplayMod(m) ? (
+                          <p className="mt-2 text-xs text-amber-200">{REPLAY_STORAGE_WARNING}</p>
+                        ) : null}
                       </div>
                       <div className="self-stretch flex shrink-0 items-center">
                         {presetSummary ? (
@@ -5617,9 +5626,12 @@ export default function LauncherPage({
                             className="inline-flex"
                           >
                             <Switch
+                              aria-label={`Enable ${m.name}`}
                               checked={enabled}
                               disabled={
                                 busy ||
+                                replayLocked ||
+                                replayToggleBusy ||
                                 modSwitchLocked ||
                                 practiceEnableLocked ||
                                 smhqEnableLocked ||
@@ -5714,6 +5726,9 @@ export default function LauncherPage({
                         </div>
                       );
                     })()}
+                    {isReplayMod(selectedMod) ? (
+                      <p className="mt-2 text-xs text-amber-200">{REPLAY_STORAGE_WARNING}</p>
+                    ) : null}
                     {selectedPresetSummary ? null : (
                     <div className="mt-1 text-xs text-white/45">
                       {(() => {
@@ -5723,7 +5738,10 @@ export default function LauncherPage({
                         const v = installedModVersions[k];
                         const forcedOff = practiceLockedModKeys.has(k);
                         const userOff = disabledSet.has(k);
-                        const stateLabel = forcedOff
+                        const replayLocked = isCullFactoryBlockedByReplay(selectedMod, modsForList, disabledSet, selectedVersion);
+                        const stateLabel = replayLocked
+                          ? "Off while Replay is enabled"
+                          : forcedOff
                           ? "Off in Practice"
                           : userOff
                           ? "Disabled"
@@ -7020,6 +7038,7 @@ export default function LauncherPage({
           </DialogTitle>
           <DialogDescription className="mt-3 text-sm leading-relaxed text-white/65">
             Enabling Replay may reduce your game's frame rate (FPS) by about 10%.
+            {" "}{REPLAY_STORAGE_WARNING}{" "}
             Click Confirm to enable Replay.
           </DialogDescription>
           <div className="mt-6 flex justify-end gap-2">

@@ -7913,6 +7913,23 @@ fn add_disabled_mod(list: &mut DisableModFile, dev: &str, name: &str) -> bool {
     true
 }
 
+fn replay_enabled_in_roots(roots: &[&Path], disabled_keys: &HashSet<String>) -> bool {
+    !disabled_keys.contains("asta::replay")
+        && roots.iter().any(|root| mod_dir_for(root, "asta", "Replay").is_some())
+}
+
+fn disable_cullfactory_for_replay(
+    list: &mut DisableModFile,
+    roots: &[&Path],
+) -> Result<bool, String> {
+    for root in roots {
+        if let Some(dir) = mod_dir_for(root, "fumiko", "CullFactory") {
+            set_mod_files_old_suffix(&dir, false)?;
+        }
+    }
+    Ok(add_disabled_mod(list, "fumiko", "CullFactory"))
+}
+
 fn manifest_disabled_base_mods_for_version(
     mods_cfg: &ModsConfig,
     version: u32,
@@ -8044,6 +8061,93 @@ fn set_mod_files_old_suffix(mod_dir: &std::path::Path, enabled: bool) -> Result<
     Ok(())
 }
 
+#[cfg(test)]
+mod replay_compatibility_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    struct TestDir(PathBuf);
+    impl TestDir {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "hq-replay-{}-{}-{}", std::process::id(),
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+        fn add_mod(&self, folder: &str) {
+            std::fs::create_dir(self.0.join(folder)).unwrap();
+            std::fs::write(self.0.join(folder).join("plugin.dll"), b"test").unwrap();
+        }
+    }
+    impl Drop for TestDir {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+
+    #[test]
+    fn enabled_replay_disables_cullfactory_even_when_forced_on() {
+        let root = TestDir::new();
+        for folder in ["AsTa-RePlAy", "fumiko-CullFactory", "other-Mod"] {
+            root.add_mod(folder);
+        }
+        sync_mod_dirs_with_effective_state(
+            &root.0, &HashSet::new(), &HashSet::new(),
+            &HashSet::from(["fumiko::cullfactory".to_string()]),
+        ).unwrap();
+        assert!(root.0.join("fumiko-CullFactory/plugin.dll.old").exists());
+        assert!(root.0.join("AsTa-RePlAy/plugin.dll").exists());
+        assert!(root.0.join("other-Mod/plugin.dll").exists());
+    }
+
+    #[test]
+    fn disabled_or_absent_replay_allows_cullfactory() {
+        for installed in [false, true] {
+            let root = TestDir::new();
+            root.add_mod("fumiko-CullFactory");
+            if installed { root.add_mod("asta-Replay"); }
+            sync_mod_dirs_with_effective_state(
+                &root.0, &HashSet::from(["asta::replay".to_string()]),
+                &HashSet::new(), &HashSet::new(),
+            ).unwrap();
+            assert!(root.0.join("fumiko-CullFactory/plugin.dll").exists());
+        }
+    }
+
+    #[test]
+    fn forced_enabled_replay_overrides_forced_disabled_replay() {
+        let root = TestDir::new();
+        root.add_mod("asta-Replay");
+        root.add_mod("fumiko-CullFactory");
+        sync_mod_dirs_with_effective_state(
+            &root.0, &HashSet::new(),
+            &HashSet::from(["asta::replay".to_string()]),
+            &HashSet::from(["asta::replay".to_string(), "fumiko::cullfactory".to_string()]),
+        ).unwrap();
+        assert!(root.0.join("asta-Replay/plugin.dll").exists());
+        assert!(root.0.join("fumiko-CullFactory/plugin.dll.old").exists());
+    }
+
+    #[test]
+    fn replay_reconciliation_updates_files_and_preferences_across_roots() {
+        let plugins = TestDir::new();
+        let patchers = TestDir::new();
+        plugins.add_mod("asta-Replay");
+        patchers.add_mod("fumiko-CullFactory");
+        let roots = [plugins.0.as_path(), patchers.0.as_path()];
+        let mut list = DisableModFile { version: 7, mods: vec![] };
+        assert!(replay_enabled_in_roots(&roots, &disabled_mod_keys(&list.mods)));
+        assert!(disable_cullfactory_for_replay(&mut list, &roots).unwrap());
+        assert!(patchers.0.join("fumiko-CullFactory/plugin.dll.old").exists());
+        assert_eq!(list.mods, vec![normalize_mod_id("fumiko", "CullFactory")]);
+        assert!(!disable_cullfactory_for_replay(&mut list, &roots).unwrap());
+        add_disabled_mod(&mut list, "asta", "Replay");
+        assert!(!replay_enabled_in_roots(&roots, &disabled_mod_keys(&list.mods)));
+    }
+}
+
 fn sync_mod_dirs_with_effective_state(
     root: &std::path::Path,
     disabled_keys: &HashSet<String>,
@@ -8053,6 +8157,10 @@ fn sync_mod_dirs_with_effective_state(
     if !root.exists() {
         return Ok(());
     }
+
+    let replay_enabled = forced_enabled_keys.contains("asta::replay")
+        || (!forced_disabled_keys.contains("asta::replay")
+            && replay_enabled_in_roots(&[root], disabled_keys));
 
     let rd = std::fs::read_dir(root).map_err(|e| e.to_string())?;
     for e in rd {
@@ -8066,7 +8174,9 @@ fn sync_mod_dirs_with_effective_state(
             continue;
         };
         let key = normalize_mod_key(dev, name);
-        let enabled = if forced_enabled_keys.contains(&key) {
+        let enabled = if replay_enabled && key == "fumiko::cullfactory" {
+            false
+        } else if forced_enabled_keys.contains(&key) {
             true
         } else if forced_disabled_keys.contains(&key) {
             false
@@ -8085,13 +8195,24 @@ fn apply_effective_mod_states_for_version(
     forced_disabled_mods: &[(String, String)],
     forced_enabled_mods: &[(String, String)],
 ) -> Result<(), String> {
-    let list = read_disablemod(app)?;
-    let disabled_keys = disabled_mod_keys(&list.mods);
+    let mut list = read_disablemod(app)?;
     let forced_disabled_keys = mod_keys_from_pairs(forced_disabled_mods);
-    let forced_enabled_keys = mod_keys_from_pairs(forced_enabled_mods);
+    let mut forced_enabled_keys = mod_keys_from_pairs(forced_enabled_mods);
 
     let plugins = plugins_dir(app, version)?;
     let patchers = patchers_dir(app, version)?;
+    let roots = [plugins.as_path(), patchers.as_path()];
+    if forced_enabled_keys.contains("asta::replay")
+        || (!forced_disabled_keys.contains("asta::replay")
+            && replay_enabled_in_roots(&roots, &disabled_mod_keys(&list.mods)))
+    {
+        if disable_cullfactory_for_replay(&mut list, &roots)? {
+            write_disablemod(app, &list)?;
+        }
+        // Replay and CullFactory cannot be loaded together, even in event presets.
+        forced_enabled_keys.remove("fumiko::cullfactory");
+    }
+    let disabled_keys = disabled_mod_keys(&list.mods);
     sync_mod_dirs_with_effective_state(
         &plugins,
         &disabled_keys,
@@ -12419,6 +12540,16 @@ async fn get_disabled_mods(app: tauri::AppHandle) -> Result<Vec<DisabledMod>, St
             log::warn!("Failed to reconcile mod switch defaults: {error}");
         }
     }
+    for version in list_installed_versions(app.clone())? {
+        let plugins = plugins_dir(&app, version)?;
+        let patchers = patchers_dir(&app, version)?;
+        let roots = [plugins.as_path(), patchers.as_path()];
+        if replay_enabled_in_roots(&roots, &disabled_mod_keys(&disabled.mods))
+            && disable_cullfactory_for_replay(&mut disabled, &roots)?
+        {
+            write_disablemod(&app, &disabled)?;
+        }
+    }
     Ok(disabled.mods)
 }
 
@@ -12612,7 +12743,18 @@ async fn set_mod_enabled(
 
     // Use normalized ids in the file.
     let id = normalize_mod_id(&dev, &name);
+    let plugins = plugins_dir(&app, version)?;
+    let patchers = patchers_dir(&app, version)?;
+    let roots = [plugins.as_path(), patchers.as_path()];
+    if enabled && id.dev == "fumiko" && id.name == "cullfactory"
+        && replay_enabled_in_roots(&roots, &disabled_mod_keys(&list.mods))
+    {
+        return Err("CullFactory cannot be enabled while Replay is enabled.".to_string());
+    }
     list.mods.retain(|m| m != &id);
+    if enabled && id.dev == "asta" && id.name == "replay" {
+        disable_cullfactory_for_replay(&mut list, &roots)?;
+    }
     if !enabled {
         add_disabled_mod(&mut list, &dev, &name);
     } else {
@@ -12621,9 +12763,6 @@ async fn set_mod_enabled(
         }
     }
     write_disablemod(&app, &list)?;
-
-    let plugins = plugins_dir(&app, version)?;
-    let patchers = patchers_dir(&app, version)?;
 
     if enabled {
         for (other_dev, other_name) in &switch_alternatives {

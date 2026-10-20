@@ -1,5 +1,8 @@
 const REPLAY_WARNING_STORAGE_KEY = "launcherReplayPerformanceWarningAccepted";
 
+export const REPLAY_STORAGE_WARNING =
+  "Replay recordings can use a lot of disk space: a single in-game day can reach around 500 MB. Check free disk space and delete old replays regularly. CullFactory is automatically disabled while Replay is enabled.";
+
 export function hasAcceptedReplayWarning() {
   try {
     return localStorage.getItem(REPLAY_WARNING_STORAGE_KEY) === "true";
