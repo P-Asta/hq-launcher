@@ -111,6 +111,14 @@ How it’s used:
 - Backend preset install/prepare rejects versions outside the configured range
 - Existing installed preset mods are not forcibly disabled by this field alone; it only gates preset applicability/install flow
 
+### `practice_mods` (optional array of `ModEntry`)
+
+Mods installed and enabled only for practice run modes (e.g. `giosuel/Imperium`, `megumin/LethalDevMode`).
+Same entry shape as `mods`; `tags: ["ui_hidden"]` hides a dependency from the mod list.
+Outside practice runs these mods are forced off. If the key is missing, practice runs install no extra mods.
+
+(The LCF run's `asta/LCF` is not in the manifest; it is hardcoded in `src-tauri/src/variable.rs`.)
+
 ### `mods` (array of `ModEntry`)
 
 List of Thunderstore mods that should be installed into:

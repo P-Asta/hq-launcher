@@ -1,5 +1,5 @@
 {
-    "version": 9,
+    "version": 8,
     "chain_config": [
         [
             "OreoM.ShipLootCruiser.cfg",
@@ -34,7 +34,7 @@
         },
         "Wesley": {
             "low_cap": 69,
-            "high_cap": 73
+            "high_cap": 81
         }
     },
     "mods": [
@@ -220,7 +220,9 @@
             "low_cap": null,
             "high_cap": null,
             "version_config": {
-                "40": "0.0.0"
+                "40": "0.0.0",
+                "45": "1.1.2",
+                "49": "0.0.0"
             }
         },
         {
@@ -436,7 +438,7 @@
             ],
             "enabled": true,
             "low_cap": 64,
-            "high_cap": 73,
+            "high_cap": null,
             "tag_constraints": {
                 "Wesley": {
                     "low_cap": 69
@@ -459,7 +461,7 @@
             ],
             "enabled": true,
             "low_cap": 64,
-            "high_cap": 73,
+            "high_cap": null,
             "tag_constraints": {
                 "Wesley": {
                     "low_cap": 69
@@ -495,7 +497,7 @@
             ],
             "enabled": true,
             "low_cap": 69,
-            "high_cap": null,
+            "high_cap": 73,
             "version_config": {
                 "69": "1.0.1",
                 "73": "1.0.1",
@@ -511,7 +513,7 @@
             ],
             "enabled": true,
             "low_cap": 56,
-            "high_cap": null,
+            "high_cap": 73,
             "tag_constraints": {
                 "Wesley": {
                     "low_cap": 69
@@ -523,6 +525,20 @@
                 "69": "1.5.0",
                 "72": "1.5.3",
                 "73": "1.5.3",
+                "80": "0.0.0"
+            }
+        },
+        {
+            "name": "CustomStoryLogsFixed",
+            "dev": "Magic_Wesley",
+            "tags": [
+                "Wesley",
+                "C.Moons"
+            ],
+            "enabled": true,
+            "low_cap": 80,
+            "high_cap": null,
+            "version_config": {
                 "80": "0.0.0"
             }
         },
@@ -584,7 +600,7 @@
                 "62": "1.3.13",
                 "64": "1.4.11",
                 "73": "1.6.8",
-                "80": "1.6.9"
+                "80": "1.7.13"
             }
         },
         {
@@ -818,7 +834,7 @@
                 "56": "0.5.0",
                 "62": "0.5.4",
                 "72": "0.7.1",
-                "80": "0.8.0"
+                "80": "0.8.3"
             }
         },
         {
@@ -910,7 +926,7 @@
             "version_config": {
                 "56": "4.0.7",
                 "72": "6.0.0",
-                "80": "0.0.0"
+                "80": "6.0.0"
             }
         },
         {
@@ -1028,7 +1044,7 @@
                 "69": "5.1.8",
                 "72": "6.1.7",
                 "73": "6.9.12",
-                "80": "0.0.0"
+                "80": "7.0.17"
             }
         },
         {
@@ -1044,7 +1060,7 @@
                 "69": "2.1.0",
                 "72": "3.0.8",
                 "73": "4.1.15",
-                "80": "0.0.0"
+                "80": "5.0.18"
             }
         },
         {
@@ -1055,7 +1071,7 @@
             ],
             "enabled": true,
             "low_cap": 73,
-            "high_cap": null,
+            "high_cap": 73,
             "version_config": {
                 "73": "1.0.2",
                 "80": "0.0.0"
@@ -1090,6 +1106,19 @@
             }
         },
         {
+            "name": "Wesleys_Shenanigans",
+            "dev": "Magic_Wesley",
+            "tags": [
+                "Wesley"
+            ],
+            "enabled": true,
+            "low_cap": 81,
+            "high_cap": null,
+            "version_config": {
+                "80": "0.0.0"
+            }
+        },
+        {
             "name": "WeatherRegistry",
             "dev": "mrov",
             "tags": [
@@ -1118,6 +1147,18 @@
             }
         },
         {
+            "name": "BepInEx_Faster_Load_AssetBundles_Patcher",
+            "dev": "DiFFoZ",
+            "enabled": true,
+            "low_cap": null,
+            "high_cap": null,
+            "version_config": {},
+            "tags": [
+                "Wesley",
+                "C.Moons"
+            ]
+        },
+        {
             "name": "EclipseOnly",
             "dev": "stormytuna",
             "tags": [
@@ -1127,6 +1168,191 @@
             "low_cap": null,
             "high_cap": null,
             "version_config": {}
+        }
+    ],
+    "practice_mods": [
+        {
+            "name": "Imperium",
+            "dev": "giosuel",
+            "enabled": true,
+            "low_cap": 50,
+            "high_cap": null,
+            "version_config": {
+                "50": "0.1.9",
+                "56": "0.2.1",
+                "60": "0.2.2",
+                "62": "0.2.7",
+                "66": "0.2.8",
+                "70": "1.1.1",
+                "80": "0.0.0"
+            }
+        },
+        {
+            "name": "OdinSerializer",
+            "dev": "Lordfirespeed",
+            "tags": [
+                "ui_hidden"
+            ],
+            "enabled": true,
+            "low_cap": 56,
+            "high_cap": null,
+            "version_config": {}
+        },
+        {
+            "name": "LethalNetworkAPI",
+            "dev": "xilophor",
+            "tags": [
+                "ui_hidden"
+            ],
+            "enabled": true,
+            "low_cap": 56,
+            "high_cap": null,
+            "version_config": {
+                "56": "3.3.2",
+                "80": "0.0.0"
+            }
+        },
+        {
+            "name": "LCSeedPicker",
+            "dev": "FlooflesDEV",
+            "enabled": true,
+            "low_cap": 40,
+            "high_cap": 49,
+            "version_config": {
+                "40": "1.2.2"
+            }
+        },
+        {
+            "name": "CoordinateForEasterEggs",
+            "dev": "kakeEdition",
+            "enabled": true,
+            "low_cap": 50,
+            "high_cap": null,
+            "version_config": {
+                "50": "0.2.0"
+            }
+        },
+        {
+            "name": "CoordinateForEasterEggsFix",
+            "dev": "asta",
+            "tags": [
+                "ui_hidden"
+            ],
+            "enabled": true,
+            "low_cap": 50,
+            "high_cap": 72,
+            "version_config": {
+                "50": "1.0.0"
+            }
+        },
+        {
+            "name": "LethalLib",
+            "dev": "Evaisa",
+            "tags": [
+                "ui_hidden"
+            ],
+            "enabled": true,
+            "low_cap": 50,
+            "high_cap": null,
+            "version_config": {
+                "50": "0.16.0",
+                "70": "1.1.0",
+                "73": "1.1.1",
+                "80": "0.0.0"
+            }
+        },
+        {
+            "name": "MonoDetour_BepInEx_5",
+            "dev": "MonoDetour",
+            "tags": [
+                "ui_hidden"
+            ],
+            "enabled": true,
+            "low_cap": 50,
+            "high_cap": null,
+            "version_config": {
+                "50": "0.6.3",
+                "80": "0.0.0"
+            }
+        },
+        {
+            "name": "MonoDetour",
+            "dev": "MonoDetour",
+            "tags": [
+                "ui_hidden"
+            ],
+            "enabled": true,
+            "low_cap": 50,
+            "high_cap": null,
+            "version_config": {
+                "50": "0.6.3",
+                "80": "0.0.0"
+            }
+        },
+        {
+            "name": "HookGenPatcher",
+            "dev": "Evaisa",
+            "tags": [
+                "ui_hidden"
+            ],
+            "enabled": true,
+            "low_cap": 50,
+            "high_cap": null,
+            "version_config": {
+                "50": "0.0.5",
+                "80": "0.0.0"
+            }
+        },
+        {
+            "name": "LethalDevMode",
+            "dev": "megumin",
+            "enabled": true,
+            "low_cap": 45,
+            "high_cap": null,
+            "version_config": {}
+        },
+        {
+            "name": "CruiserJumpPractice",
+            "dev": "aoirint",
+            "enabled": true,
+            "low_cap": 56,
+            "high_cap": null,
+            "version_config": {}
+        },
+        {
+            "name": "DanceTools",
+            "dev": "Shinobi",
+            "enabled": true,
+            "low_cap": null,
+            "high_cap": 44,
+            "version_config": {}
+        },
+        {
+            "name": "FreeCammer",
+            "dev": "the_croods",
+            "enabled": true,
+            "low_cap": null,
+            "high_cap": 49,
+            "version_config": {}
+        },
+        {
+            "name": "IntroTweaks",
+            "dev": "Owen3H",
+            "enabled": true,
+            "low_cap": 50,
+            "high_cap": null,
+            "version_config": {}
+        },
+        {
+            "name": "Yukieji_UnityExplorer",
+            "dev": "LethalCompanyModding",
+            "enabled": true,
+            "low_cap": null,
+            "high_cap": null,
+            "version_config": {
+                "40": "4.12.7",
+                "73": "4.13.1"
+            }
         }
     ]
 }

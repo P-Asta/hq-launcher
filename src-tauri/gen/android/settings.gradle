@@ -1,0 +1,5 @@
+include ':app'
+include ':hqRuntime'
+project(':hqRuntime').projectDir = new File(settingsDir, '../../../android/runtime')
+
+apply from: 'tauri.settings.gradle'

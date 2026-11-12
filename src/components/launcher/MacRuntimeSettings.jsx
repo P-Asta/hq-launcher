@@ -1,7 +1,8 @@
+import { HqLogo } from "./HqLoading";
 import { useCallback, useEffect, useId, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { CheckCircle2, Download, FolderOpen, LoaderCircle, RefreshCw } from "lucide-react";
+import { CheckCircle2, Download, FolderOpen, RefreshCw } from "lucide-react";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
@@ -32,7 +33,7 @@ export function MacRuntimeProgress({ onOpenSettings }) {
   const percent = Number.isFinite(progress.percent) ? Math.max(0, Math.min(100, progress.percent)) : null;
   return (
     <div className={`flex items-center gap-3 rounded-xl border px-3 py-2 text-sm ${failed ? "border-red-400/30 bg-red-500/10 text-red-100" : "border-panel-outline bg-white/[0.04] text-white/75"}`} role={failed ? "alert" : "status"} aria-live="polite">
-      {!failed ? <LoaderCircle className="h-4 w-4 shrink-0 animate-spin" /> : null}
+      {!failed ? <HqLogo className="h-4 w-4 shrink-0" /> : null}
       <div className="min-w-0 flex-1">
         <div>{failed ? "macOS runtime setup failed" : "Preparing macOS game support"}{percent != null && !failed ? ` · ${Math.round(percent)}%` : ""}</div>
         <div className="mt-0.5 break-words text-xs opacity-70">{progress.message || (failed ? "Open Launch settings to retry setup." : progress.stage)}</div>
@@ -186,7 +187,7 @@ export function MacRuntimeSettings() {
           </p>
         </div>
         <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={refresh} aria-label="Refresh macOS runtime status" title="Refresh status" className="shrink-0 px-2">
-          <RefreshCw className={`h-4 w-4 ${action === "refresh" ? "animate-spin" : ""}`} />
+          {action === "refresh" ? <HqLogo className="h-4 w-4" /> : <RefreshCw className="h-4 w-4" />}
         </Button>
       </div>
 
@@ -202,7 +203,7 @@ export function MacRuntimeSettings() {
       {progress ? (
         <div className="space-y-2 text-xs text-white/65" role="status" aria-live="polite">
           <div className="flex items-center gap-2">
-            <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin" />
+            <HqLogo className="h-3.5 w-3.5 shrink-0" />
             <span className="min-w-0 flex-1">{progress.message || progress.stage || "Preparing macOS runtime"}</span>
             {percent != null ? <span>{Math.round(percent)}%</span> : null}
           </div>
@@ -217,12 +218,12 @@ export function MacRuntimeSettings() {
       <div className="flex flex-wrap gap-2">
         {!runtimeInstalled ? (
           <Button type="button" size="sm" variant="secondary" disabled={busy} onClick={install}>
-            {action === "install" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            {action === "install" ? <HqLogo className="h-4 w-4" /> : <Download className="h-4 w-4" />}
             Install runtime
           </Button>
         ) : null}
         <Button type="button" size="sm" variant="default" disabled={busy} onClick={openSteam}>
-          {action === "steam" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : status.steamInstalled ? <CheckCircle2 className="h-4 w-4" /> : <Download className="h-4 w-4" />}
+          {action === "steam" ? <HqLogo className="h-4 w-4" /> : status.steamInstalled ? <CheckCircle2 className="h-4 w-4" /> : <Download className="h-4 w-4" />}
           {status.steamInstalled ? "Open Windows Steam" : "Install Windows Steam"}
         </Button>
       </div>
@@ -279,7 +280,7 @@ export function MacRuntimeSettings() {
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button type="button" size="sm" disabled={busy} onClick={() => save(false)}>{action === "save" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}Save custom settings</Button>
+            <Button type="button" size="sm" disabled={busy} onClick={() => save(false)}>{action === "save" ? <HqLogo className="h-4 w-4" /> : null}Save custom settings</Button>
             <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => save(true)}>Use automatic setup</Button>
           </div>
         </div>

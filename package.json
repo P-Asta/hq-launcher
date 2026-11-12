@@ -11,6 +11,10 @@
     "test:replay-warning": "node scripts/test-replay-warning.mjs",
     "preview": "vite preview",
     "tauri": "node ./scripts/tauri-wrapper.mjs",
+    "android:dev": "node ./scripts/tauri-wrapper.mjs android dev",
+    "android:build": "node ./scripts/android-build.mjs",
+    "android:build:debug": "node ./scripts/android-build.mjs --debug",
+    "test:android-build": "node ./scripts/test-android-build.mjs",
     "tauri:build": "tauri build",
     "tauri:build:linux": "NO_STRIP=true tauri build",
     "tauri:build:appimage": "NO_STRIP=true tauri build --bundles appimage"

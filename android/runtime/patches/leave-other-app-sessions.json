@@ -1,0 +1,10 @@
+{
+  "source": "com/droiddeck/launcher/session/SessionService.kt",
+  "reason": "HQ's private runtime must not stop another application's clients or sessions.",
+  "replacements": [
+    {
+      "before": "if (SessionState.mode == MODE_STEAM || SessionState.mode == MODE_DESKTOP) RivalClients.stopBeforeSession(this)",
+      "after": "// HQ leaves other applications and their sessions untouched."
+    }
+  ]
+}

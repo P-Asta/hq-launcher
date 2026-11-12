@@ -12,6 +12,7 @@ edition = "2021"
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "hq_launcher_lib"
+path = "src/platform.rs"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -22,6 +23,19 @@ tauri = { version = "2", features = ["protocol-asset", "macos-private-api"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+futures-util = "0.3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+reqwest = { version = "0.13.1", default-features = false, features = ["rustls-no-provider", "stream", "json", "http2"] }
+# Use a bundled public CA store: no platform-verifier JVM initialization is needed.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+log = "0.4.29"
+tokio = { version = "1", features = ["rt", "macros", "time"] }
+semver = "1"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
 base64 = "0.22"
 getrandom = "0.3"
 sha2 = "0.10"

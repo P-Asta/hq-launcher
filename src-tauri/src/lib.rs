@@ -12,9 +12,14 @@ mod macos_steam;
 #[cfg(target_os = "macos")]
 mod macos_wine_install;
 mod mod_config;
+mod mod_files;
+mod android_mod_support;
+use mod_files::set_mod_files_old_suffix;
 mod mods;
 mod progress;
 mod release_channel;
+#[cfg(test)]
+mod runtime_operation;
 mod storage;
 mod thunderstore;
 mod util;
@@ -207,17 +212,12 @@ fn preset_and_practice_for_run_mode(run_mode: &str) -> (String, bool) {
         "c_moons_practice" => ("c_moons".to_string(), true),
         "c_moons_eclipsed" => ("c_moons_eclipsed".to_string(), false),
         "c_moons_smhq" => ("c_moons_smhq".to_string(), false),
+        "lcf" => ("lcf".to_string(), false),
         _ => ("hq".to_string(), false),
     }
 }
 
-fn is_run_mode_tag(tag: &str) -> bool {
-    tag.eq_ignore_ascii_case("brutal")
-        || tag.eq_ignore_ascii_case("wesley")
-        || tag.eq_ignore_ascii_case("smhq")
-        || tag.eq_ignore_ascii_case("eclipsed")
-        || tag.eq_ignore_ascii_case("c.moons")
-}
+use android_mod_support::is_run_mode_tag;
 
 fn mod_has_run_mode_affinity(spec: &mod_config::ModEntry) -> bool {
     spec.tags.iter().any(|tag| is_run_mode_tag(tag))
@@ -239,6 +239,49 @@ fn allow_eclipsed_hq_optional_mods(preset: &str, forced_disabled_ids: &mut Vec<(
     }
 
     forced_disabled_ids.retain(|(dev, name)| !is_eclipsed_hq_optional_mod(dev, name));
+}
+
+fn is_lcf_preset(preset: &str) -> bool {
+    preset.trim().eq_ignore_ascii_case("lcf")
+}
+
+/// Switch groups whose every member is turned off in an LCF run.
+const LCF_DISABLED_SWITCH_GROUPS: [&str; 2] = ["scrap-selling", "save-ui"];
+
+/// Individual mods turned off in an LCF run (in addition to the switch groups above).
+const LCF_DISABLED_MODS: [(&str, &str); 3] = [
+    ("HQHQTeam", "HQoL"),
+    ("asta", "Replay"),
+    ("HQHQTeam", "VLog"),
+];
+
+/// Mods that must be disabled while running the LCF preset.
+async fn lcf_forced_disabled_ids(
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<Vec<(String, String)>, String> {
+    let mut ids: Vec<(String, String)> = LCF_DISABLED_MODS
+        .iter()
+        .map(|(dev, name)| (dev.to_string(), name.to_string()))
+        .collect();
+    let mut seen: HashSet<String> = ids
+        .iter()
+        .map(|(dev, name)| normalize_mod_key(dev, name))
+        .collect();
+
+    let client = reqwest::Client::new();
+    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests, _preset_tag_constraints) =
+        ModsConfig::fetch_manifest_with_cancel(&client, cancel).await?;
+    for m in mods_cfg.mods {
+        let in_group = m.switch_group.as_deref().is_some_and(|group| {
+            LCF_DISABLED_SWITCH_GROUPS
+                .iter()
+                .any(|g| group.trim().eq_ignore_ascii_case(g))
+        });
+        if in_group && seen.insert(normalize_mod_key(&m.dev, &m.name)) {
+            ids.push((m.dev, m.name));
+        }
+    }
+    Ok(ids)
 }
 
 fn is_wesley_base_run(tags: &[String], practice: bool) -> bool {
@@ -1564,11 +1607,20 @@ async fn effective_mods_config_for_run_mode(
     }
 
     let mut effective = base;
+    if is_lcf_preset(&preset) {
+        effective.extend(
+            variable::get_lcf_mod_list()
+                .into_iter()
+                .filter(|m| m.is_compatible(version)),
+        );
+    }
     if practice {
-        let practice_mods: Vec<mod_config::ModEntry> = variable::get_practice_mod_list()
-            .into_iter()
-            .filter(|m| m.is_compatible(version))
-            .collect();
+        let practice_mods: Vec<mod_config::ModEntry> =
+            ModsConfig::fetch_practice_mods(client, None)
+                .await?
+                .into_iter()
+                .filter(|m| m.is_compatible(version))
+                .collect();
         let practice_names: std::collections::HashSet<String> = practice_mods
             .iter()
             .map(|m| m.name.to_lowercase())
@@ -1594,16 +1646,19 @@ async fn find_mod_entry_for_install(
     dev: &str,
     name: &str,
 ) -> Result<Option<mod_config::ModEntry>, String> {
-    let practice_match = variable::get_practice_mod_list().into_iter().find(|m| {
-        m.is_compatible(version)
-            && m.dev.eq_ignore_ascii_case(dev)
-            && m.name.eq_ignore_ascii_case(name)
-    });
-    if practice_match.is_some() {
-        return Ok(practice_match);
+    let client = reqwest::Client::new();
+    let bundled_match = variable::get_lcf_mod_list()
+        .into_iter()
+        .chain(ModsConfig::fetch_practice_mods(&client, None).await?)
+        .find(|m| {
+            m.is_compatible(version)
+                && m.dev.eq_ignore_ascii_case(dev)
+                && m.name.eq_ignore_ascii_case(name)
+        });
+    if bundled_match.is_some() {
+        return Ok(bundled_match);
     }
 
-    let client = reqwest::Client::new();
     let (_remote_manifest_version, mods_cfg, _chain_config, _manifests, _preset_tag_constraints) =
         ModsConfig::fetch_manifest(&client).await?;
 
@@ -5034,12 +5089,10 @@ pub(crate) fn thunderstore_cache_path(
 
 fn read_disablemod(app: &tauri::AppHandle) -> Result<DisableModFile, String> {
     let path = disablemod_path(app)?;
-    let mut default_mods = vec![
-        normalize_mod_id("asta", "Replay"),
-        normalize_mod_id("asta", "StreamChats"),
-        normalize_mod_id("SlushyRH", "FreeeeeeMoooooons"),
-        normalize_mod_id("stormytuna", "EclipseOnly"),
-    ];
+    let mut default_mods: Vec<_> = android_mod_support::DEFAULT_DISABLED_MODS
+        .iter()
+        .map(|(dev, name)| normalize_mod_id(dev, name))
+        .collect();
     default_mods.sort_by(|a, b| a.dev.cmp(&b.dev).then(a.name.cmp(&b.name)));
     if !path.exists() {
         // Include opt-in mods and default disabled layer mods.
@@ -7970,96 +8023,6 @@ pub(crate) fn ensure_manifest_disabled_mods_disabled_for_version(
     apply_effective_mod_states_for_version(app, version, &[], &[])
 }
 
-fn collect_mod_entries_recursive(
-    root: &std::path::Path,
-) -> Result<Vec<std::path::PathBuf>, String> {
-    let mut out: Vec<std::path::PathBuf> = vec![];
-    let mut stack: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        for e in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
-            let e = e.map_err(|e| e.to_string())?;
-            let path = e.path();
-            let ty = e.file_type().map_err(|e| e.to_string())?;
-            out.push(path.clone());
-            if ty.is_dir() {
-                stack.push(path);
-            }
-        }
-    }
-    out.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
-    Ok(out)
-}
-
-fn is_launcher_visible_mod_asset_name(name: &str) -> bool {
-    let base_name = if name.to_ascii_lowercase().ends_with(".old") {
-        &name[..name.len().saturating_sub(4)]
-    } else {
-        name
-    };
-    std::path::Path::new(base_name)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| {
-            matches!(
-                ext.to_ascii_lowercase().as_str(),
-                "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "svg" | "gpf"
-            )
-        })
-}
-
-fn set_mod_files_old_suffix(mod_dir: &std::path::Path, enabled: bool) -> Result<(), String> {
-    if !mod_dir.exists() {
-        return Ok(());
-    }
-
-    let entries = collect_mod_entries_recursive(mod_dir)?;
-
-    if enabled {
-        // Remove .old suffix
-        for path in entries {
-            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            if !name.to_lowercase().ends_with(".old") {
-                continue;
-            }
-            let mut new_name = name.to_string();
-            new_name.truncate(new_name.len().saturating_sub(4));
-            let new_path = path.with_file_name(new_name);
-            if new_path.exists() {
-                // Don't overwrite; keep the .old file.
-                continue;
-            }
-            std::fs::rename(&path, new_path).map_err(|e| e.to_string())?;
-        }
-    } else {
-        // Add .old suffix
-        for path in entries {
-            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            if name.to_lowercase().ends_with(".old") {
-                // Repair image assets renamed by older launcher versions.
-                if path.is_file() && is_launcher_visible_mod_asset_name(name) {
-                    let restored_name = &name[..name.len().saturating_sub(4)];
-                    let restored_path = path.with_file_name(restored_name);
-                    if !restored_path.exists() {
-                        std::fs::rename(&path, restored_path).map_err(|e| e.to_string())?;
-                    }
-                }
-                continue;
-            }
-            // Keep image assets readable so disabled mods can still show their
-            // icons and previews in the launcher.
-            if path.is_file() && is_launcher_visible_mod_asset_name(name) {
-                continue;
-            }
-            let new_path = path.with_file_name(format!("{name}.old"));
-            if new_path.exists() {
-                continue;
-            }
-            std::fs::rename(&path, new_path).map_err(|e| e.to_string())?;
-        }
-    }
-
-    Ok(())
-}
 
 #[cfg(test)]
 mod replay_compatibility_tests {
@@ -8590,18 +8553,130 @@ fn ensure_event_vlog_cfg(
     std::fs::write(&cfg_path, content).map_err(|e| e.to_string())
 }
 
-fn practice_mode_mod_ids() -> Vec<(String, String)> {
-    variable::get_practice_mod_list()
-        .into_iter()
-        .map(|m| (m.dev, m.name))
-        .collect()
+/// Practice mods from the manifest's `practice_mods` list.
+async fn practice_mod_list(
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<Vec<mod_config::ModEntry>, String> {
+    let client = reqwest::Client::new();
+    ModsConfig::fetch_practice_mods(&client, cancel).await
 }
 
-fn practice_mode_forced_disabled_ids() -> Vec<(String, String)> {
-    let mut mods = practice_mode_mod_ids();
+/// Mode-only mods (practice from the manifest + hardcoded LCF) that are forced off outside
+/// their own run. The LCF run force-enables its own mods, and forced-enabled wins.
+async fn practice_mode_mod_ids(
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<Vec<(String, String)>, String> {
+    Ok(practice_mod_list(cancel)
+        .await?
+        .into_iter()
+        .chain(variable::get_lcf_mod_list())
+        .map(|m| (m.dev, m.name))
+        .collect())
+}
+
+/// Installs any missing LCF-run mods for `version` and returns the ids to force-enable.
+async fn prepare_lcf_mods_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<Vec<(String, String)>, String> {
+    let game_root = version_dir(app, version)?;
+    if !game_root.exists() {
+        return Err(format!(
+            "version folder not found: {}",
+            game_root.to_string_lossy()
+        ));
+    }
+
+    let lcf_mods: Vec<mod_config::ModEntry> = variable::get_lcf_mod_list()
+        .into_iter()
+        .filter(|m| m.is_compatible(version))
+        .collect();
+    let lcf_ids: Vec<(String, String)> = lcf_mods
+        .iter()
+        .map(|m| (m.dev.clone(), m.name.clone()))
+        .collect();
+
+    let missing = filter_missing_mods_for_version(app, version, &lcf_mods)?;
+    if missing.is_empty() {
+        return Ok(lcf_ids);
+    }
+
+    const STEPS_TOTAL: u32 = 1;
+    let total = missing.len() as u64;
+    progress::emit_progress(
+        app,
+        TaskProgressPayload {
+            version,
+            steps_total: STEPS_TOTAL,
+            step: 1,
+            step_name: "LCF Mods".to_string(),
+            step_progress: 0.0,
+            overall_percent: 0.0,
+            detail: Some("Installing LCF mods...".to_string()),
+            downloaded_bytes: None,
+            total_bytes: None,
+            extracted_files: Some(0),
+            total_files: Some(total),
+        },
+    );
+
+    let cfg = ModsConfig { mods: missing };
+    let install_res = mods::install_mods_with_progress(
+        app,
+        &game_root,
+        version,
+        &cfg,
+        &[],
+        cancel,
+        |done, total, progress_info| {
+            let step_progress = if total == 0 {
+                1.0
+            } else {
+                (done as f64 / total as f64).clamp(0.0, 1.0)
+            };
+            progress::emit_progress(
+                app,
+                TaskProgressPayload {
+                    version,
+                    steps_total: STEPS_TOTAL,
+                    step: 1,
+                    step_name: "LCF Mods".to_string(),
+                    step_progress,
+                    overall_percent: overall_from_step(1, step_progress, STEPS_TOTAL),
+                    detail: progress_info.detail,
+                    downloaded_bytes: progress_info.downloaded_bytes,
+                    total_bytes: progress_info.total_bytes,
+                    extracted_files: progress_info.extracted_files.or(Some(done)),
+                    total_files: progress_info.total_files.or(Some(total)),
+                },
+            );
+        },
+    )
+    .await;
+
+    if let Err(e) = &install_res {
+        progress::emit_error(
+            app,
+            TaskErrorPayload {
+                version,
+                run_mode: None,
+                message: e.clone(),
+            },
+        );
+        return Err(e.clone());
+    }
+
+    Ok(lcf_ids)
+}
+
+async fn practice_mode_forced_disabled_ids(
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<Vec<(String, String)>, String> {
+    let mut mods = practice_mode_mod_ids(cancel).await?;
     mods.push(base_vlog_mod_id());
     mods.push(event_vlog_mod_id());
-    mods
+    Ok(mods)
 }
 
 fn practice_mode_forced_enabled_ids() -> Vec<(String, String)> {
@@ -8637,11 +8712,12 @@ fn filter_missing_mods_for_version(
         .collect())
 }
 
-fn ensure_practice_mods_disabled_for_version(
+async fn ensure_practice_mods_disabled_for_version(
     app: &tauri::AppHandle,
     version: u32,
+    cancel: Option<&Arc<AtomicBool>>,
 ) -> Result<(), String> {
-    let practice = variable::get_practice_mod_list();
+    let practice = practice_mod_list(cancel).await?;
     // Apply non-practice runtime state for this version immediately, without
     // overwriting the user's persisted practice toggle preferences.
     let plugins = plugins_dir(app, version)?;
@@ -8671,7 +8747,7 @@ async fn prepare_practice_mods_for_version(
         ));
     }
 
-    let practice_all = variable::get_practice_mod_list();
+    let practice_all = practice_mod_list(cancel.as_ref()).await?;
     let disabled_list = read_disablemod(app)?;
     let practice_enabled: Vec<mod_config::ModEntry> = practice_all
         .iter()
@@ -9021,6 +9097,7 @@ fn set_selected_run_mode(app: tauri::AppHandle, run_mode: String) -> Result<Stri
             | "wesley_smhq"
             | "wesley_eclipsed"
             | "wesley_practice"
+            | "lcf"
     ) {
         return Err(format!("invalid run mode: {run_mode}"));
     }
@@ -11843,7 +11920,7 @@ async fn launch_game(
         ensure_event_vlog_cfg(&app, version, &event_id_for_cfg)?;
     }
 
-    let mut forced_disabled_ids = practice_mode_mod_ids();
+    let mut forced_disabled_ids = practice_mode_mod_ids(None).await?;
     forced_disabled_ids.extend(run_mode_tagged_mod_ids(version, None).await?);
     forced_disabled_ids.push(if has_event {
         base_vlog_mod_id()
@@ -11990,7 +12067,7 @@ async fn launch_game_practice(
 
     // Practice run: install + enable practice mods (compatible with this game version).
     let practice_ids = prepare_practice_mods_for_version(&app, version, None).await?;
-    let mut forced_disabled_ids = practice_mode_forced_disabled_ids();
+    let mut forced_disabled_ids = practice_mode_forced_disabled_ids(None).await?;
     forced_disabled_ids.extend(run_mode_tagged_mod_ids(version, None).await?);
     let mut forced_enabled_ids = practice_ids.clone();
     forced_enabled_ids.extend(practice_mode_forced_enabled_ids());
@@ -12088,6 +12165,12 @@ async fn launch_game_preset(
     // (Practice list has its own pinning, e.g. for LethalNetworkAPI.)
     let preset_ids =
         prepare_tagged_mods_for_version(&app, version, &tags, "Preset Mods", None).await?;
+    let lcf_run = is_lcf_preset(&preset);
+    let lcf_ids = if lcf_run {
+        prepare_lcf_mods_for_version(&app, version, None).await?
+    } else {
+        vec![]
+    };
     // Ensure preset mods are enabled for this run (even if they overlap practice-disable rules).
     // For practice runs we can apply immediately; for non-practice runs we must apply after
     // `ensure_practice_mods_disabled_for_version` which rewrites disablemod.json.
@@ -12102,25 +12185,29 @@ async fn launch_game_preset(
 
     if !practice {
         // Non-practice run: force-disable practice mods.
-        ensure_practice_mods_disabled_for_version(&app, version)?;
+        ensure_practice_mods_disabled_for_version(&app, version, None).await?;
         // Re-enable preset mods for this run (Wesley includes LethalNetworkAPI which is otherwise forced off).
         let _ = force_enable_mods_for_version(&app, version, &preset_ids);
     }
 
     let mut tagged_disabled_ids = run_mode_tagged_mod_ids(version, None).await?;
     allow_eclipsed_hq_optional_mods(&preset, &mut tagged_disabled_ids);
+    if lcf_run {
+        tagged_disabled_ids.extend(lcf_forced_disabled_ids(None).await?);
+    }
     let mut forced_enabled_ids = preset_ids.clone();
+    forced_enabled_ids.extend(lcf_ids);
     forced_enabled_ids.extend(practice_ids.clone());
     forced_enabled_ids.extend(event_forced_ids);
     if practice {
         forced_enabled_ids.extend(practice_mode_forced_enabled_ids());
     }
     let forced_disabled_ids = if practice {
-        let mut ids = practice_mode_forced_disabled_ids();
+        let mut ids = practice_mode_forced_disabled_ids(None).await?;
         ids.extend(tagged_disabled_ids);
         ids
     } else {
-        let mut ids = practice_mode_mod_ids();
+        let mut ids = practice_mode_mod_ids(None).await?;
         ids.extend(tagged_disabled_ids);
         ids.push(if has_event {
             base_vlog_mod_id()
@@ -12141,8 +12228,9 @@ async fn launch_game_preset(
         if let Ok(plugins) = plugins_dir(&app, version) {
             let _ = sync_practice_locked_mods_for_version(&plugins);
         }
-    } else {
+    } else if !lcf_run {
         // For HQoL specifically, also ensure `.old` matches disablemod.json on normal runs.
+        // LCF runs force HQoL/VLog off, so they must not be re-synced from disablemod.json.
         let _ = sync_hqol_with_disablemod_for_version(&app, version);
         let _ = sync_vlog_with_disablemod_for_version(&app, version);
     }
@@ -12248,12 +12336,19 @@ async fn prepare_preset_for_version(
         prepare_tagged_mods_for_version(app, version, &tags, "Preset Mods", Some(cancel.clone()))
             .await?;
 
+    let lcf_run = is_lcf_preset(preset);
+    let lcf_ids = if lcf_run {
+        prepare_lcf_mods_for_version(app, version, Some(cancel.clone())).await?
+    } else {
+        vec![]
+    };
+
     let mod_files_detail = describe_mode_file_changes(practice, &tags);
     emit_basic_mod_files_progress(app, version, true, &mod_files_detail);
 
     if !practice {
         // Selecting a non-practice run should disable practice mods now (not at launch).
-        ensure_practice_mods_disabled_for_version(app, version)?;
+        ensure_practice_mods_disabled_for_version(app, version, Some(&cancel)).await?;
     }
     // Ensure preset mods are enabled (can override practice-disable overlap).
     let _ = force_enable_mods_for_version(app, version, &preset_ids);
@@ -12264,17 +12359,21 @@ async fn prepare_preset_for_version(
 
     let mut tagged_disabled_ids = run_mode_tagged_mod_ids(version, Some(&cancel)).await?;
     allow_eclipsed_hq_optional_mods(preset, &mut tagged_disabled_ids);
+    if lcf_run {
+        tagged_disabled_ids.extend(lcf_forced_disabled_ids(Some(&cancel)).await?);
+    }
     let mut forced_enabled_ids = preset_ids.clone();
+    forced_enabled_ids.extend(lcf_ids);
     forced_enabled_ids.extend(practice_ids.clone());
     if practice {
         forced_enabled_ids.extend(practice_mode_forced_enabled_ids());
     }
     let forced_disabled_ids = if practice {
-        let mut ids = practice_mode_forced_disabled_ids();
+        let mut ids = practice_mode_forced_disabled_ids(Some(&cancel)).await?;
         ids.extend(tagged_disabled_ids);
         ids
     } else {
-        let mut ids = practice_mode_mod_ids();
+        let mut ids = practice_mode_mod_ids(Some(&cancel)).await?;
         ids.extend(tagged_disabled_ids);
         ids.push(event_vlog_mod_id());
         ids
@@ -12291,7 +12390,7 @@ async fn prepare_preset_for_version(
         if let Ok(plugins) = plugins_dir(app, version) {
             let _ = sync_practice_locked_mods_for_version(&plugins);
         }
-    } else {
+    } else if !lcf_run {
         let _ = sync_hqol_with_disablemod_for_version(app, version);
         let _ = sync_vlog_with_disablemod_for_version(app, version);
     }
@@ -13146,8 +13245,8 @@ async fn prepare_event(
 }
 
 #[tauri::command]
-fn get_practice_mod_list() -> Vec<mod_config::ModEntry> {
-    variable::get_practice_mod_list()
+async fn get_practice_mod_list() -> Result<Vec<mod_config::ModEntry>, String> {
+    practice_mod_list(None).await
 }
 
 #[tauri::command]

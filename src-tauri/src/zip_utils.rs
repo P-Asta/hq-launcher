@@ -100,6 +100,8 @@ pub fn extract_config_zip_into_bepinex_config_with_progress<F>(
 where
     F: FnMut(u64, u64, Option<String>),
 {
+    #[cfg(target_os = "android")]
+    crate::android_mods::validate_archive(zip_path)?;
     let file = File::open(zip_path).map_err(|e| e.to_string())?;
     let mut archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
 
@@ -191,6 +193,8 @@ where
     F: FnMut(u64, u64, Option<String>),
 {
     #[allow(dead_code)]
+    #[cfg(target_os = "android")]
+    crate::android_mods::validate_archive(zip_path)?;
     let file = File::open(zip_path).map_err(|e| e.to_string())?;
     let mut archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
 
@@ -280,6 +284,8 @@ where
         std::fs::create_dir_all(&config_root).map_err(|e| e.to_string())?;
     }
 
+    #[cfg(target_os = "android")]
+    crate::android_mods::validate_archive(zip_path)?;
     let file = File::open(zip_path).map_err(|e| e.to_string())?;
     let mut archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
 

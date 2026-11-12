@@ -1,3 +1,4 @@
+import { HqLogo } from "../components/launcher/HqLoading";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
@@ -15,7 +16,6 @@ import {
   Globe2,
   Info,
   LogOut,
-  LoaderCircle,
   MessageCircle,
   Play,
   RefreshCw,
@@ -33,18 +33,19 @@ import { Slider } from "../components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { cn } from "../lib/cn";
 import { ModCover } from "../components/launcher/ModCover";
+import { LauncherWorkspace, LauncherToolbar, LauncherSearch, LauncherModRow, useCompactLauncher } from "../components/launcher/LauncherWorkspace";
 import { ScrollableDropdownContent } from "../components/launcher/ScrollableDropdownContent";
 import { LauncherPageSkeleton } from "../components/launcher/Skeletons";
 import { isAuthError } from "../lib/errors";
 import { clamp, fmtBytes, formatExtractProgress, formatTransferProgress, sleep, valueLabel } from "../lib/format";
-import { BASE_VLOG_MOD_KEY, DEFAULT_MOD_PANEL_WIDTH, DISCORD_DOWNLOAD_URL, ECLIPSED_FORCED_MOD_KEYS, ECLIPSED_HQ_OPTIONAL_MOD_KEYS, EVENT_VLOG_MOD, LAUNCH_OPTIONS_STORAGE_KEY, MIN_CONFIG_PANEL_WIDTH, MIN_MOD_PANEL_WIDTH, MOD_PANEL_WIDTH_STORAGE_KEY, PRACTICE_LOCKED_MOD_KEYS, RUN_MODE_VALUES, SMHQ_FORCED_MOD_KEYS, RUN_OPTIONS } from "./launcher/constants";
+import { BASE_VLOG_MOD_KEY, DEFAULT_MOD_PANEL_WIDTH, DISCORD_DOWNLOAD_URL, ECLIPSED_FORCED_MOD_KEYS, ECLIPSED_HQ_OPTIONAL_MOD_KEYS, EVENT_VLOG_MOD, LAUNCH_OPTIONS_STORAGE_KEY, LCF_DISABLED_MOD_KEYS, LCF_DISABLED_SWITCH_GROUPS, LCF_MOD, MIN_CONFIG_PANEL_WIDTH, MIN_MOD_PANEL_WIDTH, MOD_PANEL_WIDTH_STORAGE_KEY, PRACTICE_LOCKED_MOD_KEYS, RUN_MODE_VALUES, SMHQ_FORCED_MOD_KEYS, RUN_OPTIONS } from "./launcher/constants";
 import { clampVersionToEvent, eventAllowsTester, eventAllowsVersion, formatEventTimeRemaining, getInitialEventsEnabled, getInitialSelectedEventId, isEventActive, normalizeEventPreset, parseUtcEventTime, saveEventsEnabled, saveSelectedEventId, saveSelectedVersion } from "./launcher/events";
 import { extractSpreadsheetId, findSheetInfoByTitle, findSheetTitleByGid, findSimilarSheetInfoByTitle, normalizeSheetColumn, normalizeSheetColumnList, normalizeSheetInfos, parseSpreadsheetInput } from "./launcher/googleSheets";
 import { getInitialLaunchOptionsConfig, makeDeleteVersionPromptState, normalizeLaunchCommandTemplate, normalizeLaunchOptionsEntries } from "./launcher/launchOptions";
 import { CUSTOM_TIME_FORMAT_OPTIONS, DEFAULT_CUSTOM_LCSTATS_LAYOUT, DEFAULT_LCSTATS_SETTINGS, LCSTATS_LAYOUTS, hasCustomGoogleOauthSettings, isLcStatsTrackerMod, lcstatsLayoutUsesColumnFields, normalizeCustomLcstatsLayout, parseCustomLcstatsLayoutPreset, requiresGoogleOauthForMod } from "./launcher/lcstats";
 import { configPathMatchesMod, isLockedCfgEntry, isModCompatibleWithTags, isModCompatibleWithVersion, isPresetSummaryMod, isUiHiddenMod, listEntryKey, modHasRunModeAffinity, modKey, modKeyLower, filterForcedMods, isReplayMod, isCullFactoryBlockedByReplay
 } from "./launcher/mods";
-import { clampVersionToRange, getInitialRunMode, getLaunchRequestForRunMode, getPresetModulePriority, getPresetSummarySpec, getPresetVersionRange, isEclipsedHqRunMode, isEclipsedRunMode, isPracticeRunMode, isSmhqRunMode, isVersionWithinRange, saveSelectedRunMode, shouldResetFreeMoonsOnRunModeChange } from "./launcher/runModes";
+import { clampVersionToRange, getInitialRunMode, getLaunchRequestForRunMode, getPresetModulePriority, getPresetSummarySpec, getPresetVersionRange, isEclipsedHqRunMode, isEclipsedRunMode, isLcfRunMode, isPracticeRunMode, isSmhqRunMode, isVersionWithinRange, saveSelectedRunMode, shouldResetFreeMoonsOnRunModeChange } from "./launcher/runModes";
 import { useDismissableContextMenu } from "../hooks/useContextMenu";
 import { ProgressBar, TaskProgressPanel } from "../components/launcher/TaskProgress";
 import { PrepareCancelButton } from "../components/launcher/PrepareCancelButton";
@@ -875,6 +876,11 @@ export default function LauncherPage({
     [manifest.mods, runMode, selectedVersion]
   );
 
+  const lcfReferenceMods = useMemo(
+    () => (isLcfRunMode(runMode) ? [LCF_MOD] : []),
+    [runMode]
+  );
+
   const modsForList = useMemo(() => {
     const regularMods = (Array.isArray(manifest.mods) ? manifest.mods : []).filter(
       (m) =>
@@ -890,13 +896,15 @@ export default function LauncherPage({
       ...smhqReferenceMods,
       ...eclipsedReferenceMods,
       ...eclipsedHqOptionalMods,
+      ...lcfReferenceMods,
       ...regularMods,
     ];
     if (
       !selectedEvent &&
       !isPracticeRunMode(runMode) &&
       !isSmhqRunMode(runMode) &&
-      !isEclipsedRunMode(runMode)
+      !isEclipsedRunMode(runMode) &&
+      !isLcfRunMode(runMode)
     ) {
       return regularMods;
     }
@@ -911,6 +919,7 @@ export default function LauncherPage({
   }, [
     eclipsedHqOptionalMods,
     eclipsedReferenceMods,
+    lcfReferenceMods,
     manifest.mods,
     practiceReferenceMods,
     runMode,
@@ -944,6 +953,22 @@ export default function LauncherPage({
     if (!isEclipsedRunMode(runMode)) return new Set();
     return new Set(eclipsedReferenceMods.map((m) => modKeyLower(m)));
   }, [eclipsedReferenceMods, runMode]);
+
+  const lcfForcedModKeys = useMemo(() => {
+    if (!isLcfRunMode(runMode)) return new Set();
+    return new Set(lcfReferenceMods.map((m) => modKeyLower(m)));
+  }, [lcfReferenceMods, runMode]);
+
+  // Mods forced off in an LCF run: fixed keys + every member of the LCF-disabled switch groups.
+  const lcfDisabledModKeys = useMemo(() => {
+    if (!isLcfRunMode(runMode)) return new Set();
+    const keys = new Set(LCF_DISABLED_MOD_KEYS);
+    for (const mod of Array.isArray(manifest.mods) ? manifest.mods : []) {
+      const group = String(mod?.switch_group ?? "").trim().toLowerCase();
+      if (group && LCF_DISABLED_SWITCH_GROUPS.has(group)) keys.add(modKeyLower(mod));
+    }
+    return keys;
+  }, [manifest.mods, runMode]);
 
   useEffect(() => {
     if (!isPracticeRunMode(runMode)) return;
@@ -1292,7 +1317,11 @@ export default function LauncherPage({
 
       const manifestPromise = invoke("get_manifest");
       const eventsPromise = invoke("get_events").catch(() => ({ version: 0, events: [] }));
-      const practiceModsPromise = invoke("get_practice_mod_list");
+      // Practice mods now come from the manifest, so this can fail when it is unreachable.
+      const practiceModsPromise = invoke("get_practice_mod_list").catch((e) => {
+        console.error(e);
+        return [];
+      });
       setBootstrapStatus("Checking installed versions...");
 
       let vList = [];
@@ -3605,7 +3634,7 @@ export default function LauncherPage({
             }}
           >
             {lcstatsTrackingBusy ? (
-              <LoaderCircle className="h-4 w-4 animate-spin" />
+              <HqLogo className="h-4 w-4" />
             ) : lcstatsTrackingEnabled ? (
               <X className="h-4 w-4" />
             ) : (
@@ -3693,7 +3722,7 @@ export default function LauncherPage({
                         {spreadsheetDisplayValue || "Select spreadsheet"}
                       </span>
                       {lcstatsPickerBusy ? (
-                        <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-white/55" />
+                        <HqLogo className="h-4 w-4 shrink-0 text-white/55" />
                       ) : (
                         <FolderOpen className="h-4 w-4 shrink-0 text-white/55" />
                       )}
@@ -3769,12 +3798,7 @@ export default function LauncherPage({
                     title="Refresh Google Sheets"
                     aria-label="Refresh Google Sheets"
                   >
-                    <RefreshCw
-                      className={cn(
-                        "h-4 w-4",
-                        lcstatsRefreshBusy ? "animate-spin" : ""
-                      )}
-                    />
+                    {lcstatsRefreshBusy ? <HqLogo className="h-4 w-4" /> : <RefreshCw className="h-4 w-4" />}
                   </Button>
                 </div>
               </div>
@@ -3898,6 +3922,10 @@ export default function LauncherPage({
     }
     if (isEclipsedRunMode(runMode) && !nextEnabled && eclipsedForcedModKeys.has(baseKey)) {
       return;
+    }
+    if (isLcfRunMode(runMode)) {
+      if (!nextEnabled && lcfForcedModKeys.has(baseKey)) return;
+      if (nextEnabled && lcfDisabledModKeys.has(baseKey)) return;
     }
     if (
       nextEnabled &&
@@ -4163,7 +4191,8 @@ export default function LauncherPage({
     : "Select version";
   const selectedPresetSummary = isPresetSummaryMod(selectedMod) ? selectedMod : null;
   const selectedLcStatsTracker = isLcStatsTrackerMod(selectedMod) ? selectedMod : null;
-  const showResizablePanels = !!selectedMod;
+  const compactLayout = useCompactLauncher();
+  const showResizablePanels = !!selectedMod && !compactLayout;
   const promptVersion = downloadPrompt.version;
   const promptIsWorking =
     downloadPrompt.open &&
@@ -4951,13 +4980,13 @@ export default function LauncherPage({
 
   return (
     <div className="h-full bg-[var(--theme-bg)] text-white">
-      <div className="mx-auto flex h-full max-w-[1600px] flex-col gap-4 p-4">
+      <LauncherWorkspace className={showBootstrapSkeleton ? undefined : "hq-screen-enter"}>
         {showBootstrapSkeleton ? (
           <LauncherPageSkeleton statusText={bootstrapStatus} />
         ) : (
           <>
         {/* Top bar */}
-        <div className="flex items-center gap-3">
+        <LauncherToolbar>
           {gameStatus.running ? (
             <Button
               variant="secondary"
@@ -4987,7 +5016,7 @@ export default function LauncherPage({
                 }
               >
                 {launchBusy ? (
-                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                  <HqLogo className="h-4 w-4" />
                 ) : (
                   <Play className="h-4 w-4" />
                 )}
@@ -5239,15 +5268,7 @@ export default function LauncherPage({
             </Button>
           )}
 
-          <div className="relative ml-2 flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/40" />
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search mods"
-              className="h-11 bg-[var(--theme-surface)] pl-10"
-            />
-          </div>
+          <LauncherSearch value={query} onChange={(e) => setQuery(e.target.value)} />
 
           {hasSelectedVersionUpdates && <Button
             variant="secondary"
@@ -5293,7 +5314,7 @@ export default function LauncherPage({
               <LogOut className="h-4 w-4" />
             </Button>
           </div>}
-        </div>
+        </LauncherToolbar>
 
         <MacRuntimeProgress onOpenSettings={() => setLaunchOptionsDialogOpen(true)} />
 
@@ -5412,7 +5433,7 @@ export default function LauncherPage({
             showResizablePanels
               ? "flex gap-0 overflow-hidden"
               : selectedMod
-              ? "grid grid-cols-1 gap-4"
+              ? "grid grid-cols-1 gap-3 overflow-auto auto-rows-[minmax(280px,1fr)]"
               : "grid grid-cols-1"
           )}
         >
@@ -5477,18 +5498,24 @@ export default function LauncherPage({
                   const eclipsedEnableLocked =
                     isEclipsedRunMode(runMode) && eclipsedForcedModKeys.has(keyLower);
                   const eventEnableLocked = eventForcedModKeys.has(keyLower);
+                  const lcfEnableLocked =
+                    isLcfRunMode(runMode) && lcfForcedModKeys.has(keyLower);
+                  const lcfDisableLocked =
+                    isLcfRunMode(runMode) && lcfDisabledModKeys.has(keyLower);
                   const modSwitchLocked = modSwitchMods?.some((entry) => {
                     const entryKey = modKeyLower(entry);
                     return (
                       (isPracticeRunMode(runMode) && practiceLockedModKeys.has(entryKey)) ||
                       (isSmhqRunMode(runMode) && smhqForcedModKeys.has(entryKey)) ||
                       (isEclipsedRunMode(runMode) && eclipsedForcedModKeys.has(entryKey)) ||
+                      (isLcfRunMode(runMode) && lcfDisabledModKeys.has(entryKey)) ||
                       eventForcedModKeys.has(entryKey)
                     );
                   });
                   const enabled =
-                    !replayLocked && (smhqEnableLocked ||
+                    !replayLocked && !lcfDisableLocked && (smhqEnableLocked ||
                     eclipsedEnableLocked ||
+                    lcfEnableLocked ||
                     eventEnableLocked ||
                     (!disabledSet.has(keyLower) && !practiceLockedModKeys.has(keyLower)));
                   const installedVer = installedModVersions[keyLower];
@@ -5504,13 +5531,10 @@ export default function LauncherPage({
                     isPracticeRunMode(runMode) && practiceLockedModKeys.has(keyLower);
                   const needsGoogleOauth = requiresGoogleOauthForMod(m);
                   return (
-                    <div
+                    <LauncherModRow
                       key={listEntryKey(m)}
+                      selected={selected}
                       className={cn(
-                        "group flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition",
-                        selected
-                          ? "border-panel-outline bg-white/[0.08]"
-                          : "border-panel-outline bg-black/20 hover:bg-white/[0.07]",
                         !presetSummary && !installedVer && "opacity-40"
                       )}
                       onClick={() => setSelectedMod(m)}
@@ -5533,7 +5557,7 @@ export default function LauncherPage({
                         onMissing={() => forgetInstalledModIcon(keyLower)}
                       />
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-baseline gap-2">
+                        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
                           <div className="truncate text-base font-semibold">
                             {m.name}
                           </div>
@@ -5550,6 +5574,8 @@ export default function LauncherPage({
                                 practiceEnableLocked ||
                                 smhqEnableLocked ||
                                 eclipsedEnableLocked ||
+                                lcfEnableLocked ||
+                                lcfDisableLocked ||
                                 eventEnableLocked
                               }
                               title={`Switch to ${modSwitchTarget.dev}-${modSwitchTarget.name}`}
@@ -5560,7 +5586,7 @@ export default function LauncherPage({
                               }}
                             >
                               {busy ? (
-                                <LoaderCircle className="h-3 w-3 shrink-0 animate-spin" />
+                                <HqLogo className="h-3 w-3 shrink-0" />
                               ) : (
                                 <ArrowLeftRight className="h-3 w-3 shrink-0" />
                               )}
@@ -5585,6 +5611,11 @@ export default function LauncherPage({
                           {eclipsedEnableLocked ? (
                             <div className="rounded-full border border-violet-400/30 bg-violet-400/10 px-2 py-0.5 text-[11px] font-medium text-violet-200">
                               Eclipsed
+                            </div>
+                          ) : null}
+                          {lcfEnableLocked || lcfDisableLocked ? (
+                            <div className="rounded-full border border-orange-400/30 bg-orange-400/10 px-2 py-0.5 text-[11px] font-medium text-orange-200">
+                              LCF
                             </div>
                           ) : null}
                           {eventEnableLocked ? (
@@ -5636,6 +5667,8 @@ export default function LauncherPage({
                                 practiceEnableLocked ||
                                 smhqEnableLocked ||
                                 eclipsedEnableLocked ||
+                                lcfEnableLocked ||
+                                lcfDisableLocked ||
                                 eventEnableLocked
                               }
                               onCheckedChange={(v) =>
@@ -5647,7 +5680,7 @@ export default function LauncherPage({
                           </div>
                         )}
                       </div>
-                    </div>
+                    </LauncherModRow>
                   );
                 })}
                 {displayedMods.length === 0 && (
@@ -6235,7 +6268,7 @@ export default function LauncherPage({
         </div>
           </>
         )}
-      </div>
+      </LauncherWorkspace>
 
       {modContextMenu.open && modContextMenu.mod && (
         <div
@@ -6412,7 +6445,7 @@ export default function LauncherPage({
                           title="Stop this game"
                         >
                           {runningGameStopBusyId === game.id ? (
-                            <LoaderCircle className="h-4 w-4 animate-spin" />
+                            <HqLogo className="h-4 w-4" />
                           ) : (
                             <X className="h-4 w-4" />
                           )}
@@ -6622,7 +6655,7 @@ export default function LauncherPage({
               >
                 {deleteVersionBusy ? (
                   <>
-                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                    <HqLogo className="h-4 w-4" />
                     Deleting...
                   </>
                 ) : (
@@ -7281,7 +7314,7 @@ export default function LauncherPage({
                 >
                   {googleOauthBusy ? (
                     <>
-                      <LoaderCircle className="h-4 w-4 animate-spin" />
+                      <HqLogo className="h-4 w-4" />
                       Waiting...
                     </>
                   ) : (

@@ -1745,6 +1745,7 @@ dependencies = [
  "opener",
  "reqwest",
  "rfd",
+ "rustls",
  "semver",
  "serde",
  "serde_json",
@@ -1759,6 +1760,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tokio",
  "tungstenite",
+ "webpki-roots",
  "windows-sys 0.61.2",
  "winreg",
  "xz2",
@@ -5529,6 +5531,15 @@ name = "webpki-root-certs"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "804f18a4ac2676ffb4e8b5b5fa9ae38af06df08162314f96a68d2a363e21a8ca"
+dependencies = [
+ "rustls-pki-types",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
 dependencies = [
  "rustls-pki-types",
 ]

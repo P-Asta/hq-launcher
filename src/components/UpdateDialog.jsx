@@ -2,7 +2,8 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Dialog, DialogContent } from "./ui/dialog";
 import { Button } from "./ui/button";
-import { Download, RefreshCw, X } from "lucide-react";
+import { Download, X } from "lucide-react";
+import { HqLogo } from "./launcher/HqLoading";
 
 export function UpdateDialog({ open, onOpenChange, updateInfo, onUpdateComplete }) {
   const [isInstalling, setIsInstalling] = useState(false);
@@ -107,7 +108,7 @@ export function UpdateDialog({ open, onOpenChange, updateInfo, onUpdateComplete 
             >
               {isInstalling ? (
                 <>
-                  <RefreshCw className="h-4 w-4 animate-spin" />
+                  <HqLogo className="h-4 w-4" />
                   Installing...
                 </>
               ) : (

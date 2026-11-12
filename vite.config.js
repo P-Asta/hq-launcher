@@ -10,6 +10,7 @@ export default defineConfig(async ({ mode }) => {
   plugins: [react()],
   define: {
     __HQ_LAUNCHER_DEV_ENV__: JSON.stringify(env.DEV ?? process.env.DEV ?? ""),
+    __HQ_ANDROID__: JSON.stringify(process.env.TAURI_ENV_PLATFORM === "android"),
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
@@ -30,7 +31,7 @@ export default defineConfig(async ({ mode }) => {
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      ignored: ["**/src-tauri/**", "**/.android-runtime.local/**", "**/android/runtime/build/**"],
     },
   },
   };

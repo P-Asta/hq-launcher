@@ -11,6 +11,7 @@ import { Button } from './components/ui/button';
 import { Switch } from './components/ui/switch';
 import { SettingRow } from "./components/settings/SettingRow";
 import { ThemeSliderControl } from "./components/settings/ThemeSliderControl";
+import { HqLogo } from "./components/launcher/HqLoading";
 import { getInitialEventsEnabled, reconcileEventsEnabled, saveEventsEnabled } from "./lib/eventsSetting";
 import {
     Select,
@@ -1248,7 +1249,7 @@ export default function Titlebar({ installedVersions, ...props }) {
                                                     void refreshLatestLcstatsPayload();
                                                 }}
                                             >
-                                                <RefreshCw className={cn("h-4 w-4", latestLcstatsBusy ? "animate-spin" : "")} />
+                                                {latestLcstatsBusy ? <HqLogo className="h-4 w-4" /> : <RefreshCw className="h-4 w-4" />}
                                                 Refresh
                                             </Button>
                                         </div>

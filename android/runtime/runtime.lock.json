@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "source": {
+    "repository": "https://github.com/Droid-Deck/DroidDeck.git",
+    "commit": "3c5e95afa8a18f5d70538ce025f80697a693a86a",
+    "version_name": "0.5.0",
+    "version_code": 14,
+    "commit_time_ms": 1792337110000,
+    "license": "GPL-3.0"
+  },
+  "donor": {
+    "sha256": "ab6a53e41b6fa715bd3f9048ada53d22d8535ad2978d97943d723cf60fa430b1",
+    "size": 105925476,
+    "package": "com.droiddeck.launcher",
+    "origin": "Base APK pulled from the explicitly authorized connected phone installation, version 0.5.0 (14). Application data, login information and saves were not read.",
+    "source_verification": "APK DEX BuildConfig.SOURCE_COMMIT matches the source commit; BUILD_LABEL is remote clean · main at 3c5e95a. No donor DEX or API keys are reused."
+  },
+  "desktop": {
+    "tag": "desktop-kde-r2",
+    "url": "https://github.com/Droid-Deck/DroidDeck-Components/releases/download/desktop-kde-r2/desktop-kde.tar.zst",
+    "sha256": "9ba832677b498654136c69d8c8330434d17e4d53cd099acac9bde3ba429b35bf",
+    "size": 846933224
+  },
+  "source_patches": [
+    "patches/runtime-install-notification.json",
+    "patches/leave-other-app-sessions.json",
+    "patches/game-install-controls.json",
+    "patches/desktop-game-compositor.json",
+    "patches/hq-touch-controls.json",
+    "patches/hq-loading-logo.json",
+    "patches/hq-loading-fade.json"
+  ],
+  "aar_owned_libraries": {
+    "libc++_shared.so": "org.opencv:opencv:4.13.0",
+    "libimage_processing_util_jni.so": "androidx.camera:camera-core:1.4.2",
+    "libmediapipe_tasks_jni.so": "com.google.mediapipe:tasks-core:1.0.0",
+    "libopencv_java4.so": "org.opencv:opencv:4.13.0",
+    "libopenxr_loader.so": "org.khronos.openxr:openxr_loader_for_android:1.1.49",
+    "libspake2.so": "com.flyfishxu:kadb-android:1.2.1",
+    "libsurface_util_jni.so": "androidx.camera:camera-core:1.4.2",
+    "libzstd-jni-1.5.7-4.so": "com.github.luben:zstd-jni:1.5.7-4"
+  },
+  "required_native_libraries": [
+    "libc++_shared.so", "libdeviceinfo.so", "libdirectaudiorelay.so", "libdroiddeckstores.so",
+    "libdroiddeckwayland.so", "libdroiddeckxr.so", "libffi.so", "libfile_redirect_hook.so",
+    "libgsl_alloc_hook.so", "libhook_impl.so", "libimage_processing_util_jni.so", "libltdl.so",
+    "libmain_hook.so", "libmediapipe_tasks_jni.so", "libopencv_java4.so", "libopenxr_loader.so",
+    "libproot-loader.so", "libproot.so", "libpulse.so", "libpulseaudio.so",
+    "libpulsecommon-13.0.so", "libpulsecore-13.0.so", "libsdnative.so", "libsndfile.so",
+    "libspake2.so", "libsurface_util_jni.so", "libtermux.so", "libwayland-server.so",
+    "libzstd-jni-1.5.7-4.so"
+  ],
+  "required_assets": [
+    "linuxfs/usr/local/bin/droiddeck-session",
+    "linuxfs/usr/local/bin/droiddeck-steam-launch",
+    "linuxfs/usr/local/bin/gamescope",
+    "linuxfs/libblsession.so",
+    "linuxfs/libfakeinput.so",
+    "linuxfs/x86_64/libblsession.so",
+    "linuxfs/i386/libblsession.so",
+    "linuxfs/usr/local/lib/droiddeck-vr/droiddeck/bin/linuxarm64/driver_droiddeck.so",
+    "linuxfs/usr/local/share/licenses/droiddeck-msitools/GPL-3",
+    "linuxfs/usr/local/share/licenses/uruntime/LICENSE",
+    "directaudio/linux-wine11/version.txt",
+    "directaudio/linux-wine11-systhread/version.txt",
+    "models/hand_landmarker.task",
+    "models/hand_landmarker_lite.task",
+    "droiddeck-esync/index.json",
+    "pulseaudio.tzst",
+    "wayland/keymap.xkb"
+  ]
+}

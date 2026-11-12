@@ -1,0 +1,42 @@
+{
+  "source": "com/droiddeck/launcher/SessionActivity.kt",
+  "reason": "Use HQ's tested Amethyst-style Lethal keyboard/mouse overlay only for fixed-game sessions, preserving setup controls and releasing inputs across modal/lifecycle changes.",
+  "replacements": [
+    {
+      "before": "    private var onScreenControls: OnScreenControls? = null",
+      "after": "    private var onScreenControls: OnScreenControls? = null\n    private var hqTouchControls: com.droiddeck.launcher.hq.GameTouchControls? = null"
+    },
+    {
+      "before": "        onScreenControls = OnScreenControls(this, bridge, onKeyboard = ::togglePcKeyboard).also { root.addView(it) }",
+      "after": "        onScreenControls = OnScreenControls(this, bridge, onKeyboard = ::togglePcKeyboard).also { root.addView(it) }\n        hqTouchControls = com.droiddeck.launcher.hq.GameTouchControls(\n            this, intent.getIntExtra(\"hqGameVersion\", -1),\n            grabbed = { pointerLocked },\n            onKey = ::sendGuestKey,\n            onRelative = { dx, dy ->\n                drawnRect()?.let { rect ->\n                    val scale = SessionState.outputSize.first / rect.width()\n                    WaylandCompositor.sendPointerDelta(dx * scale, dy * scale)\n                }\n                cursorVisible = false\n            },\n            onAbsolute = ::movePointer,\n            onMouse = { button, down -> WaylandCompositor.nativeSendSceneInput(3, button, if (down) 1 else 0) },\n            onWheel = { steps -> WaylandCompositor.nativeSendSceneInput(4, steps, 0) },\n            onKeyboard = ::togglePcKeyboard,\n        ).also { it.visibility = View.GONE; root.addView(it) }"
+    },
+    {
+      "before": "            androidx.compose.runtime.SideEffect {\n                com.droiddeck.launcher.glasses.GlassesMenuMirror",
+      "after": "            androidx.compose.runtime.SideEffect {\n                updateHqTouchControls()\n                com.droiddeck.launcher.glasses.GlassesMenuMirror"
+    },
+    {
+      "before": "    private fun updateOnScreenPad() {",
+      "after": "    private fun updateOnScreenPad() {\n        if (hqGameSession()) {\n            onScreenControls?.let { it.releaseAll(); it.visibility = View.GONE }\n            steamTouchControls?.let { it.releaseAll(); it.visibility = View.GONE }\n            com.droiddeck.launcher.input.SteamTouchDevice.current?.plugged = false\n            updateHqTouchControls()\n            onScreenButtonsVisible = hqTouchControls?.visibility == View.VISIBLE\n            return\n        }\n        hqTouchControls?.visibility = View.GONE"
+    },
+    {
+      "before": "    private fun sendGuestKey(code: Int, down: Boolean) {",
+      "after": "    private fun hqGameSession() = com.droiddeck.launcher.hq.RuntimeRules.hqGameControls(\n        intent.getBooleanExtra(\"hqInstallSession\", false),\n        intent.getStringExtra(SessionService.EXTRA_STEAM_URL), SessionState.steamUrl)\n\n    private fun updateHqTouchControls() {\n        val controls = hqTouchControls ?: return\n        controls.setGameVersion(intent.getIntExtra(\"hqGameVersion\", -1))\n        controls.refreshPointerMode()\n        controls.visibility = if (hqGameSession() && !pipUi && unfoldedPanel == null &&\n            !drawerOpen && !pcKeyboardOpen && !achievementsOpen && !SessionState.suspended) View.VISIBLE else View.GONE\n    }\n\n    private fun sendGuestKey(code: Int, down: Boolean) {"
+    },
+    {
+      "before": "        onScreenControls?.releaseAll()\n        if (::scrollTouch.isInitialized)",
+      "after": "        onScreenControls?.releaseAll()\n        hqTouchControls?.releaseAll()\n        if (::scrollTouch.isInitialized)"
+    },
+    {
+      "before": "            onScreenControls?.visibility = View.GONE\n            window.clearFlags",
+      "after": "            onScreenControls?.visibility = View.GONE\n            hqTouchControls?.let { it.releaseAll(); it.visibility = View.GONE }\n            window.clearFlags"
+    },
+    {
+      "before": "        if (this.intent.getBooleanExtra(EXTRA_RETURN_HOME, false)) intent.putExtra(EXTRA_RETURN_HOME, true)",
+      "after": "        // Notification/resume intents omit HQ metadata; keep the current session's controls.\n        if (!intent.hasExtra(\"hqInstallSession\")) intent.putExtra(\"hqInstallSession\", this.intent.getBooleanExtra(\"hqInstallSession\", false))\n        if (!intent.hasExtra(\"hqGameVersion\")) intent.putExtra(\"hqGameVersion\", this.intent.getIntExtra(\"hqGameVersion\", -1))\n        if (this.intent.getBooleanExtra(EXTRA_RETURN_HOME, false)) intent.putExtra(EXTRA_RETURN_HOME, true)"
+    },
+    {
+      "before": "            pointerLocked = locked\n            Log.i(TAG, \"pointer lock \"",
+      "after": "            pointerLocked = locked\n            hqTouchControls?.refreshPointerMode()\n            Log.i(TAG, \"pointer lock \""
+    }
+  ]
+}

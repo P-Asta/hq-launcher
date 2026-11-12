@@ -32,3 +32,5 @@ src-tauri/resources/native-overlay/hq-inject-helper.exe
 .yarn/*
 .yarnrc.yml
 /target
+# Local Python runtime-preparation checks.
+/scripts/__pycache__/

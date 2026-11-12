@@ -66,6 +66,24 @@ AppImages and other package formats are available in [Releases](https://github.c
 
 Want to build it yourself? See the [Development](#development) section below.
 
+### Android (internal runtime)
+
+The Android app embeds its own Linux/Steam runtime inside HQ Launcher; a separate
+DroidDeck app or connected PC is not required. Install Linux in HQ, select
+**Install Lethal Company**, sign in through the internal normal Steam window, and install
+your owned copy of Lethal Company. Start it with **HQ Run**. Stop
+the runtime session before applying HQ's version-compatible mods or changing mod
+switches. Downloads, compatibility checks and Steam sign-in require internet.
+Voice chat is off by default; enable **Enable microphone** while the runtime is
+stopped and approve Android's microphone permission prompt for the next session.
+
+The ARM64 build currently targets SDK 28 because its private Linux environment
+depends on the pre-29 execution policy. Building needs pinned local runtime
+inputs. Select other supported versions from the version menu. Device checks
+cover modded v81 and v73 installation, launch, ship movement and camera controls;
+multiplayer, microphone audio and sustained gameplay remain unverified.
+See [Android setup and builds](docs/ANDROID.md).
+
 ### macOS
 
 macOS release builds include a universal `.app` and `.dmg` for Apple Silicon and Intel Macs. Open the disk image and move HQ Launcher to Applications.

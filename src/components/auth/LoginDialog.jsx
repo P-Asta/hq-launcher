@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Dialog, DialogContent } from "../ui/dialog";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { HqLogo } from "../launcher/HqLoading";
 
 function isTwoFactorMessage(message) {
   const msg = String(message ?? "").toLowerCase();
@@ -342,8 +343,9 @@ export function LoginDialog({ open, onOpenChange, onLoggedIn }) {
 
           {gameDownloadProgress > 0 && (
             <div className="rounded-2xl border border-panel-outline bg-[var(--theme-surface)] px-3 py-2 text-[11px] text-white/70">
-              <div className="mb-1 flex items-center justify-between">
-                <span className="font-semibold">Depot download progress</span>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <HqLogo className="h-6 w-6" progress={gameDownloadProgress} />
+                <span className="flex-1 font-semibold">Depot download progress</span>
                 <span>{gameDownloadProgress.toFixed(1)}%</span>
               </div>
               <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">

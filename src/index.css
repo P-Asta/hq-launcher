@@ -33,6 +33,32 @@ body {
   background: var(--theme-bg);
 }
 
+/* HQ loading motion: the pixel mark stays still while its ink fills upward. */
+.hq-logo { vertical-align: middle; }
+.hq-logo img { position: absolute; inset: 0; width: 100%; height: 100%; user-select: none; }
+.hq-logo-base { opacity: .22; }
+.hq-logo-fill { clip-path: inset(0); }
+.hq-logo[data-active="true"]:not([data-progress]) .hq-logo-fill {
+  animation: hq-logo-reveal 1.6s cubic-bezier(.4, 0, .2, 1) infinite;
+}
+.hq-logo[data-progress] .hq-logo-fill {
+  clip-path: inset(var(--hq-logo-fill) 0 0);
+  transition: clip-path 180ms ease-out;
+}
+.hq-loading { animation: hq-screen-enter 160ms ease-out both; }
+.hq-loading-screen { background: var(--theme-bg); }
+.hq-screen-enter { animation: hq-screen-enter 160ms ease-out both; }
+@keyframes hq-logo-reveal {
+  0% { clip-path: inset(100% 0 0); }
+  65%, 85% { clip-path: inset(0); opacity: 1; }
+  100% { clip-path: inset(0); opacity: 0; }
+}
+@keyframes hq-screen-enter { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .hq-loading, .hq-screen-enter, .hq-logo .hq-logo-fill { animation: none !important; transition: none !important; }
+  .hq-logo:not([data-progress]) .hq-logo-fill { clip-path: none; opacity: 1; }
+}
+
 html.overlay-window,
 html.overlay-window body,
 html.overlay-window #root {

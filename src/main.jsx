@@ -1,7 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
-import App from "./AppRoot";
 import "./index.css";
 import {
   applyThemeSettings,
@@ -10,6 +9,7 @@ import {
   loadStoredThemeMode,
 } from "./lib/theme";
 import { getWindowMode } from "./lib/windowMode";
+import { HqLoading } from "./components/launcher/HqLoading";
 
 applyThemeSettings({
   hue: loadStoredThemeHue(),
@@ -18,9 +18,18 @@ applyThemeSettings({
 });
 
 const windowMode = getWindowMode();
-if (windowMode === "game-overlay") {
+const overlayWindow = !__HQ_ANDROID__ && ["game-overlay", "obs-overlay"].includes(windowMode);
+if (overlayWindow) {
   document.documentElement.classList.add("overlay-window");
-  invoke("report_game_overlay_frontend_info", { message: "main.jsx detected game-overlay mode" }).catch(console.error);
+  if (windowMode === "game-overlay") invoke("report_game_overlay_frontend_info", { message: "main.jsx detected game-overlay mode" }).catch(console.error);
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+const App = React.lazy(() =>
+  __HQ_ANDROID__ ? import("./pages/AndroidLauncher") : import("./AppRoot")
+);
+
+ReactDOM.createRoot(document.getElementById("root")).render(
+  <React.Suspense fallback={overlayWindow ? null : <HqLoading screen />}>
+    <App />
+  </React.Suspense>
+);

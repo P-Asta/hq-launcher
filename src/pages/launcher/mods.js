@@ -106,35 +106,19 @@ export function modAppliesToTag(mod, activeTag) {
   return matchesTag || findTagConstraint(mod, activeTag) != null;
 }
 
+const RUN_MODE_TAGS = new Set(["brutal", "wesley", "smhq", "eclipsed", "c.moons"]);
+
 export function modHasRunModeAffinity(mod) {
   const modTags = Array.isArray(mod?.tags) ? mod.tags : [];
-  if (
-    modTags.some((tag) => {
-      const value = String(tag).toLowerCase();
-      return (
-        value === "brutal" ||
-        value === "wesley" ||
-        value === "smhq" ||
-        value === "eclipsed" ||
-        value === "c.moons"
-      );
-    })
-  ) {
+  if (modTags.some((tag) => RUN_MODE_TAGS.has(String(tag).toLowerCase()))) {
     return true;
   }
 
   const constraints = mod?.tag_constraints;
   if (!constraints || typeof constraints !== "object") return false;
-  return Object.keys(constraints).some((tag) => {
-    const value = String(tag).toLowerCase();
-    return (
-      value === "brutal" ||
-      value === "wesley" ||
-      value === "smhq" ||
-      value === "eclipsed" ||
-      value === "c.moons"
-    );
-  });
+  return Object.keys(constraints).some((tag) =>
+    RUN_MODE_TAGS.has(String(tag).toLowerCase())
+  );
 }
 
 export function isModCompatibleWithTags(mod, version, activeTags) {

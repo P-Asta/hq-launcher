@@ -1,4 +1,5 @@
 import { cn } from "../../lib/cn";
+import { HqLogo } from "./HqLoading";
 import {
   formatExtractProgress,
   formatTransferProgress,
@@ -47,12 +48,13 @@ export function TaskProgressPanel({
   return (
     <div
       className={cn(
-        "mt-4 rounded-2xl border border-panel-outline bg-black/20 p-3",
+        "hq-screen-enter mt-4 rounded-2xl border border-panel-outline bg-black/20 p-3",
         className
       )}
     >
       <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
+        <HqLogo className="h-10 w-10" progress={percent} active={!error && !barError && !(Number.isFinite(percent) && percent >= 100)} />
+        <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold">{title}</div>
           <div className="truncate text-xs text-white/50">{detail}</div>
           {(transfer || extract) && (

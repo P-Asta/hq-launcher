@@ -18,6 +18,10 @@ export function isEclipsedHqRunMode(mode) {
   return String(mode ?? "").toLowerCase() === "eclipsed_hq";
 }
 
+export function isLcfRunMode(mode) {
+  return String(mode ?? "").toLowerCase() === "lcf";
+}
+
 export function shouldResetFreeMoonsOnRunModeChange(mode) {
   return isSmhqRunMode(mode) || isEclipsedHqRunMode(mode);
 }
@@ -184,6 +188,12 @@ export function getLaunchRequestForRunMode(mode, version) {
     return {
       command: "launch_game_preset",
       args: { version, preset: "eclipsed_hq", practice: false },
+    };
+  }
+  if (mode === "lcf") {
+    return {
+      command: "launch_game_preset",
+      args: { version, preset: "lcf", practice: false },
     };
   }
   return {

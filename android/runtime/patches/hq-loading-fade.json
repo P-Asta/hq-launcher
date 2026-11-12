@@ -1,0 +1,34 @@
+{
+  "source": "com/droiddeck/launcher/SessionActivity.kt",
+  "reason": "Fade the HQ loading surface onto the first real runtime frame without delaying session readiness or intercepting a finished session.",
+  "replacements": [
+    {
+      "before": "                if (loading.visible) LoadingOverlay(",
+      "after": "                androidx.compose.animation.AnimatedVisibility(\n                    visible = loading.visible,\n                    enter = androidx.compose.animation.fadeIn(com.droiddeck.launcher.ui.Motion.tw(160)),\n                    exit = androidx.compose.animation.fadeOut(com.droiddeck.launcher.ui.Motion.tw(160)),\n                ) { LoadingOverlay("
+    },
+    {
+      "before": "                )\n                androidx.compose.runtime.LaunchedEffect(drawerOpen)",
+      "after": "                ) }\n                androidx.compose.runtime.LaunchedEffect(drawerOpen)"
+    },
+    {
+      "before": "                if (leaving) com.droiddeck.launcher.ui.FloodSpread(\n                    com.droiddeck.launcher.ui.LocalPalette.current.signal,\n                    ball = if (loading.visible) com.droiddeck.launcher.ui.ThrobberSpot.ball else null,\n                ) { completeLeave() }",
+      "after": "                if (leaving) com.droiddeck.launcher.hq.HqExitTransition(\"Returning to HQ Launcher…\") { completeLeave() }"
+    },
+    {
+      "before": "                quitFrom?.let { from ->\n                    val error = androidx.compose.material3.MaterialTheme.colorScheme.error\n                    com.droiddeck.launcher.ui.LaunchFlood(\n                        from, onProgress = {},\n                        fromColors = error to androidx.compose.ui.graphics.lerp(error, androidx.compose.ui.graphics.Color.Black, 0.12f),\n                        cornerAtRest = 20.dp,\n                    ) { finishFlooded() }\n                }",
+      "after": "                if (quitFrom != null) com.droiddeck.launcher.hq.HqExitTransition(\"Stopping runtime…\") { finishFlooded() }"
+    },
+    {
+      "before": "    private fun finishFlooded() {\n        if (isFinishing) return\n        val signal = com.droiddeck.launcher.ui.Themes.byId(SessionPrefs.theme(this)).signal",
+      "after": "    private fun finishFlooded() {\n        if (isFinishing) return\n        val signal = androidx.compose.ui.graphics.Color(0xFF090E0B)"
+    },
+    {
+      "before": "    private fun completeLeave() {\n        if (isFinishing) return\n        val signal = com.droiddeck.launcher.ui.Themes.byId(SessionPrefs.theme(this)).signal",
+      "after": "    private fun completeLeave() {\n        if (isFinishing) return\n        val signal = androidx.compose.ui.graphics.Color(0xFF090E0B)"
+    },
+    {
+      "before": "        else overridePendingTransition(R.anim.session_hold, R.anim.session_sink)",
+      "after": "        else overridePendingTransition(0, 0)"
+    }
+  ]
+}

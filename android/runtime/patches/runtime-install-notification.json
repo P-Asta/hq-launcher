@@ -1,0 +1,14 @@
+{
+  "source": "com/droiddeck/launcher/runtime/RuntimeInstallService.kt",
+  "reason": "The runtime installation notification must return to HQ's launcher UI.",
+  "replacements": [
+    {
+      "before": "import com.droiddeck.launcher.MainActivity\n",
+      "after": ""
+    },
+    {
+      "before": "Intent(this, MainActivity::class.java).setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)",
+      "after": "(packageManager.getLaunchIntentForPackage(packageName)\n                ?: Intent().setClassName(packageName, \"$packageName.MainActivity\"))\n                .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)"
+    }
+  ]
+}

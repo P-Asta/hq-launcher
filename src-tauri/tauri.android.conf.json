@@ -1,0 +1,13 @@
+{
+  "productName": "HQ Launcher",
+  "app": {
+    "security": {
+      "capabilities": ["mobile-capability"],
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; font-src 'self' data: https://cdn.jsdelivr.net"
+    }
+  },
+  "bundle": {
+    "resources": [],
+    "createUpdaterArtifacts": false
+  }
+}

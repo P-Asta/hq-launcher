@@ -543,12 +543,13 @@ fn parse_interior(value: &str) -> String {
         "Museum" => "Art Gallery".to_string(),
         "DeepSewers" => "Deep Sewers".to_string(),
         "ExpandedFacility" => "Exp Facil".to_string(),
-        "Level3ButCool" => "Exp Mines".to_string(),
+        "Level3ButCool" | "Level3ButCoolRenewed" => "Exp Mines".to_string(),
         "FracturedComplex" => "Complex".to_string(),
-        "GrandArmory" => "Grand Armory".to_string(),
+        "GrandArmory" | "GrandArmoryBackup" => "Grand Armory".to_string(),
         "RubberRooms" => "Rubber Rooms".to_string(),
         "SpookyManor" => "Spooky Manor".to_string(),
         "Toystore" => "Toy Store".to_string(),
+        "Lab" => "Asten Labs".to_string(),
         _ => interior,
     }
 }
@@ -644,6 +645,31 @@ mod tests {
     fn evie_interior_aliases_are_preserved() {
         assert_eq!(parse_interior("ExpandedFacilityInterior"), "Exp Facil");
         assert_eq!(parse_interior("SpookyManorFlow"), "Spooky Manor");
+    }
+
+    #[test]
+    fn writes_requested_interior_names_to_column_j() {
+        for (interior, expected) in [
+            ("AquaticDungeon", "Citadel"),
+            ("Museum", "Art Gallery"),
+            ("DeepSewers", "Deep Sewers"),
+            ("ExpandedFacility", "Exp Facil"),
+            ("Level3ButCool", "Exp Mines"),
+            ("Level3ButCoolRenewed", "Exp Mines"),
+            ("FracturedComplex", "Complex"),
+            ("GrandArmory", "Grand Armory"),
+            ("GrandArmoryBackup", "Grand Armory"),
+            ("RubberRooms", "Rubber Rooms"),
+            ("SpookyManor", "Spooky Manor"),
+            ("Toystore", "Toy Store"),
+            ("Lab", "Asten Labs"),
+            ("UnknownDungeon", "UnknownDungeon"),
+        ] {
+            let stats = lcstats(&json!({ "DungeonInfo": { "Interior": interior } }));
+            let updates = build_day_updates(&stats, 4, 4);
+
+            assert_eq!(cell_value(&updates, "J"), Some(&json!(expected)), "{interior}");
+        }
     }
 
     #[test]

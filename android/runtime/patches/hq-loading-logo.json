@@ -1,0 +1,30 @@
+{
+  "source": "com/droiddeck/launcher/ui/SessionLoading.kt",
+  "reason": "Brand all internal runtime loading stages with HQ's shared logo, preserving upstream progress, errors and cancel/retry/log controls.",
+  "replacements": [
+    {
+      "before": "    val games by produceState(emptyList<Library.SteamGame>()) {\n        value = withContext(Dispatchers.IO) { runCatching { Library.steamGames(context).sortedByDescending { it.lastPlayed } }.getOrDefault(emptyList()) }\n    }",
+      "after": "    // HQ loading uses the launcher mark rather than library artwork."
+    },
+    {
+      "before": "        CapsuleWall(games, driftMs = 65_000, modifier = Modifier.alpha(0.3f))",
+      "after": "        // Keep the logo readable on the runtime's existing background."
+    },
+    {
+      "before": "                LogoThrobber(\n                    Modifier.width(if (ended) 88.dp else 110.dp).onGloballyPositioned { ball = throbberBall(it.boundsInRoot()).also { b -> ThrobberSpot.ball = b } },\n                    running = !ended && flood == null,\n                )",
+      "after": "                com.droiddeck.launcher.hq.HqLogoTransition(\n                    Modifier.width(if (ended) 88.dp else 110.dp),\n                    running = !ended, percent = percent,\n                )"
+    },
+    {
+      "before": "                if (ended) stringResource(R.string.load_ended) else title, fontSize = 20.sp, fontWeight = FontWeight.SemiBold,",
+      "after": "                if (ended) stringResource(R.string.load_ended) else \"HQ Launcher\", fontSize = 20.sp, fontWeight = FontWeight.SemiBold,"
+    },
+    {
+      "before": "        if (flood != null) FloodGather(flood, ball, onFlooded)",
+      "after": "        LaunchedEffect(flood) { if (flood != null) onFlooded() }"
+    },
+    {
+      "before": "            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(bottom = 6.dp).size(64.dp).border(2.dp, pal.line2, CircleShape)) {\n                Icon(Icons.Filled.Pause, contentDescription = null, tint = colors.onBackground, modifier = Modifier.size(30.dp))\n            }",
+      "after": "            com.droiddeck.launcher.hq.HqLogoTransition(\n                Modifier.padding(bottom = 6.dp).width(64.dp), running = false,\n            )"
+    }
+  ]
+}

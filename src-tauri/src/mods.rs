@@ -15,6 +15,17 @@ use crate::thunderstore::{self, PackageListing};
 use crate::zip_utils::extract_thunderstore_into_bepinex_with_progress;
 use semver::Version;
 
+fn package_http_client() -> Result<reqwest::Client, String> {
+    #[cfg(target_os = "android")]
+    {
+        crate::android_mods::http_client()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Ok(reqwest::Client::new())
+    }
+}
+
 fn read_manifest_allow_old(mod_dir: &Path) -> Result<crate::bepinex_cfg::BepInExManifest, String> {
     let manifest = mod_dir.join("manifest.json");
     if manifest.exists() {
@@ -141,25 +152,24 @@ pub async fn install_mods_with_progress<F>(
 where
     F: FnMut(u64, u64, ModInstallProgress),
 {
-    let client = reqwest::Client::new();
+    let client = package_http_client()?;
 
     // Fetch Thunderstore package list once (per-package API is unreliable/404).
     let cache_path = crate::thunderstore_cache_path(app)?;
-    let (packages, stale_cache) = if let Some((cached_packages, stale)) =
-        thunderstore::read_cached_packages(&cache_path)?
-    {
-        (cached_packages, stale)
-    } else {
-        (
-            thunderstore::fetch_community_packages_with_cancel(
-                &client,
-                &cache_path,
-                cancel.as_ref(),
+    let (packages, stale_cache) =
+        if let Some((cached_packages, stale)) = thunderstore::read_cached_packages(&cache_path)? {
+            (cached_packages, stale)
+        } else {
+            (
+                thunderstore::fetch_community_packages_with_cancel(
+                    &client,
+                    &cache_path,
+                    cancel.as_ref(),
+                )
+                .await?,
+                false,
             )
-            .await?,
-            false,
-        )
-    };
+        };
     log::info!("Fetched {} packages", packages.len());
     let mut package_map: HashMap<(String, String), PackageListing> = HashMap::new();
     for p in packages {
@@ -192,7 +202,13 @@ where
     } else if stale_cache {
         let cache_path_clone = cache_path.clone();
         tauri::async_runtime::spawn(async move {
-            let refresh_client = reqwest::Client::new();
+            let refresh_client = match package_http_client() {
+                Ok(client) => client,
+                Err(error) => {
+                    log::warn!("Failed to create Thunderstore HTTP client: {error}");
+                    return;
+                }
+            };
             if let Err(e) = thunderstore::refresh_community_packages_with_cancel(
                 &refresh_client,
                 &cache_path_clone,
@@ -386,17 +402,27 @@ where
         };
 
         if ver == "0.0.0" {
-            installed = installed.saturating_add(1);
-            log::error!("No versions for {}-{}", spec.dev, spec.name);
-            on_progress(
-                installed,
-                total_mods,
-                ModInstallProgress {
-                    detail: Some(format!("Failed to resolve {mod_label} (no versions)")),
-                    ..Default::default()
-                },
-            );
-            continue;
+            #[cfg(target_os = "android")]
+            return Err(format!("No downloadable versions for {mod_label}"));
+            #[cfg(not(target_os = "android"))]
+            {
+                installed = installed.saturating_add(1);
+                log::error!("No versions for {}-{}", spec.dev, spec.name);
+                on_progress(
+                    installed,
+                    total_mods,
+                    ModInstallProgress {
+                        detail: Some(format!("Failed to resolve {mod_label} (no versions)")),
+                        ..Default::default()
+                    },
+                );
+                continue;
+            }
+        }
+
+        #[cfg(target_os = "android")]
+        if Version::parse(&ver).is_err() {
+            return Err(format!("Invalid package version for {mod_label}"));
         }
 
         let download_url = thunderstore_download_url(&spec.dev, &spec.name, &ver);
@@ -504,31 +530,36 @@ where
                 );
             },
         ) {
-            if is_cancelled_error(&e) {
+            #[cfg(target_os = "android")]
+            return Err(format!("Failed to extract {mod_label}: {e}"));
+            #[cfg(not(target_os = "android"))]
+            {
+                if is_cancelled_error(&e) {
+                    let _ = std::fs::remove_file(&zip_path);
+                    let _ = std::fs::remove_dir_all(target_plugins.join(&folder_name));
+                    let patchers_folder = game_root
+                        .join("BepInEx")
+                        .join("patchers")
+                        .join(&folder_name);
+                    let _ = std::fs::remove_dir_all(patchers_folder);
+                    let _ = std::fs::remove_dir_all(&temp_root);
+                    return Err(e);
+                }
+                installed = installed.saturating_add(1);
+                log::error!("Failed to extract into plugins {mod_label}: {e}");
+                on_progress(
+                    installed,
+                    total_mods,
+                    ModInstallProgress {
+                        detail: Some(format!("Failed to extract {mod_label} ({e})")),
+                        downloaded_bytes: Some(downloaded_bytes),
+                        total_bytes,
+                        ..Default::default()
+                    },
+                );
                 let _ = std::fs::remove_file(&zip_path);
-                let _ = std::fs::remove_dir_all(target_plugins.join(&folder_name));
-                let patchers_folder = game_root
-                    .join("BepInEx")
-                    .join("patchers")
-                    .join(&folder_name);
-                let _ = std::fs::remove_dir_all(patchers_folder);
-                let _ = std::fs::remove_dir_all(&temp_root);
-                return Err(e);
+                continue;
             }
-            installed = installed.saturating_add(1);
-            log::error!("Failed to extract into plugins {mod_label}: {e}");
-            on_progress(
-                installed,
-                total_mods,
-                ModInstallProgress {
-                    detail: Some(format!("Failed to extract {mod_label} ({e})")),
-                    downloaded_bytes: Some(downloaded_bytes),
-                    total_bytes,
-                    ..Default::default()
-                },
-            );
-            let _ = std::fs::remove_file(&zip_path);
-            continue;
         }
 
         // Cleanup per-mod artifacts
@@ -567,7 +598,7 @@ pub async fn updatable_mods_with_progress<F>(
 where
     F: FnMut(u64, u64, Option<String>, Option<String>),
 {
-    let client = reqwest::Client::new();
+    let client = package_http_client()?;
 
     let total_mods = cfg.mods.len() as u64;
     on_progress(0, total_mods, Some("Starting...".to_string()), None);
@@ -747,7 +778,7 @@ pub async fn update_mods_with_progress<F>(
 where
     F: FnMut(u64, u64, ModInstallProgress),
 {
-    let client = reqwest::Client::new();
+    let client = package_http_client()?;
 
     // Fetch Thunderstore package list once (per-package API is unreliable/404).
     let cache_path = crate::thunderstore_cache_path(app)?;

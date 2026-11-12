@@ -142,6 +142,9 @@ pub struct RemoteManifest {
     pub preset_tag_constraints: BTreeMap<String, TagConstraint>,
     pub chain_config: Vec<Vec<String>>,
     pub mods: Vec<ModEntry>,
+    /// Mods installed/enabled only for practice runs (e.g. Imperium).
+    #[serde(default)]
+    pub practice_mods: Vec<ModEntry>,
 }
 
 impl ModsConfig {
@@ -176,6 +179,25 @@ impl ModsConfig {
         client: &reqwest::Client,
         cancel: Option<&Arc<AtomicBool>>,
     ) -> Result<ManifestFetchResult, String> {
+        Ok(Self::load_manifest(client, cancel).await?.into_fetch_result())
+    }
+
+    /// Practice-run mods from the manifest's `practice_mods` list.
+    pub async fn fetch_practice_mods(
+        client: &reqwest::Client,
+        cancel: Option<&Arc<AtomicBool>>,
+    ) -> Result<Vec<ModEntry>, String> {
+        let mut cfg = ModsConfig {
+            mods: Self::load_manifest(client, cancel).await?.practice_mods,
+        };
+        let _ = normalize_aliases(&mut cfg);
+        Ok(cfg.mods)
+    }
+
+    async fn load_manifest(
+        client: &reqwest::Client,
+        cancel: Option<&Arc<AtomicBool>>,
+    ) -> Result<RemoteManifest, String> {
         // Test mode: if a local `manifest.json` exists next to the repo/current folder,
         // prefer it over the remote manifest. This enables rapid iteration without publishing.
         fn try_read_local_manifest() -> Option<(std::path::PathBuf, RemoteManifest)> {
@@ -207,14 +229,12 @@ impl ModsConfig {
             None
         }
 
-        let manifest = if let Some((path, mf)) = try_read_local_manifest() {
+        if let Some((path, mf)) = try_read_local_manifest() {
             log::info!("Using local manifest: {}", path.to_string_lossy());
-            mf
+            Ok(mf)
         } else {
-            Self::fetch_remote_manifest_cached(client, cancel).await?
-        };
-
-        Ok(manifest.into_fetch_result())
+            Self::fetch_remote_manifest_cached(client, cancel).await
+        }
     }
 
     async fn fetch_remote_manifest_cached(

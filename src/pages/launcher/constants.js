@@ -35,6 +35,27 @@ export const ECLIPSED_FORCED_MOD_KEYS = new Set([
   "stormytuna::eclipsedonly",
 ]);
 
+/** Hardcoded LCF-run mod (mirrors `get_lcf_mod_list` in src-tauri/src/variable.rs). */
+export const LCF_MOD = {
+  dev: "asta",
+  name: "LCF",
+  tags: [],
+  enabled: true,
+};
+
+/** Switch groups whose every member is turned off in an LCF run. */
+export const LCF_DISABLED_SWITCH_GROUPS = new Set([
+  "scrap-selling",
+  "save-ui",
+]);
+
+/** Individual mods turned off in an LCF run (on top of the switch groups). */
+export const LCF_DISABLED_MOD_KEYS = new Set([
+  "hqhqteam::hqol",
+  "asta::replay",
+  "hqhqteam::vlog",
+]);
+
 export const GOOGLE_OAUTH_MOD_KEYS = new Set([
   "mikuoreo::lcstatstracker",
 ]);
@@ -56,6 +77,7 @@ export const RUN_MODE_VALUES = [
   "wesley_smhq",
   "wesley_eclipsed",
   "wesley_practice",
+  "lcf",
 ];
 
 export const DISCORD_DOWNLOAD_URL = "https://asta.rs/hq-launcher/";
@@ -86,6 +108,15 @@ export const RUN_OPTIONS = [
         preset: "eclipsed_hq",
         practice: false,
         title: "HQ run with EclipsedOnly enabled",
+      },
+      {
+        value: "lcf",
+        label: "LCF Run",
+        buttonLabel: "LCF Run",
+        preset: "lcf",
+        practice: false,
+        title:
+          "LCF run: installs LCF and disables HQoL, scrap-selling, save-ui, Replay and VLog",
       },
       {
         value: "practice",

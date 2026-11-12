@@ -1,0 +1,7 @@
+{
+  "identifier": "mobile-capability",
+  "description": "HQ Launcher Android runtime controls",
+  "platforms": ["android"],
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

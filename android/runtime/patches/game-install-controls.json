@@ -1,0 +1,10 @@
+{
+  "source": "com/droiddeck/launcher/SessionActivity.kt",
+  "reason": "HQ game installation uses desktop Steam with keyboard/menu controls instead of the full gamepad overlay. Gameplay keeps the existing controls.",
+  "replacements": [
+    {
+      "before": "        val forced = File(Environment.getExternalStorageDirectory(), \"Download/droiddeck-osc\")",
+      "after": "        val forced = if (intent.getBooleanExtra(\"hqInstallSession\", false)) SessionPrefs.OSC_STEAM_QAM\n            else File(Environment.getExternalStorageDirectory(), \"Download/droiddeck-osc\")"
+    }
+  ]
+}
