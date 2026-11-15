@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { toOptionalNumber } from "../../lib/format";
-import { RUN_MODE_VALUES } from "./constants";
+import { toOptionalNumber } from "../../lib/format.js";
+import { RUN_MODE_VALUES } from "./constants.js";
 
 export function isPracticeRunMode(mode) {
   return String(mode ?? "").toLowerCase().includes("practice");
@@ -47,6 +47,12 @@ export function getManifestPresetConstraint(manifest, tag) {
 }
 
 export function getPresetVersionRange(manifest, mode) {
+  if (mode === "diomedes") {
+    const versions = Object.keys(manifest?.manifests ?? {}).map(Number).filter((v) => Number.isInteger(v) && v > 0);
+    if (!versions.length) return null;
+    const latest = Math.max(...versions);
+    return { low: latest, high: latest };
+  }
   const tags = getRunModePresetTags(mode);
   let low = null;
   let high = null;
@@ -80,9 +86,12 @@ export function clampVersionToRange(version, range) {
   return v;
 }
 
-export function getInitialRunMode() {
-  const savedRunMode = localStorage.getItem("selectedRunMode");
+export function normalizeStoredRunMode(savedRunMode) {
   return RUN_MODE_VALUES.includes(savedRunMode) ? savedRunMode : "hq";
+}
+
+export function getInitialRunMode() {
+  return normalizeStoredRunMode(localStorage.getItem("selectedRunMode"));
 }
 
 export function saveSelectedRunMode(mode) {
@@ -94,6 +103,9 @@ export function saveSelectedRunMode(mode) {
 }
 
 export function getLaunchRequestForRunMode(mode, version) {
+  if (mode === "diomedes") {
+    return { command: "launch_game_preset", args: { version, preset: "diomedes", practice: false } };
+  }
   if (mode === "vanilla") {
     return {
       command: "launch_game_vanilla",
@@ -203,6 +215,9 @@ export function getLaunchRequestForRunMode(mode, version) {
 }
 
 export function getPresetSummarySpec(mode) {
+  if (mode === "diomedes") {
+    return { summary_id: "preset::diomedes", name: "Diomedes", subtitle: "", activeTags: ["Diomedes"], iconKey: "diomedeslc::diomedes" };
+  }
   if (mode === "brutal" || mode === "brutal_practice") {
     return {
       summary_id: "preset::brutal",

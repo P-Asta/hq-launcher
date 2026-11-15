@@ -230,6 +230,13 @@ where
 
         let out_path = dest_dir.join(relative);
 
+        // An updated runtime must preserve launcher/user configuration.
+        if out_path.is_file() && out_path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("ini") || ext.eq_ignore_ascii_case("cfg")) {
+            processed = processed.saturating_add(1);
+            on_progress(processed, total_entries, entry_name);
+            continue;
+        }
+
         if entry.is_dir() {
             std::fs::create_dir_all(&out_path).map_err(|e| e.to_string())?;
             processed = processed.saturating_add(1);
@@ -272,6 +279,10 @@ where
     F: FnMut(u64, u64, Option<String>),
 {
     use std::collections::BTreeSet;
+
+    if folder_name.eq_ignore_ascii_case("BepInEx-BepInExPack") {
+        return extract_bepinex_pack(zip_path, game_root, cancel, on_progress);
+    }
 
     let plugins_root = game_root.join("BepInEx").join("plugins");
     let patchers_root = game_root.join("BepInEx").join("patchers");
@@ -339,16 +350,20 @@ where
 
     // Reset per-mod plugin folder always (install/update semantics).
     let plugin_dest_dir = plugins_root.join(folder_name);
-    let _ = std::fs::remove_dir_all(&plugin_dest_dir);
+    if plugin_dest_dir.exists() {
+        std::fs::remove_dir_all(&plugin_dest_dir).map_err(|e| e.to_string())?;
+    }
     std::fs::create_dir_all(&plugin_dest_dir).map_err(|e| e.to_string())?;
 
-    // Reset per-mod patchers folder only if zip contains patchers payload.
+    // Replace the whole owned payload, including patchers removed by a newer release.
     let patcher_dest_dir = patchers_root.join(folder_name);
+    if patcher_dest_dir.exists() {
+        std::fs::remove_dir_all(&patcher_dest_dir).map_err(|e| e.to_string())?;
+    }
     if has_patchers_payload {
         if cancel.is_some_and(|c| c.load(AtomicOrdering::Relaxed)) {
             return Err("Cancelled".to_string());
         }
-        let _ = std::fs::remove_dir_all(&patcher_dest_dir);
         let _ = std::fs::create_dir_all(&patcher_dest_dir);
     }
 
@@ -451,7 +466,11 @@ where
             continue;
         }
 
-        let out_path = dest_base.join(rel_path);
+        let mut out_path = dest_base.join(rel_path);
+        if out_path == plugin_dest_dir.join("manifest.json") {
+            // A current manifest is the install receipt: publish it only after every payload succeeds.
+            out_path = plugin_dest_dir.join("manifest.json.installing");
+        }
 
         if entry.is_dir() {
             std::fs::create_dir_all(&out_path).map_err(|e| e.to_string())?;
@@ -491,5 +510,119 @@ where
         on_progress(processed, total_entries, entry_name);
     }
 
+    if cancel.is_some_and(|c| c.load(AtomicOrdering::Relaxed)) { return Err("Cancelled".into()); }
+    let pending_manifest = plugin_dest_dir.join("manifest.json.installing");
+    if pending_manifest.exists() {
+        std::fs::rename(pending_manifest, plugin_dest_dir.join("manifest.json")).map_err(|e| e.to_string())?;
+    }
     Ok(())
+}
+
+fn extract_bepinex_pack<F>(zip_path: &Path, game_root: &Path, cancel: Option<&AtomicBool>, on_progress: F) -> Result<(), String>
+where F: FnMut(u64, u64, Option<String>) {
+    if cancel.is_some_and(|c| c.load(AtomicOrdering::Relaxed)) { return Err("Cancelled".into()); }
+    let mut archive = ZipArchive::new(File::open(zip_path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let mut current = Vec::<PathBuf>::new();
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        let Some(path) = entry.enclosed_name() else { continue; };
+        if entry.is_dir() { continue; }
+        let mut parts = path.components();
+        if parts.next().is_some_and(|p| p.as_os_str() == "BepInExPack") {
+            let relative = parts.as_path();
+            if relative.starts_with("BepInEx/core") && relative.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("dll")) {
+                current.push(relative.to_owned());
+            }
+        }
+    }
+    let tracking = game_root.join(".hq-launcher").join("bepinexpack-core-files.json");
+    let previous: Vec<PathBuf> = std::fs::read(&tracking).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+    let metadata = game_root.join("BepInEx/plugins/BepInEx-BepInExPack");
+    for name in ["manifest.json", "manifest.json.old"] {
+        let marker = metadata.join(name);
+        if marker.is_file() { std::fs::remove_file(marker).map_err(|e| e.to_string())?; }
+    }
+    extract_thunderstore_package_with_progress(zip_path, game_root, on_progress)?;
+    if cancel.is_some_and(|c| c.load(AtomicOrdering::Relaxed)) { return Err("Cancelled".into()); }
+    // Only recorded core DLLs belong to this runtime; never remove game/config/save files.
+    for old in previous {
+        if old.components().all(|part| matches!(part, std::path::Component::Normal(_)))
+            && old.starts_with("BepInEx/core") && old.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("dll")) && !current.contains(&old) {
+            let path = game_root.join(old);
+            if path.is_file() { std::fs::remove_file(path).map_err(|e| e.to_string())?; }
+        }
+    }
+    std::fs::create_dir_all(tracking.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::write(tracking, serde_json::to_vec(&current).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    // The regular package installer uses per-package manifest metadata for version checks.
+    if let Ok(mut manifest) = archive.by_name("manifest.json") {
+        std::fs::create_dir_all(&metadata).map_err(|e| e.to_string())?;
+        let mut out = File::create(metadata.join("manifest.json")).map_err(|e| e.to_string())?;
+        std::io::copy(&mut manifest, &mut out).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod preset_archive_tests {
+    use super::*;
+    use std::io::Write;
+    fn workspace() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("hq-preset-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&dir).unwrap(); dir
+    }
+    fn zip_at(path: &Path, entries: &[(&str, &str)]) {
+        let mut zip = zip::ZipWriter::new(File::create(path).unwrap());
+        for (name, contents) in entries {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(contents.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+    #[test]
+    fn cancelled_install_never_commits_latest_metadata_and_retry_installs_payload() {
+        let dir = workspace(); let archive = dir.join("mod.zip");
+        zip_at(&archive, &[("manifest.json", "{\"version_number\":\"2.0.0\"}"), ("plugins/new.dll", "new")]);
+        let cancel = AtomicBool::new(false);
+        let result = extract_thunderstore_into_bepinex_with_progress(&archive, &dir, "Owner-Mod", Some(&cancel), |_,_,name| {
+            if name.as_deref() == Some("manifest.json") { cancel.store(true, AtomicOrdering::Relaxed); }
+        });
+        assert!(result.is_err());
+        assert!(!dir.join("BepInEx/plugins/Owner-Mod/manifest.json").exists(), "partial install cannot look current");
+        extract_thunderstore_into_bepinex_with_progress(&archive, &dir, "Owner-Mod", None, |_,_,_| {}).unwrap();
+        assert!(dir.join("BepInEx/plugins/Owner-Mod/manifest.json").exists());
+        assert!(dir.join("BepInEx/plugins/Owner-Mod/new.dll").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn update_removes_old_plugins_and_patchers_without_touching_configs_or_saves() {
+        let dir = workspace(); let archive = dir.join("mod.zip");
+        zip_at(&archive, &[("plugins/old.dll", "old"), ("patchers/old.dll", "old")]);
+        extract_thunderstore_into_bepinex_with_progress(&archive, &dir, "Owner-Mod", None, |_,_,_| {}).unwrap();
+        std::fs::create_dir_all(dir.join("BepInEx/config")).unwrap();
+        std::fs::write(dir.join("BepInEx/config/user.cfg"), "custom").unwrap();
+        std::fs::write(dir.join("save.dat"), "saved").unwrap();
+        zip_at(&archive, &[("plugins/new.dll", "new")]);
+        extract_thunderstore_into_bepinex_with_progress(&archive, &dir, "Owner-Mod", None, |_,_,_| {}).unwrap();
+        assert!(!dir.join("BepInEx/plugins/Owner-Mod/old.dll").exists());
+        assert!(!dir.join("BepInEx/patchers/Owner-Mod/old.dll").exists());
+        assert_eq!(std::fs::read_to_string(dir.join("BepInEx/config/user.cfg")).unwrap(), "custom");
+        assert_eq!(std::fs::read_to_string(dir.join("save.dat")).unwrap(), "saved");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn bepinex_pack_installs_into_game_root_preserving_settings_and_removing_obsolete_core() {
+        let dir = workspace(); let archive = dir.join("pack.zip");
+        zip_at(&archive, &[("manifest.json", "{}"), ("BepInExPack/BepInEx/core/old.dll", "old"), ("BepInExPack/winhttp.dll", "proxy"), ("BepInExPack/doorstop_config.ini", "default")]);
+        extract_thunderstore_into_bepinex_with_progress(&archive, &dir, "BepInEx-BepInExPack", None, |_,_,_| {}).unwrap();
+        assert!(dir.join("BepInEx/core/old.dll").exists());
+        assert!(dir.join("winhttp.dll").exists());
+        std::fs::write(dir.join("doorstop_config.ini"), "user settings").unwrap();
+        zip_at(&archive, &[("manifest.json", "{}"), ("BepInExPack/BepInEx/core/new.dll", "new"), ("BepInExPack/doorstop_config.ini", "changed")]);
+        extract_thunderstore_into_bepinex_with_progress(&archive, &dir, "BepInEx-BepInExPack", None, |_,_,_| {}).unwrap();
+        assert!(!dir.join("BepInEx/core/old.dll").exists());
+        assert!(dir.join("BepInEx/core/new.dll").exists());
+        assert_eq!(std::fs::read_to_string(dir.join("doorstop_config.ini")).unwrap(), "user settings");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

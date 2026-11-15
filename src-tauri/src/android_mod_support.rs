@@ -395,7 +395,7 @@ pub const DEFAULT_DISABLED_MODS: &[(&str, &str)] = &[
 ];
 
 pub fn is_run_mode_tag(tag: &str) -> bool {
-    ["brutal", "wesley", "smhq", "eclipsed", "c.moons"]
+    ["brutal", "wesley", "smhq", "eclipsed", "c.moons", "diomedes"]
         .iter()
         .any(|value| tag.eq_ignore_ascii_case(value))
 }

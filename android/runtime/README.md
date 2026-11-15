@@ -18,6 +18,11 @@ python scripts/test-android-runtime-preparation.py
 python scripts/prepare-android-runtime.py --verify-only
 ```
 
+The GitHub Actions Android workflow obtains the exact public donor URL recorded
+in `runtime.lock.json` and applies the same hash/size checks. This public 0.5.0
+asset matches the original local donor byte for byte; no private APK secret is
+required for CI. Local preparation still expects the supplied APK path.
+
 The script clones the pinned public source if `.android-runtime.local/DroidDeck`
 is absent. Existing checkouts must have the exact commit and no tracked edits;
 the script never resets an existing checkout. Supply the matching local APK at

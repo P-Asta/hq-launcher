@@ -9,6 +9,7 @@
     "license": "GPL-3.0"
   },
   "donor": {
+    "url": "https://github.com/Droid-Deck/DroidDeck/releases/download/0.5.0/DroidDeck-0.5.0.apk",
     "sha256": "ab6a53e41b6fa715bd3f9048ada53d22d8535ad2978d97943d723cf60fa430b1",
     "size": 105925476,
     "package": "com.droiddeck.launcher",

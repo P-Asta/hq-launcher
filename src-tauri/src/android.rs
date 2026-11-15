@@ -139,6 +139,9 @@ pub fn run() {
         .setup(|app, api| {
             let handle = api.register_android_plugin("asta.hq_launcher", "HqRuntimePlugin")?;
             app.manage(InternalRuntime(handle));
+            if let Ok(app_data) = app.path().app_data_dir() {
+                crate::mod_config::init_manifest_cache(&app_data);
+            }
             Ok(())
         })
         .build();

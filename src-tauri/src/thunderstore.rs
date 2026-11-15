@@ -24,6 +24,8 @@ pub struct PackageListing {
 pub struct PackageVersion {
     pub version_number: String,
     pub download_url: String,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

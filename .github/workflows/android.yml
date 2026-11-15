@@ -1,0 +1,118 @@
+name: Android APK
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NDK_VERSION: '28.2.13676358'
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ARM64 debug APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Enable pinned Yarn
+        run: |
+          npm install --global corepack@0.33.0 --force
+          corepack enable
+          yarn --version
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build tools
+        run: |
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0' "ndk;$NDK_VERSION" 'platform-tools'
+          echo "NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          chmod +x src-tauri/gen/android/gradlew
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+          key: android-arm64-${{ env.NDK_VERSION }}
+
+      - name: Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Cache pinned runtime APK
+        uses: actions/cache@v4
+        with:
+          path: .android-runtime.local/droiddeck-donor.apk
+          key: android-runtime-donor-${{ hashFiles('android/runtime/runtime.lock.json') }}
+
+      - name: Prepare pinned Android runtime
+        run: |
+          mkdir -p .android-runtime.local
+          if [ ! -f .android-runtime.local/droiddeck-donor.apk ]; then
+            url=$(python -c 'import json; print(json.load(open("android/runtime/runtime.lock.json"))["donor"]["url"])')
+            curl --fail --location --retry 3 --output .android-runtime.local/droiddeck-donor.apk "$url"
+          fi
+          # The existing preparer verifies SHA-256, size, source commit and ARM64 inputs.
+          python scripts/prepare-android-runtime.py
+
+      - name: Install frontend dependencies
+        run: yarn install --immutable
+
+      - name: Check Android build inputs
+        run: |
+          node scripts/check-tauri-versions.mjs
+          node scripts/test-run-options.mjs
+          node scripts/test-diomedes.mjs
+          yarn test:android-build
+          python scripts/test-android-runtime-preparation.py
+
+      - name: Build installable ARM64 APK
+        run: yarn android:build:debug
+
+      - name: Write APK checksum
+        working-directory: src-tauri/gen/android/app/build/outputs/apk/arm64/debug
+        run: sha256sum *.apk > SHA256SUMS.txt
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: hq-launcher-android-arm64-debug
+          path: |
+            src-tauri/gen/android/app/build/outputs/apk/arm64/debug/*.apk
+            src-tauri/gen/android/app/build/outputs/apk/arm64/debug/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

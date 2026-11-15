@@ -66,7 +66,7 @@ fn cmp_version_str(a: &str, b: &str) -> Ordering {
     }
 }
 
-fn latest_pkg_version<'a>(
+pub(crate) fn latest_pkg_version<'a>(
     versions: &'a [thunderstore::PackageVersion],
 ) -> Option<&'a thunderstore::PackageVersion> {
     versions
@@ -276,7 +276,6 @@ where
                 }
             };
 
-            installed = installed.saturating_add(1);
             // Decide the desired version using the SAME semantics as install:
             // - If pinned_version_for(game_version) exists: prefer it (if available), else fallback to latest (semver max)
             // - Else: latest (semver max)
@@ -308,6 +307,7 @@ where
                     .as_ref()
                     .is_some_and(|m| m.version_number == desired_version)
             {
+                installed = installed.saturating_add(1);
                 on_progress(
                     installed,
                     total_mods,
@@ -402,6 +402,9 @@ where
         };
 
         if ver == "0.0.0" {
+            if active_tags.iter().any(|tag| tag.eq_ignore_ascii_case("Diomedes")) {
+                return Err(format!("No downloadable versions for {mod_label}"));
+            }
             #[cfg(target_os = "android")]
             return Err(format!("No downloadable versions for {mod_label}"));
             #[cfg(not(target_os = "android"))]
@@ -530,6 +533,9 @@ where
                 );
             },
         ) {
+            if active_tags.iter().any(|tag| tag.eq_ignore_ascii_case("Diomedes")) {
+                return Err(format!("Failed to extract {mod_label}: {e}"));
+            }
             #[cfg(target_os = "android")]
             return Err(format!("Failed to extract {mod_label}: {e}"));
             #[cfg(not(target_os = "android"))]

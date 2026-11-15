@@ -77,7 +77,7 @@ export const RUN_MODE_VALUES = [
   "wesley_smhq",
   "wesley_eclipsed",
   "wesley_practice",
-  "lcf",
+  "diomedes",
 ];
 
 export const DISCORD_DOWNLOAD_URL = "https://asta.rs/hq-launcher/";
@@ -110,13 +110,13 @@ export const RUN_OPTIONS = [
         title: "HQ run with EclipsedOnly enabled",
       },
       {
-        value: "lcf",
-        label: "LCF Run",
-        buttonLabel: "LCF Run",
-        preset: "lcf",
+        value: "diomedes",
+        label: "Diomedes",
+        buttonLabel: "Diomedes",
+        preset: "diomedes",
         practice: false,
         title:
-          "LCF run: installs LCF and disables HQoL, scrap-selling, save-ui, Replay and VLog",
+          "Diomedes preset: latest game version and latest Thunderstore packages",
       },
       {
         value: "practice",

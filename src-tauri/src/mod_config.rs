@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering as AtomicOrdering;
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 
 use serde::Deserializer;
 use serde::{Deserialize, Serialize};
@@ -27,15 +29,129 @@ struct CachedRemoteManifest {
 
 #[derive(Default)]
 struct RemoteManifestCache {
-    cached: Option<CachedRemoteManifest>,
-    fetching: Option<crate::release_channel::ReleaseChannel>,
+    cached: Mutex<Option<CachedRemoteManifest>>,
 }
 
-static REMOTE_MANIFEST_CACHE: OnceLock<(Mutex<RemoteManifestCache>, Condvar)> = OnceLock::new();
+static REMOTE_MANIFEST_CACHE: OnceLock<RemoteManifestCache> = OnceLock::new();
+static REMOTE_MANIFEST_CACHE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-fn remote_manifest_cache() -> &'static (Mutex<RemoteManifestCache>, Condvar) {
-    REMOTE_MANIFEST_CACHE
-        .get_or_init(|| (Mutex::new(RemoteManifestCache::default()), Condvar::new()))
+pub fn init_manifest_cache(app_data: &Path) {
+    let _ = REMOTE_MANIFEST_CACHE_DIR.set(app_data.join("cache").join("manifests"));
+}
+
+fn manifest_cache_path(
+    directory: &Path,
+    channel: crate::release_channel::ReleaseChannel,
+) -> PathBuf {
+    let name = match channel {
+        crate::release_channel::ReleaseChannel::Stable => "stable.json",
+        crate::release_channel::ReleaseChannel::Beta => "beta.json",
+    };
+    directory.join(name)
+}
+
+fn save_cached_manifest(path: &Path, manifest: &RemoteManifest) -> Result<(), String> {
+    let bytes = serde_json::to_vec(manifest).map_err(|error| error.to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    // Only replace the last-good file after the full download has been parsed
+    // and written. A failed download/write must leave the old cache intact.
+    let temporary = path.with_extension("json.tmp");
+    let result = std::fs::write(&temporary, bytes).and_then(|_| std::fs::rename(&temporary, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result.map_err(|error| error.to_string())
+}
+
+impl RemoteManifestCache {
+    async fn fetch(
+        &self,
+        client: &reqwest::Client,
+        channel: crate::release_channel::ReleaseChannel,
+        url: &str,
+        path: Option<&Path>,
+        cancel: Option<&Arc<AtomicBool>>,
+    ) -> Result<RemoteManifest, String> {
+        if cancel.is_some_and(|token| token.load(AtomicOrdering::Relaxed)) {
+            return Err("Cancelled".to_string());
+        }
+        // Hold an async lock through the fetch so concurrent startup callers
+        // share one result without blocking Tokio's network/timer workers.
+        // Dropping an aborted caller also releases this lock automatically.
+        let mut cached =
+            ModsConfig::await_with_cancel(cancel, async { Ok(self.cached.lock().await) }).await?;
+        if cancel.is_some_and(|token| token.load(AtomicOrdering::Relaxed)) {
+            return Err("Cancelled".to_string());
+        }
+        if let Some(entry) = cached.as_ref() {
+            if entry.channel == channel && entry.fetched_at.elapsed() < REMOTE_MANIFEST_CACHE_TTL {
+                return Ok(entry.manifest.clone());
+            }
+        }
+
+        log::info!("Fetching manifest from {url}");
+        let result = ModsConfig::await_with_cancel(cancel, async {
+            client
+                .get(url)
+                .timeout(Duration::from_secs(12))
+                .send()
+                .await
+                .map_err(|error| error.to_string())?
+                .error_for_status()
+                .map_err(|error| error.to_string())?
+                .json::<RemoteManifest>()
+                .await
+                .map_err(|error| error.to_string())
+        })
+        .await;
+        if cancel.is_some_and(|token| token.load(AtomicOrdering::Relaxed)) {
+            return Err("Cancelled".to_string());
+        }
+
+        let manifest = match result {
+            Ok(manifest) => {
+                if let Some(path) = path {
+                    if let Err(error) = save_cached_manifest(path, &manifest) {
+                        log::warn!("Failed to save manifest cache {}: {error}", path.display());
+                    }
+                }
+                manifest
+            }
+            Err(error) => {
+                let fallback = cached
+                    .as_ref()
+                    .filter(|entry| entry.channel == channel)
+                    .map(|entry| entry.manifest.clone())
+                    .or_else(|| {
+                        let path = path?;
+                        match std::fs::read(path)
+                            .map_err(|error| error.to_string())
+                            .and_then(|bytes| {
+                                serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+                            }) {
+                            Ok(manifest) => Some(manifest),
+                            Err(error) => {
+                                log::warn!("Cannot use manifest cache {}: {error}", path.display());
+                                None
+                            }
+                        }
+                    });
+                let Some(manifest) = fallback else {
+                    return Err(error);
+                };
+                log::warn!("Manifest download failed; using last-good cached manifest: {error}");
+                manifest
+            }
+        };
+        *cached = Some(CachedRemoteManifest {
+            channel,
+            fetched_at: Instant::now(),
+            manifest: manifest.clone(),
+        });
+        Ok(manifest)
+    }
 }
 
 /// New config format (requested):
@@ -133,7 +249,7 @@ fn default_true() -> bool {
 
 // ---------- Public API ----------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteManifest {
     pub version: u32,
     #[serde(default, deserialize_with = "deserialize_u32_string_map")]
@@ -179,7 +295,9 @@ impl ModsConfig {
         client: &reqwest::Client,
         cancel: Option<&Arc<AtomicBool>>,
     ) -> Result<ManifestFetchResult, String> {
-        Ok(Self::load_manifest(client, cancel).await?.into_fetch_result())
+        Ok(Self::load_manifest(client, cancel)
+            .await?
+            .into_fetch_result())
     }
 
     /// Practice-run mods from the manifest's `practice_mods` list.
@@ -242,69 +360,19 @@ impl ModsConfig {
         cancel: Option<&Arc<AtomicBool>>,
     ) -> Result<RemoteManifest, String> {
         let channel = crate::release_channel::current();
-        let now = Instant::now();
-        let (cache_lock, cache_ready) = remote_manifest_cache();
-
-        {
-            let mut cache = cache_lock
-                .lock()
-                .map_err(|_| "remote manifest cache lock poisoned".to_string())?;
-            loop {
-                if let Some(cached) = cache.cached.as_ref() {
-                    if cached.channel == channel
-                        && now.duration_since(cached.fetched_at) < REMOTE_MANIFEST_CACHE_TTL
-                    {
-                        return Ok(cached.manifest.clone());
-                    }
-                }
-
-                if cancel.is_none() && cache.fetching == Some(channel) {
-                    cache = cache_ready
-                        .wait(cache)
-                        .map_err(|_| "remote manifest cache lock poisoned".to_string())?;
-                    continue;
-                }
-
-                if cancel.is_none() {
-                    cache.fetching = Some(channel);
-                }
-                break;
-            }
-        }
-
-        let url = channel.manifest_url();
-        log::info!("Fetching manifest from {url}");
-        let fetch_result = Self::await_with_cancel(cancel, async {
-            client
-                .get(url)
-                .timeout(Duration::from_secs(12))
-                .send()
-                .await
-                .map_err(|e| e.to_string())?
-                .error_for_status()
-                .map_err(|e| e.to_string())?
-                .json::<RemoteManifest>()
-                .await
-                .map_err(|e| e.to_string())
-        })
-        .await;
-
-        if cancel.is_none() {
-            let mut cache = cache_lock
-                .lock()
-                .map_err(|_| "remote manifest cache lock poisoned".to_string())?;
-            cache.fetching = None;
-            if let Ok(manifest) = fetch_result.as_ref() {
-                cache.cached = Some(CachedRemoteManifest {
-                    channel,
-                    fetched_at: Instant::now(),
-                    manifest: manifest.clone(),
-                });
-            }
-            cache_ready.notify_all();
-        }
-
-        fetch_result
+        let path = REMOTE_MANIFEST_CACHE_DIR
+            .get()
+            .map(|directory| manifest_cache_path(directory, channel));
+        REMOTE_MANIFEST_CACHE
+            .get_or_init(RemoteManifestCache::default)
+            .fetch(
+                client,
+                channel,
+                channel.manifest_url(),
+                path.as_deref(),
+                cancel,
+            )
+            .await
     }
 }
 
@@ -335,6 +403,10 @@ fn normalize_aliases(cfg: &mut ModsConfig) -> bool {
     }
     changed
 }
+
+#[cfg(test)]
+#[path = "mod_config_tests.rs"]
+mod tests;
 
 impl ModEntry {
     pub(crate) fn matches_caps(

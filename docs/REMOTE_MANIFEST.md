@@ -14,6 +14,16 @@ It is used for:
 
 The Rust schema lives in `src-tauri/src/mod_config.rs` (`RemoteManifest`, `ModEntry`).
 
+Successful downloads are saved in the application's data directory under
+`cache/manifests/stable.json` or `cache/manifests/beta.json`. Startup requests
+share an asynchronous cache with a 60-second lifetime. If a refresh fails
+(including the 12-second download timeout, HTTP errors or invalid JSON), the
+launcher uses the last valid manifest from memory or disk. Only a successfully
+parsed download replaces the stored copy; stable and beta caches stay separate.
+An initial successful download is needed before offline fallback is available.
+This fallback covers the manifest; downloading games or new mods still needs
+their servers. Local development `manifest.json` overrides retain priority.
+
 ---
 
 ## Top-level schema

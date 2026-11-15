@@ -43,9 +43,9 @@ import { clampVersionToEvent, eventAllowsTester, eventAllowsVersion, formatEvent
 import { extractSpreadsheetId, findSheetInfoByTitle, findSheetTitleByGid, findSimilarSheetInfoByTitle, normalizeSheetColumn, normalizeSheetColumnList, normalizeSheetInfos, parseSpreadsheetInput } from "./launcher/googleSheets";
 import { getInitialLaunchOptionsConfig, makeDeleteVersionPromptState, normalizeLaunchCommandTemplate, normalizeLaunchOptionsEntries } from "./launcher/launchOptions";
 import { CUSTOM_TIME_FORMAT_OPTIONS, DEFAULT_CUSTOM_LCSTATS_LAYOUT, DEFAULT_LCSTATS_SETTINGS, LCSTATS_LAYOUTS, hasCustomGoogleOauthSettings, isLcStatsTrackerMod, lcstatsLayoutUsesColumnFields, normalizeCustomLcstatsLayout, parseCustomLcstatsLayoutPreset, requiresGoogleOauthForMod } from "./launcher/lcstats";
-import { configPathMatchesMod, isLockedCfgEntry, isModCompatibleWithTags, isModCompatibleWithVersion, isPresetSummaryMod, isUiHiddenMod, listEntryKey, modHasRunModeAffinity, modKey, modKeyLower, filterForcedMods, isReplayMod, isCullFactoryBlockedByReplay
+import { configPathMatchesMod, isLockedCfgEntry, isModCompatibleWithTags, isModCompatibleWithVersion, isPresetSummaryMod, isUiHiddenMod, listEntryKey, modHasRunModeAffinity, modKey, modKeyLower, filterForcedMods, isReplayMod, isCullFactoryBlockedByReplay, isDiomedesExcludedMod
 } from "./launcher/mods";
-import { clampVersionToRange, getInitialRunMode, getLaunchRequestForRunMode, getPresetModulePriority, getPresetSummarySpec, getPresetVersionRange, isEclipsedHqRunMode, isEclipsedRunMode, isLcfRunMode, isPracticeRunMode, isSmhqRunMode, isVersionWithinRange, saveSelectedRunMode, shouldResetFreeMoonsOnRunModeChange } from "./launcher/runModes";
+import { clampVersionToRange, getInitialRunMode, getLaunchRequestForRunMode, getPresetModulePriority, getPresetSummarySpec, getPresetVersionRange, isEclipsedHqRunMode, isEclipsedRunMode, isLcfRunMode, isPracticeRunMode, isSmhqRunMode, isVersionWithinRange, normalizeStoredRunMode, saveSelectedRunMode, shouldResetFreeMoonsOnRunModeChange } from "./launcher/runModes";
 import { useDismissableContextMenu } from "../hooks/useContextMenu";
 import { ProgressBar, TaskProgressPanel } from "../components/launcher/TaskProgress";
 import { PrepareCancelButton } from "../components/launcher/PrepareCancelButton";
@@ -436,10 +436,11 @@ export default function LauncherPage({
     invoke("get_selected_run_mode")
       .then((savedRunMode) => {
         if (cancelled) return;
-        if (!userSelectedRunModeRef.current && RUN_MODE_VALUES.includes(savedRunMode)) {
+        if (!userSelectedRunModeRef.current && typeof savedRunMode === "string") {
+          const restoredRunMode = normalizeStoredRunMode(savedRunMode);
           setHasPersistedRunMode(true);
-          setRunMode(savedRunMode);
-          localStorage.setItem("selectedRunMode", savedRunMode);
+          setRunMode(restoredRunMode);
+          localStorage.setItem("selectedRunMode", restoredRunMode);
         }
       })
       .catch(() => {})
@@ -3911,7 +3912,7 @@ export default function LauncherPage({
     const baseKey = `${String(mod.dev).toLowerCase()}::${String(
       mod.name
     ).toLowerCase()}`;
-    if (nextEnabled && isCullFactoryBlockedByReplay(mod, modsForList, disabledSet, selectedVersion)) {
+    if (nextEnabled && isCullFactoryBlockedByReplay(mod, modsForList, disabledSet, selectedVersion, runMode)) {
       return;
     }
     if (isPracticeRunMode(runMode) && nextEnabled && practiceLockedModKeys.has(baseKey)) {
@@ -3927,6 +3928,7 @@ export default function LauncherPage({
       if (!nextEnabled && lcfForcedModKeys.has(baseKey)) return;
       if (nextEnabled && lcfDisabledModKeys.has(baseKey)) return;
     }
+    if (runMode === "diomedes" && nextEnabled && isDiomedesExcludedMod(mod)) return;
     if (
       nextEnabled &&
       !opts?.skipGoogleOauthGate &&
@@ -3972,7 +3974,7 @@ export default function LauncherPage({
     const seen = new Set();
     modsToToggle = modsToToggle.filter((m) => {
       const k = `${String(m.dev).toLowerCase()}::${String(m.name).toLowerCase()}`;
-      if (nextEnabled && isCullFactoryBlockedByReplay(m, modsForList, disabledSet, selectedVersion)) return false;
+      if (nextEnabled && isCullFactoryBlockedByReplay(m, modsForList, disabledSet, selectedVersion, runMode)) return false;
       if (seen.has(k)) return false;
       seen.add(k);
       if (k !== baseKey) {
@@ -5491,7 +5493,7 @@ export default function LauncherPage({
                   const baseDescription = presetSummary
                     ? m.description
                     : installedModDescriptions[keyLower] || "Click to edit config";
-                  const replayLocked = isCullFactoryBlockedByReplay(m, modsForList, disabledSet, selectedVersion);
+                  const replayLocked = isCullFactoryBlockedByReplay(m, modsForList, disabledSet, selectedVersion, runMode);
                   const description = replayLocked ? "Disabled while Replay is enabled" : baseDescription;
                   const smhqEnableLocked =
                     isSmhqRunMode(runMode) && smhqForcedModKeys.has(keyLower);
@@ -5501,7 +5503,8 @@ export default function LauncherPage({
                   const lcfEnableLocked =
                     isLcfRunMode(runMode) && lcfForcedModKeys.has(keyLower);
                   const lcfDisableLocked =
-                    isLcfRunMode(runMode) && lcfDisabledModKeys.has(keyLower);
+                    (isLcfRunMode(runMode) && lcfDisabledModKeys.has(keyLower)) ||
+                    (runMode === "diomedes" && isDiomedesExcludedMod(m));
                   const modSwitchLocked = modSwitchMods?.some((entry) => {
                     const entryKey = modKeyLower(entry);
                     return (
@@ -5509,6 +5512,7 @@ export default function LauncherPage({
                       (isSmhqRunMode(runMode) && smhqForcedModKeys.has(entryKey)) ||
                       (isEclipsedRunMode(runMode) && eclipsedForcedModKeys.has(entryKey)) ||
                       (isLcfRunMode(runMode) && lcfDisabledModKeys.has(entryKey)) ||
+                      (runMode === "diomedes" && isDiomedesExcludedMod(entry)) ||
                       eventForcedModKeys.has(entryKey)
                     );
                   });
@@ -5615,7 +5619,7 @@ export default function LauncherPage({
                           ) : null}
                           {lcfEnableLocked || lcfDisableLocked ? (
                             <div className="rounded-full border border-orange-400/30 bg-orange-400/10 px-2 py-0.5 text-[11px] font-medium text-orange-200">
-                              LCF
+                              {runMode === "diomedes" ? "Diomedes" : "LCF"}
                             </div>
                           ) : null}
                           {eventEnableLocked ? (
@@ -5769,10 +5773,11 @@ export default function LauncherPage({
                           selectedMod.name
                         ).toLowerCase()}`;
                         const v = installedModVersions[k];
+                        const diomedesOff = runMode === "diomedes" && isDiomedesExcludedMod(selectedMod);
                         const forcedOff = practiceLockedModKeys.has(k);
                         const userOff = disabledSet.has(k);
-                        const replayLocked = isCullFactoryBlockedByReplay(selectedMod, modsForList, disabledSet, selectedVersion);
-                        const stateLabel = replayLocked
+                        const replayLocked = isCullFactoryBlockedByReplay(selectedMod, modsForList, disabledSet, selectedVersion, runMode);
+                        const stateLabel = diomedesOff ? "Off in Diomedes" : replayLocked
                           ? "Off while Replay is enabled"
                           : forcedOff
                           ? "Off in Practice"

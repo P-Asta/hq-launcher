@@ -1,5 +1,6 @@
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
@@ -54,14 +55,62 @@ struct CachedEventManifest {
 
 #[derive(Default)]
 struct EventManifestCache {
-    cached: Option<CachedEventManifest>,
-    fetching: Option<crate::release_channel::ReleaseChannel>,
+    cached: Mutex<Option<CachedEventManifest>>,
 }
 
-static EVENT_MANIFEST_CACHE: OnceLock<(Mutex<EventManifestCache>, Condvar)> = OnceLock::new();
+static EVENT_MANIFEST_CACHE: OnceLock<EventManifestCache> = OnceLock::new();
 
-fn event_manifest_cache() -> &'static (Mutex<EventManifestCache>, Condvar) {
-    EVENT_MANIFEST_CACHE.get_or_init(|| (Mutex::new(EventManifestCache::default()), Condvar::new()))
+impl EventManifestCache {
+    async fn fetch(
+        &self,
+        client: &reqwest::Client,
+        channel: crate::release_channel::ReleaseChannel,
+        url: &str,
+    ) -> Result<EventManifest, String> {
+        // Startup event requests must yield while another request is fetching.
+        let mut cached = self.cached.lock().await;
+        if let Some(entry) = cached.as_ref() {
+            if entry.channel == channel && entry.fetched_at.elapsed() < EVENT_MANIFEST_CACHE_TTL {
+                return Ok(entry.manifest.clone());
+            }
+        }
+
+        log::info!("Fetching events manifest from {url}");
+        let result = async {
+            let response = client
+                .get(url)
+                .timeout(Duration::from_secs(12))
+                .send()
+                .await
+                .map_err(|error| error.to_string())?;
+            if response.status() == reqwest::StatusCode::NOT_FOUND {
+                return Ok(EventManifest::default());
+            }
+            response
+                .error_for_status()
+                .map_err(|error| error.to_string())?
+                .json::<EventManifest>()
+                .await
+                .map_err(|error| error.to_string())
+        }
+        .await;
+        let manifest = match result {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                let Some(entry) = cached.as_ref().filter(|entry| entry.channel == channel) else {
+                    return Err(error);
+                };
+                log::warn!("Using stale events manifest cache after fetch failure: {error}");
+                entry.manifest.clone()
+            }
+        };
+        *cached = Some(CachedEventManifest {
+            channel,
+            fetched_at: Instant::now(),
+            manifest: manifest.clone(),
+        });
+        Ok(manifest)
+    }
 }
 
 fn default_preset() -> String {
@@ -104,76 +153,95 @@ pub async fn fetch_events(client: &reqwest::Client) -> Result<EventManifest, Str
     }
 
     let channel = crate::release_channel::current();
-    let now = Instant::now();
-    let (cache_lock, cache_ready) = event_manifest_cache();
+    EVENT_MANIFEST_CACHE
+        .get_or_init(EventManifestCache::default)
+        .fetch(client, channel, channel.events_url())
+        .await
+}
 
-    {
-        let mut cache = cache_lock
-            .lock()
-            .map_err(|_| "event manifest cache lock poisoned".to_string())?;
-        loop {
-            if let Some(cached) = cache.cached.as_ref() {
-                if cached.channel == channel
-                    && now.duration_since(cached.fetched_at) < EVENT_MANIFEST_CACHE_TTL
-                {
-                    return Ok(cached.manifest.clone());
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn concurrent_events_finish_without_blocking_runtime_timers() {
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                for request in 0..3 {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut headers = Vec::new();
+                    let mut buffer = [0; 1024];
+                    while !headers.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                        let count = stream.read(&mut buffer).unwrap();
+                        if count == 0 {
+                            break;
+                        }
+                        headers.extend_from_slice(&buffer[..count]);
+                    }
+                    std::thread::sleep(Duration::from_millis(60));
+                    let body = r#"{"version":7,"events":[]}"#;
+                    let status = if request == 0 {
+                        "200 OK"
+                    } else {
+                        "503 Service Unavailable"
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).unwrap();
                 }
-            }
-
-            if cache.fetching == Some(channel) {
-                cache = cache_ready
-                    .wait(cache)
-                    .map_err(|_| "event manifest cache lock poisoned".to_string())?;
-                continue;
-            }
-
-            cache.fetching = Some(channel);
-            break;
-        }
-    }
-
-    let url = channel.events_url();
-    log::info!("Fetching events manifest from {url}");
-    let fetch_result = async {
-        let response = client
-            .get(url)
-            .timeout(Duration::from_secs(12))
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(EventManifest::default());
-        }
-
-        response
-            .error_for_status()
-            .map_err(|e| e.to_string())?
-            .json::<EventManifest>()
-            .await
-            .map_err(|e| e.to_string())
-    }
-    .await;
-
-    let mut cache = cache_lock
-        .lock()
-        .map_err(|_| "event manifest cache lock poisoned".to_string())?;
-    cache.fetching = None;
-    if let Ok(manifest) = fetch_result.as_ref() {
-        cache.cached = Some(CachedEventManifest {
-            channel,
-            fetched_at: Instant::now(),
-            manifest: manifest.clone(),
+            });
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let cache = EventManifestCache::default();
+                let client = reqwest::Client::builder().no_proxy().build().unwrap();
+                let requests = (0..5).map(|_| {
+                    cache.fetch(
+                        &client,
+                        crate::release_channel::ReleaseChannel::Stable,
+                        &url,
+                    )
+                });
+                let results = futures_util::future::join_all(requests).await;
+                assert!(results
+                    .iter()
+                    .all(|result| result.as_ref().is_ok_and(|mf| mf.version == 7)));
+                // Expired same-channel data remains usable if the server fails.
+                cache.cached.lock().await.as_mut().unwrap().fetched_at -= EVENT_MANIFEST_CACHE_TTL;
+                assert_eq!(
+                    cache
+                        .fetch(
+                            &client,
+                            crate::release_channel::ReleaseChannel::Stable,
+                            &url
+                        )
+                        .await
+                        .unwrap()
+                        .version,
+                    7
+                );
+                assert!(cache
+                    .fetch(&client, crate::release_channel::ReleaseChannel::Beta, &url)
+                    .await
+                    .is_err());
+            });
+            server.join().unwrap();
+            done.send(()).unwrap();
         });
-    } else if let Some(cached) = cache.cached.as_ref() {
-        if cached.channel == channel {
-            log::warn!("Using stale events manifest cache after fetch failure");
-            let manifest = cached.manifest.clone();
-            cache_ready.notify_all();
-            return Ok(manifest);
-        }
+        result
+            .recv_timeout(Duration::from_secs(4))
+            .expect("event requests blocked the runtime");
     }
-    cache_ready.notify_all();
-
-    fetch_result
 }

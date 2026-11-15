@@ -32,7 +32,7 @@ reqwest = { version = "0.13.1", default-features = false, features = ["rustls-no
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
 log = "0.4.29"
-tokio = { version = "1", features = ["rt", "macros", "time"] }
+tokio = { version = "1", features = ["rt", "macros", "time", "sync"] }
 semver = "1"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
@@ -50,7 +50,7 @@ flate2 = "1"
 reqwest = { version = "0.13.1", default-features = false, features = ["native-tls", "stream", "json", "http2", "blocking"] }
 log = "0.4.29"
 log4rs = "1.4.0"
-tokio = { version = "1", features = ["process", "io-util", "rt", "macros"] }
+tokio = { version = "1", features = ["process", "io-util", "rt", "macros", "time", "sync"] }
 expectrl = "0.7"
 semver = "1"
 chrono = "0.4"

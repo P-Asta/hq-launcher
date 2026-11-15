@@ -96,6 +96,25 @@ adb install -r src-tauri/gen/android/app/build/outputs/apk/arm64/debug/app-arm64
 adb shell am start -n asta.hq_launcher/.MainActivity
 ```
 
+### GitHub Actions APK builds
+
+The **Android APK** workflow (`.github/workflows/android.yml`) builds an ARM64
+debug APK on branch/tag pushes, pull requests and manual runs. To build manually,
+open **Actions → Android APK → Run workflow**. Download
+`hq-launcher-android-arm64-debug` from the completed run's **Artifacts**; it contains
+the installable APK and `SHA256SUMS.txt`. No repository signing secrets are needed.
+
+CI installs JDK 17, SDK 36 and NDK 28.2.13676358, then uses the same
+`yarn android:build:debug` wrapper as local builds. The donor APK is downloaded
+from the exact public 0.5.0 URL in `android/runtime/runtime.lock.json`, whose
+SHA-256 and size match the originally verified local donor. The existing runtime
+preparer checks it even on a cache hit and checks the pinned source and patches.
+CI does not substitute the latest upstream APK. This workflow uploads build
+artifacts; release signing and publishing remain separate. A debug APK from CI
+can have a different debug signing key than a locally installed build; Android
+will reject an in-place update if the keys differ. Keep the existing installation
+and its data when that happens, or use your own consistent signing setup.
+
 `yarn android:build` builds an ARM64 release APK; configure release signing before
 distribution. Both APK build commands run runtime preparation before invoking
 Tauri. The Windows helper falls back to copying the compiled native library when

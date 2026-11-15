@@ -1,5 +1,6 @@
 mod bepinex_cfg;
 mod discord_presence;
+mod diomedes;
 mod downloader;
 mod event_config;
 mod google_oauth;
@@ -207,6 +208,7 @@ fn preset_and_practice_for_run_mode(run_mode: &str) -> (String, bool) {
         "wesley_smhq" => ("wesley_smhq".to_string(), false),
         "wesley_eclipsed" => ("wesley_eclipsed".to_string(), false),
         "smhq" => ("smhq".to_string(), false),
+        "diomedes" => ("diomedes".to_string(), false),
         "eclipsed_hq" => ("eclipsed_hq".to_string(), false),
         "c_moons" => ("c_moons".to_string(), false),
         "c_moons_practice" => ("c_moons".to_string(), true),
@@ -220,7 +222,8 @@ fn preset_and_practice_for_run_mode(run_mode: &str) -> (String, bool) {
 use android_mod_support::is_run_mode_tag;
 
 fn mod_has_run_mode_affinity(spec: &mod_config::ModEntry) -> bool {
-    spec.tags.iter().any(|tag| is_run_mode_tag(tag))
+    (spec.dev.eq_ignore_ascii_case("asta") && spec.name.eq_ignore_ascii_case("lcf"))
+        || spec.tags.iter().any(|tag| is_run_mode_tag(tag))
         || spec.tag_constraints.keys().any(|tag| is_run_mode_tag(tag))
 }
 
@@ -1559,14 +1562,20 @@ fn is_ui_hidden_mod(m: &mod_config::ModEntry) -> bool {
 }
 
 async fn effective_mods_config_for_run_mode(
+    app: &tauri::AppHandle,
     client: &reqwest::Client,
     version: u32,
     run_mode: &str,
     include_ui_hidden: bool,
     include_practice_mods: bool,
 ) -> Result<ModsConfig, String> {
-    let (_remote_manifest_version, mods_cfg, _chain_config, _manifests, preset_tag_constraints) =
+    let (_remote_manifest_version, mods_cfg, _chain_config, manifests, preset_tag_constraints) =
         ModsConfig::fetch_manifest(client).await?;
+    if run_mode.eq_ignore_ascii_case("diomedes") {
+        diomedes::validate_version(version, &manifests)?;
+        let packages = thunderstore::refresh_community_packages_with_cancel(client, &thunderstore_cache_path(app)?, None).await?;
+        return Ok(ModsConfig { mods: diomedes::resolve_mods(&variable::get_diomedes_mod_list(), &packages)? });
+    }
     let (preset, practice) = preset_and_practice_for_run_mode(run_mode);
     let tags = preset_tags_for_name(&preset);
     let want: Vec<String> = tags.iter().map(|t| t.to_lowercase()).collect();
@@ -1578,6 +1587,9 @@ async fn effective_mods_config_for_run_mode(
     let mut selected_tagged: Vec<mod_config::ModEntry> = vec![];
 
     for m in mods_cfg.mods {
+        if m.dev.eq_ignore_ascii_case("asta") && m.name.eq_ignore_ascii_case("lcf") {
+            continue; // Legacy LCF is added explicitly only for its own preset below.
+        }
         let has_run_mode_affinity = mod_has_run_mode_affinity(&m);
         let applies_to_preset = !want.is_empty() && want.iter().any(|tag| m.applies_to_tag(tag));
         let can_apply_as_base = !has_run_mode_affinity || m.tags.is_empty();
@@ -1785,6 +1797,7 @@ async fn prepare_tagged_mods_for_version(
 }
 
 async fn run_mode_tagged_mod_ids(
+    app: &tauri::AppHandle,
     version: u32,
     cancel: Option<&Arc<AtomicBool>>,
 ) -> Result<Vec<(String, String)>, String> {
@@ -1792,8 +1805,9 @@ async fn run_mode_tagged_mod_ids(
     let (_remote_manifest_version, mods_cfg, _chain_config, _manifests, _preset_tag_constraints) =
         ModsConfig::fetch_manifest_with_cancel(&client, cancel).await?;
 
+    let base_ids: HashSet<_> = mods_cfg.mods.iter().filter(|m| !mod_has_run_mode_affinity(m)).map(|m| normalize_mod_key(&m.dev, &m.name)).collect();
     let mut seen: HashSet<String> = HashSet::new();
-    let mut tagged_ids: Vec<(String, String)> = vec![];
+    let mut tagged_ids: Vec<(String, String)> = variable::get_lcf_mod_list().into_iter().map(|m| (m.dev, m.name)).collect();
     for m in mods_cfg.mods {
         if !mod_has_run_mode_affinity(&m) {
             continue;
@@ -1807,7 +1821,296 @@ async fn run_mode_tagged_mod_ids(
         }
     }
 
+    // Disable preset-only packages and resolved dependencies when returning to an HQ mode.
+    // Packages shared with the regular manifest keep that mode's existing state rules.
+    if let Ok(text) = std::fs::read_to_string(diomedes_profile_path(app, version)?) {
+        if let Ok(profile) = serde_json::from_str::<ModsConfig>(&text) {
+            for m in profile.mods {
+                if base_ids.contains(&normalize_mod_key(&m.dev, &m.name)) { continue; }
+                tagged_ids.push((m.dev, m.name));
+            }
+        }
+    }
     Ok(tagged_ids)
+}
+
+fn diomedes_profile_path(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<std::path::PathBuf, String> {
+    Ok(version_dir(app, version)?
+        .join(".hq-launcher")
+        .join("diomedes-tracked-mods.json"))
+}
+
+async fn prepare_diomedes_for_version(
+    app: &tauri::AppHandle,
+    version: u32,
+    cancel: Option<Arc<AtomicBool>>,
+    step_name: &str,
+) -> Result<(), String> {
+    let game_root = version_dir(app, version)?;
+    let active_receipt = game_root.join(".hq-launcher/diomedes-mods.json");
+    if active_receipt.is_file() {
+        std::fs::remove_file(&active_receipt).map_err(|e| e.to_string())?;
+    }
+    let client = reqwest::Client::new();
+    let (_, _, _, manifests, _) =
+        ModsConfig::fetch_manifest_with_cancel(&client, cancel.as_ref()).await?;
+    diomedes::validate_version(version, &manifests)?;
+    if !game_root.exists() {
+        return Err("Game version is not installed".into());
+    }
+    progress::emit_progress(
+        app,
+        TaskProgressPayload {
+            version,
+            steps_total: 1,
+            step: 1,
+            step_name: step_name.into(),
+            step_progress: 0.0,
+            overall_percent: 0.0,
+            detail: Some("Resolving latest Diomedes packages and dependencies".into()),
+            downloaded_bytes: None,
+            total_bytes: None,
+            extracted_files: Some(0),
+            total_files: Some(variable::get_diomedes_mod_list().len() as u64),
+        },
+    );
+    let packages = thunderstore::refresh_community_packages_with_cancel(
+        &client,
+        &thunderstore_cache_path(app)?,
+        cancel.as_ref(),
+    )
+    .await?;
+    let cfg = ModsConfig {
+        mods: diomedes::resolve_mods(&variable::get_diomedes_mod_list(), &packages)?,
+    };
+    let profile = diomedes_profile_path(app, version)?;
+    std::fs::create_dir_all(profile.parent().unwrap()).map_err(|e| e.to_string())?;
+    // Track all preset dependencies before installation so cancellation cannot leave them enabled in HQ.
+    let mut tracked = cfg.clone();
+    if let Ok(bytes) = std::fs::read(&profile) {
+        if let Ok(previous) = serde_json::from_slice::<ModsConfig>(&bytes) {
+            for old in previous.mods {
+                if !tracked.mods.iter().any(|m| {
+                    m.dev.eq_ignore_ascii_case(&old.dev) && m.name.eq_ignore_ascii_case(&old.name)
+                }) {
+                    tracked.mods.push(old);
+                }
+            }
+        }
+    }
+    std::fs::write(
+        &profile,
+        serde_json::to_vec(&tracked).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    mods::install_mods_with_progress(
+        app,
+        &game_root,
+        version,
+        &cfg,
+        &["Diomedes".into()],
+        cancel.clone(),
+        |done, total, info| {
+            let p = if total == 0 {
+                1.0
+            } else {
+                (done as f64 / total as f64).clamp(0.0, 1.0)
+            };
+            progress::emit_progress(
+                app,
+                TaskProgressPayload {
+                    version,
+                    steps_total: 1,
+                    step: 1,
+                    step_name: step_name.into(),
+                    step_progress: p,
+                    overall_percent: p * 100.0,
+                    detail: info.detail,
+                    downloaded_bytes: info.downloaded_bytes,
+                    total_bytes: info.total_bytes,
+                    extracted_files: info.extracted_files.or(Some(done)),
+                    total_files: info.total_files.or(Some(total)),
+                },
+            );
+        },
+    )
+    .await?;
+    if cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
+        return Err("Cancelled".into());
+    }
+    let versions = diomedes::latest_versions_for_mods(&cfg.mods, &packages)?;
+    diomedes::verify_installed_versions(
+        &versions,
+        &read_installed_versions_for_specs(app, version, &cfg.mods)?,
+    )?;
+    apply_diomedes_mod_states(app, version, &cfg).await?;
+    std::fs::write(
+        active_receipt,
+        serde_json::to_vec(&diomedes::InstallReceipt {
+            config: cfg,
+            versions,
+        })
+        .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn apply_diomedes_mod_states(
+    app: &tauri::AppHandle,
+    version: u32,
+    cfg: &ModsConfig,
+) -> Result<(), String> {
+    let (_, base, _, _, _) = ModsConfig::fetch_manifest(&reqwest::Client::new()).await?;
+    let mut disabled = run_mode_tagged_mod_ids(app, version, None).await?;
+    disabled.extend(practice_mode_mod_ids(None).await?);
+    disabled.extend(diomedes::excluded_mod_ids(&base.mods));
+    let base_keys: HashSet<_> = base.mods.iter().filter(|m| !mod_has_run_mode_affinity(m)).map(|m| normalize_mod_key(&m.dev, &m.name)).collect();
+    let enabled: Vec<_> = cfg
+        .mods
+        .iter()
+        .filter(|m| !diomedes::is_excluded_mod(m))
+        .filter(|m| !base_keys.contains(&normalize_mod_key(&m.dev, &m.name)))
+        .map(|m| (m.dev.clone(), m.name.clone()))
+        .collect();
+    apply_effective_mod_states_for_version(app, version, &disabled, &enabled)?;
+    Ok(())
+}
+
+async fn apply_installed_diomedes_for_launch(
+    app: &tauri::AppHandle,
+    version: u32,
+) -> Result<(), String> {
+    let (_, _, _, manifests, _) = ModsConfig::fetch_manifest(&reqwest::Client::new()).await?;
+    diomedes::validate_version(version, &manifests)?;
+    let path = version_dir(app, version)?.join(".hq-launcher/diomedes-mods.json");
+    let receipt: diomedes::InstallReceipt =
+        serde_json::from_slice(&std::fs::read(path).map_err(|_| {
+            "Select Diomedes to finish installing the preset before launching".to_string()
+        })?)
+        .map_err(|e| e.to_string())?;
+    diomedes::verify_installed_versions(
+        &receipt.versions,
+        &read_installed_versions_for_specs(app, version, &receipt.config.mods)?,
+    )?;
+    apply_diomedes_mod_states(app, version, &receipt.config).await
+}
+
+fn read_installed_versions_for_specs(
+    app: &tauri::AppHandle,
+    version: u32,
+    specs: &[mod_config::ModEntry],
+) -> Result<HashMap<String, String>, String> {
+    let plugins = plugins_dir(app, version)?;
+    let mut installed = HashMap::new();
+    for spec in specs {
+        if let Some(directory) = mod_dir_for(&plugins, &spec.dev, &spec.name) {
+            for name in ["manifest.json", "manifest.json.old"] {
+                if let Ok(manifest) = bepinex_cfg::read_manifest(&directory.join(name)) {
+                    installed.insert(
+                        normalize_mod_key(&spec.dev, &spec.name),
+                        manifest.version_number,
+                    );
+                    break;
+                }
+            }
+        }
+    }
+    Ok(installed)
+}
+
+async fn restore_hq_shared_pins(
+    app: &tauri::AppHandle,
+    version: u32,
+    run_mode: &str,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<(), String> {
+    let Ok(bytes) = std::fs::read(diomedes_profile_path(app, version)?) else {
+        return Ok(());
+    };
+    let profile: ModsConfig = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let client = reqwest::Client::new();
+    let normal =
+        effective_mods_config_for_run_mode(app, &client, version, run_mode, true, true).await?;
+    let plugins = plugins_dir(app, version)?;
+    let mut installed = HashMap::new();
+    for spec in &profile.mods {
+        if let Some(directory) = mod_dir_for(&plugins, &spec.dev, &spec.name) {
+            for name in ["manifest.json", "manifest.json.old"] {
+                if let Ok(manifest) = bepinex_cfg::read_manifest(&directory.join(name)) {
+                    installed.insert(
+                        normalize_mod_key(&spec.dev, &spec.name),
+                        manifest.version_number,
+                    );
+                    break;
+                }
+            }
+        }
+    }
+    let cfg = ModsConfig {
+        mods: diomedes::shared_pins_to_restore(&profile.mods, &normal.mods, version, &installed),
+    };
+    if cfg.mods.is_empty() {
+        return Ok(());
+    }
+    let active_receipt = version_dir(app, version)?.join(".hq-launcher/diomedes-mods.json");
+    if active_receipt.is_file() {
+        std::fs::remove_file(active_receipt).map_err(|e| e.to_string())?;
+    }
+    let (preset, _) = preset_and_practice_for_run_mode(run_mode);
+    let tags = preset_tags_for_name(&preset);
+    let step_name = if cancel.is_some() {
+        "Preset Mods"
+    } else {
+        "Restore Mods"
+    };
+    mods::install_mods_with_progress(
+        app,
+        &version_dir(app, version)?,
+        version,
+        &cfg,
+        &tags,
+        cancel,
+        |done, total, info| {
+            let p = if total == 0 {
+                1.0
+            } else {
+                (done as f64 / total as f64).clamp(0.0, 1.0)
+            };
+            progress::emit_progress(
+                app,
+                TaskProgressPayload {
+                    version,
+                    steps_total: 1,
+                    step: 1,
+                    step_name: step_name.into(),
+                    step_progress: p,
+                    overall_percent: p * 100.0,
+                    detail: info.detail,
+                    downloaded_bytes: info.downloaded_bytes,
+                    total_bytes: info.total_bytes,
+                    extracted_files: Some(done),
+                    total_files: Some(total),
+                },
+            );
+        },
+    )
+    .await?;
+    let expected = cfg
+        .mods
+        .iter()
+        .filter_map(|m| {
+            m.pinned_version_for(version)
+                .map(|pin| (normalize_mod_key(&m.dev, &m.name), pin.to_string()))
+        })
+        .collect();
+    diomedes::verify_installed_versions(
+        &expected,
+        &read_installed_versions_for_specs(app, version, &cfg.mods)?,
+    )
 }
 
 fn force_enable_mods_for_version(
@@ -2524,6 +2827,8 @@ fn fontpatcher_assets_dir_for_version(
 fn sync_fontpatcher_with_assets_for_version(
     app: &tauri::AppHandle,
     version: u32,
+    forced_disabled: bool,
+    forced_enabled: bool,
 ) -> Result<(), String> {
     let assets_dir = fontpatcher_assets_dir_for_version(app, version)?;
     let assets_available = assets_dir.is_dir();
@@ -2531,15 +2836,29 @@ fn sync_fontpatcher_with_assets_for_version(
         .mods
         .contains(&normalize_mod_id("LeKAKiD", "FontPatcher"));
 
-    let enabled = assets_available && !disabled;
     let plugins = plugins_dir(app, version)?;
-    if let Some(dir) = mod_dir_for(&plugins, "LeKAKiD", "FontPatcher") {
-        let _ = set_mod_files_old_suffix(&dir, enabled);
-    }
-
     let patchers = patchers_dir(app, version)?;
-    if let Some(dir) = mod_dir_for(&patchers, "LeKAKiD", "FontPatcher") {
-        let _ = set_mod_files_old_suffix(&dir, enabled);
+    sync_fontpatcher_files(
+        &[plugins.as_path(), patchers.as_path()],
+        assets_available,
+        disabled,
+        forced_disabled,
+        forced_enabled,
+    )
+}
+
+fn sync_fontpatcher_files(
+    roots: &[&Path],
+    assets_available: bool,
+    disabled: bool,
+    forced_disabled: bool,
+    forced_enabled: bool,
+) -> Result<(), String> {
+    let enabled = assets_available && (forced_enabled || (!disabled && !forced_disabled));
+    for root in roots {
+        if let Some(dir) = mod_dir_for(root, "LeKAKiD", "FontPatcher") {
+            set_mod_files_old_suffix(&dir, enabled)?;
+        }
     }
 
     Ok(())
@@ -8188,7 +8507,7 @@ fn apply_effective_mod_states_for_version(
         &forced_disabled_keys,
         &forced_enabled_keys,
     )?;
-    let _ = sync_fontpatcher_with_assets_for_version(app, version);
+    sync_fontpatcher_with_assets_for_version(app, version, forced_disabled_keys.contains("lekakid::fontpatcher"), forced_enabled_keys.contains("lekakid::fontpatcher"))?;
     Ok(())
 }
 
@@ -9098,6 +9417,7 @@ fn set_selected_run_mode(app: tauri::AppHandle, run_mode: String) -> Result<Stri
             | "wesley_eclipsed"
             | "wesley_practice"
             | "lcf"
+            | "diomedes"
     ) {
         return Err(format!("invalid run mode: {run_mode}"));
     }
@@ -9688,7 +10008,7 @@ async fn check_mod_updates(
     let extract_dir = version_dir(&app, version)?;
     let mods_cfg = exclude_disabled_mod_switches_from_updates(
         &app,
-        effective_mods_config_for_run_mode(&client, version, run_mode_name, false, true).await?,
+        effective_mods_config_for_run_mode(&app, &client, version, run_mode_name, false, true).await?,
     )?;
     let (preset, _practice) = preset_and_practice_for_run_mode(run_mode_name);
     let active_tags = preset_tags_for_name(&preset);
@@ -9874,9 +10194,16 @@ async fn apply_mod_updates(
             ));
         }
 
+        if run_mode_name.eq_ignore_ascii_case("diomedes") {
+            prepare_diomedes_for_version(&app, version, None, "Update Mods").await?;
+            apply_native_overlay_update_step(&app, 3, &game_root).await;
+            return Ok(());
+        }
+
         let mods_cfg = exclude_disabled_mod_switches_from_updates(
             &app,
             effective_mods_config_for_run_mode(
+                &app,
                 &client,
                 version,
                 &run_mode_name,
@@ -11910,6 +12237,7 @@ async fn launch_game(
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
     wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
+    restore_hq_shared_pins(&app, version, "hq", None).await?;
     #[cfg(target_os = "macos")]
     macos_runtime::prepare_launch(&app).await?;
     let has_event = event_id.as_deref().is_some_and(|id| !id.trim().is_empty());
@@ -11921,7 +12249,7 @@ async fn launch_game(
     }
 
     let mut forced_disabled_ids = practice_mode_mod_ids(None).await?;
-    forced_disabled_ids.extend(run_mode_tagged_mod_ids(version, None).await?);
+    forced_disabled_ids.extend(run_mode_tagged_mod_ids(&app, version, None).await?);
     forced_disabled_ids.push(if has_event {
         base_vlog_mod_id()
     } else {
@@ -12060,6 +12388,7 @@ async fn launch_game_practice(
     prepare_state: State<'_, PrepareState>,
 ) -> Result<u32, String> {
     wait_for_prepare_to_finish(&prepare_state, version, std::time::Duration::from_secs(30))?;
+    restore_hq_shared_pins(&app, version, "practice", None).await?;
     #[cfg(target_os = "macos")]
     macos_runtime::prepare_launch(&app).await?;
     clear_event_mods_for_version(&app, version)?;
@@ -12068,7 +12397,7 @@ async fn launch_game_practice(
     // Practice run: install + enable practice mods (compatible with this game version).
     let practice_ids = prepare_practice_mods_for_version(&app, version, None).await?;
     let mut forced_disabled_ids = practice_mode_forced_disabled_ids(None).await?;
-    forced_disabled_ids.extend(run_mode_tagged_mod_ids(version, None).await?);
+    forced_disabled_ids.extend(run_mode_tagged_mod_ids(&app, version, None).await?);
     let mut forced_enabled_ids = practice_ids.clone();
     forced_enabled_ids.extend(practice_mode_forced_enabled_ids());
 
@@ -12153,96 +12482,103 @@ async fn launch_game_preset(
     // Normalize preset and map to manifest tags.
     let tags = preset_tags_for_name(&preset);
 
-    let practice_ids = if practice {
-        // Practice run: install + enable practice mods (compatible with this game version).
-        prepare_practice_mods_for_version(&app, version, None).await?
-    } else {
-        vec![]
-    };
-
-    // Install preset-tagged mods additively (no overwrite).
-    // For practice runs, install these AFTER practice mods so preset-specific pins can win.
-    // (Practice list has its own pinning, e.g. for LethalNetworkAPI.)
-    let preset_ids =
-        prepare_tagged_mods_for_version(&app, version, &tags, "Preset Mods", None).await?;
-    let lcf_run = is_lcf_preset(&preset);
-    let lcf_ids = if lcf_run {
-        prepare_lcf_mods_for_version(&app, version, None).await?
-    } else {
-        vec![]
-    };
-    // Ensure preset mods are enabled for this run (even if they overlap practice-disable rules).
-    // For practice runs we can apply immediately; for non-practice runs we must apply after
-    // `ensure_practice_mods_disabled_for_version` which rewrites disablemod.json.
-    if practice {
-        let _ = force_enable_mods_for_version(&app, version, &preset_ids);
-    }
-
     let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
-    if has_event {
-        ensure_event_vlog_cfg(&app, version, &event_id_for_cfg)?;
-    }
-
-    if !practice {
-        // Non-practice run: force-disable practice mods.
-        ensure_practice_mods_disabled_for_version(&app, version, None).await?;
-        // Re-enable preset mods for this run (Wesley includes LethalNetworkAPI which is otherwise forced off).
-        let _ = force_enable_mods_for_version(&app, version, &preset_ids);
-    }
-
-    let mut tagged_disabled_ids = run_mode_tagged_mod_ids(version, None).await?;
-    allow_eclipsed_hq_optional_mods(&preset, &mut tagged_disabled_ids);
-    if lcf_run {
-        tagged_disabled_ids.extend(lcf_forced_disabled_ids(None).await?);
-    }
-    let mut forced_enabled_ids = preset_ids.clone();
-    forced_enabled_ids.extend(lcf_ids);
-    forced_enabled_ids.extend(practice_ids.clone());
-    forced_enabled_ids.extend(event_forced_ids);
-    if practice {
-        forced_enabled_ids.extend(practice_mode_forced_enabled_ids());
-    }
-    let forced_disabled_ids = if practice {
-        let mut ids = practice_mode_forced_disabled_ids(None).await?;
-        ids.extend(tagged_disabled_ids);
-        ids
+    if preset.eq_ignore_ascii_case("diomedes") {
+        if practice || has_event { return Err("Diomedes cannot be combined with practice or events".into()); }
+        apply_installed_diomedes_for_launch(&app, version).await?;
     } else {
-        let mut ids = practice_mode_mod_ids(None).await?;
-        ids.extend(tagged_disabled_ids);
-        ids.push(if has_event {
-            base_vlog_mod_id()
+        let restore_mode = if practice { format!("{preset}_practice") } else { preset.clone() };
+        restore_hq_shared_pins(&app, version, &restore_mode, None).await?;
+        let practice_ids = if practice {
+            // Practice run: install + enable practice mods (compatible with this game version).
+            prepare_practice_mods_for_version(&app, version, None).await?
         } else {
-            event_vlog_mod_id()
-        });
-        ids
-    };
+            vec![]
+        };
 
-    // Mode-required state must win over the saved disabled list at launch time too.
-    let _ = apply_effective_mod_states_for_version(
-        &app,
-        version,
-        &forced_disabled_ids,
-        &forced_enabled_ids,
-    );
-    if practice {
-        if let Ok(plugins) = plugins_dir(&app, version) {
-            let _ = sync_practice_locked_mods_for_version(&plugins);
+        // Install preset-tagged mods additively (no overwrite).
+        // For practice runs, install these AFTER practice mods so preset-specific pins can win.
+        // (Practice list has its own pinning, e.g. for LethalNetworkAPI.)
+        let preset_ids =
+            prepare_tagged_mods_for_version(&app, version, &tags, "Preset Mods", None).await?;
+        let lcf_run = is_lcf_preset(&preset);
+        let lcf_ids = if lcf_run {
+            prepare_lcf_mods_for_version(&app, version, None).await?
+        } else {
+            vec![]
+        };
+        // Ensure preset mods are enabled for this run (even if they overlap practice-disable rules).
+        // For practice runs we can apply immediately; for non-practice runs we must apply after
+        // `ensure_practice_mods_disabled_for_version` which rewrites disablemod.json.
+        if practice {
+            let _ = force_enable_mods_for_version(&app, version, &preset_ids);
         }
-    } else if !lcf_run {
-        // For HQoL specifically, also ensure `.old` matches disablemod.json on normal runs.
-        // LCF runs force HQoL/VLog off, so they must not be re-synced from disablemod.json.
-        let _ = sync_hqol_with_disablemod_for_version(&app, version);
-        let _ = sync_vlog_with_disablemod_for_version(&app, version);
-    }
-    let _ = ensure_reverb_trigger_fix_cfg(&app, version);
-    if is_wesley_base_run(&tags, practice) {
-        apply_wesley_hqol_dont_store_override(&app, version)?;
-    } else {
-        let _ = restore_hqol_wesley_dont_store_backup_if_present(&app);
-    }
-    if tags.iter().any(|t| t.eq_ignore_ascii_case("wesley")) {
-        let lock_moons = !practice && !tags.iter().any(|t| t.eq_ignore_ascii_case("smhq"));
-        let _ = ensure_wesley_moonscripts_cfg(&app, version, lock_moons);
+
+        if has_event {
+            ensure_event_vlog_cfg(&app, version, &event_id_for_cfg)?;
+        }
+
+        if !practice {
+            // Non-practice run: force-disable practice mods.
+            ensure_practice_mods_disabled_for_version(&app, version, None).await?;
+            // Re-enable preset mods for this run (Wesley includes LethalNetworkAPI which is otherwise forced off).
+            let _ = force_enable_mods_for_version(&app, version, &preset_ids);
+        }
+
+        let mut tagged_disabled_ids = run_mode_tagged_mod_ids(&app, version, None).await?;
+        allow_eclipsed_hq_optional_mods(&preset, &mut tagged_disabled_ids);
+        if lcf_run {
+            tagged_disabled_ids.extend(lcf_forced_disabled_ids(None).await?);
+        }
+        let mut forced_enabled_ids = preset_ids.clone();
+        forced_enabled_ids.extend(lcf_ids);
+        forced_enabled_ids.extend(practice_ids.clone());
+        forced_enabled_ids.extend(event_forced_ids);
+        if practice {
+            forced_enabled_ids.extend(practice_mode_forced_enabled_ids());
+        }
+        let forced_disabled_ids = if practice {
+            let mut ids = practice_mode_forced_disabled_ids(None).await?;
+            ids.extend(tagged_disabled_ids);
+            ids
+        } else {
+            let mut ids = practice_mode_mod_ids(None).await?;
+            ids.extend(tagged_disabled_ids);
+            ids.push(if has_event {
+                base_vlog_mod_id()
+            } else {
+                event_vlog_mod_id()
+            });
+            ids
+        };
+
+        // Mode-required state must win over the saved disabled list at launch time too.
+        let _ = apply_effective_mod_states_for_version(
+            &app,
+            version,
+            &forced_disabled_ids,
+            &forced_enabled_ids,
+        );
+        if practice {
+            if let Ok(plugins) = plugins_dir(&app, version) {
+                let _ = sync_practice_locked_mods_for_version(&plugins);
+            }
+        } else if !lcf_run {
+            // For HQoL specifically, also ensure `.old` matches disablemod.json on normal runs.
+            // LCF runs force HQoL/VLog off, so they must not be re-synced from disablemod.json.
+            let _ = sync_hqol_with_disablemod_for_version(&app, version);
+            let _ = sync_vlog_with_disablemod_for_version(&app, version);
+        }
+        let _ = ensure_reverb_trigger_fix_cfg(&app, version);
+        if is_wesley_base_run(&tags, practice) {
+            apply_wesley_hqol_dont_store_override(&app, version)?;
+        } else {
+            let _ = restore_hqol_wesley_dont_store_backup_if_present(&app);
+        }
+        if tags.iter().any(|t| t.eq_ignore_ascii_case("wesley")) {
+            let lock_moons = !practice && !tags.iter().any(|t| t.eq_ignore_ascii_case("smhq"));
+            let _ = ensure_wesley_moonscripts_cfg(&app, version, lock_moons);
+        }
     }
     wait_for_mod_file_renames_to_settle();
 
@@ -12303,6 +12639,13 @@ async fn prepare_preset_for_version(
     practice: bool,
     cancel: Arc<AtomicBool>,
 ) -> Result<bool, String> {
+    if preset.eq_ignore_ascii_case("diomedes") {
+        if practice { return Err("Diomedes does not support practice mode".into()); }
+        prepare_diomedes_for_version(app, version, Some(cancel), "Preset Mods").await?;
+        return Ok(true);
+    }
+    let restore_mode = if practice && preset.eq_ignore_ascii_case("hq") { "practice".into() } else if practice { format!("{preset}_practice") } else { preset.to_string() };
+    restore_hq_shared_pins(app, version, &restore_mode, Some(cancel.clone())).await?;
     let tags = preset_tags_for_name(preset);
 
     if cancel.load(Ordering::Relaxed) {
@@ -12357,7 +12700,7 @@ async fn prepare_preset_for_version(
         return Err("Cancelled".to_string());
     }
 
-    let mut tagged_disabled_ids = run_mode_tagged_mod_ids(version, Some(&cancel)).await?;
+    let mut tagged_disabled_ids = run_mode_tagged_mod_ids(app, version, Some(&cancel)).await?;
     allow_eclipsed_hq_optional_mods(preset, &mut tagged_disabled_ids);
     if lcf_run {
         tagged_disabled_ids.extend(lcf_forced_disabled_ids(Some(&cancel)).await?);
@@ -12845,7 +13188,12 @@ async fn set_mod_enabled(
     let plugins = plugins_dir(&app, version)?;
     let patchers = patchers_dir(&app, version)?;
     let roots = [plugins.as_path(), patchers.as_path()];
+    let diomedes_run = get_selected_run_mode(app.clone())?.as_deref() == Some("diomedes");
+    if enabled && diomedes_run && diomedes::excluded_mod_ids(&[]).iter().any(|(dev, name)| normalize_mod_id(dev, name) == id) {
+        return Err("This mod is disabled in Diomedes.".to_string());
+    }
     if enabled && id.dev == "fumiko" && id.name == "cullfactory"
+        && !diomedes_run
         && replay_enabled_in_roots(&roots, &disabled_mod_keys(&list.mods))
     {
         return Err("CullFactory cannot be enabled while Replay is enabled.".to_string());
@@ -13039,8 +13387,9 @@ async fn list_installed_mod_versions(
 #[tauri::command]
 async fn get_manifest() -> Result<ManifestDto, String> {
     let client = reqwest::Client::new();
-    let (version, cfg, chain_config, manifests, preset_tag_constraints) =
+    let (version, mut cfg, chain_config, manifests, preset_tag_constraints) =
         mod_config::ModsConfig::fetch_manifest(&client).await?;
+    cfg.mods.extend(variable::get_diomedes_mod_list());
     Ok(ManifestDto {
         version,
         chain_config,
@@ -13897,6 +14246,9 @@ pub fn run() {
         .setup(|app| {
             // File logging (AppDataDir/logs/hq-launcher.log)
             logger::init(&app.handle()).map_err(|e| tauri::Error::Setup(e.into()))?;
+            if let Ok(app_data) = app.path().app_data_dir() {
+                mod_config::init_manifest_cache(&app_data);
+            }
             if let Err(e) = restore_stale_vanilla_winhttp_backups(app.handle()) {
                 log::warn!("Failed to restore a stale Vanilla Run winhttp.dll backup: {e}");
             }

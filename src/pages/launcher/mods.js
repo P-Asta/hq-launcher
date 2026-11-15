@@ -14,7 +14,8 @@ export function isReplayMod(mod) {
   return modKeyLower(mod) === "asta::replay";
 }
 
-export function isCullFactoryBlockedByReplay(mod, mods, disabledKeys, version) {
+export function isCullFactoryBlockedByReplay(mod, mods, disabledKeys, version, runMode) {
+  if (runMode === 'diomedes') return false;
   return modKeyLower(mod) === "fumiko::cullfactory" &&
     mods.some((entry) => isReplayMod(entry) && entry.enabled !== false &&
       isModCompatibleWithVersion(entry, version) && !disabledKeys.has(modKeyLower(entry)));
@@ -106,9 +107,10 @@ export function modAppliesToTag(mod, activeTag) {
   return matchesTag || findTagConstraint(mod, activeTag) != null;
 }
 
-const RUN_MODE_TAGS = new Set(["brutal", "wesley", "smhq", "eclipsed", "c.moons"]);
+const RUN_MODE_TAGS = new Set(["brutal", "wesley", "smhq", "eclipsed", "c.moons", "diomedes"]);
 
 export function modHasRunModeAffinity(mod) {
+  if (modKeyLower(mod) === "asta::lcf") return true;
   const modTags = Array.isArray(mod?.tags) ? mod.tags : [];
   if (modTags.some((tag) => RUN_MODE_TAGS.has(String(tag).toLowerCase()))) {
     return true;
@@ -119,6 +121,11 @@ export function modHasRunModeAffinity(mod) {
   return Object.keys(constraints).some((tag) =>
     RUN_MODE_TAGS.has(String(tag).toLowerCase())
   );
+}
+
+export function isDiomedesExcludedMod(mod) {
+  return new Set(['hqhqteam::vlog', 'hqhqteam::hqol', 'pooble::lcbettersaves', 'timewaste::overworkedui', 'asta::lcf', 'asta::evlog', 'asta::replay', 'mikuoreo::lcstatstracker']).has(modKeyLower(mod)) ||
+    String(mod?.switch_group ?? '').trim().toLowerCase() === 'save-ui';
 }
 
 export function isModCompatibleWithTags(mod, version, activeTags) {
