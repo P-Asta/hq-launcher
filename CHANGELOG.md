@@ -1,6 +1,13 @@
 # Version (YYYY-MM-DD)
 - Content
 
+# 1.15.2 (2026-11-15)
+- Fixed startup manifest requests blocking the async runtime and added last-good local manifest fallback when downloads fail.
+- Added the Diomedes preset for the latest supported game version, with current mod dependencies and installation progress.
+- Preserved base mod preferences in Diomedes while disabling VLog, HQoL, save UI mods, Replay and LCStatsTracker.
+- Hid LCF from normal preset/mod lists and excluded it from ordinary updates.
+- Added GitHub Actions ARM64 Android APK builds.
+
 
 # 1.11.5 (2026-06-06)
 - A button will appear to display the error message if an error occurs.

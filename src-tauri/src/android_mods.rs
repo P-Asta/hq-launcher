@@ -35,7 +35,7 @@ pub(crate) fn http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .tls_backend_preconfigured(tls)
         .connect_timeout(std::time::Duration::from_secs(30))
-        .user_agent("HQ-Launcher-Android/1.5.1")
+        .user_agent("HQ-Launcher-Android/1.15.2")
         .build()
         .map_err(|error| error.to_string())
 }

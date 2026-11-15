@@ -39,3 +39,8 @@
 - Full Rust suite passed 163 earlier this follow-up; after Replay/Tracker additions, both parallel and serial full-suite runs aborted in native HTTP/cache tests with Windows 0xc0000409. Windows Application Event 1000 names ucrtbase.dll. Root cause not established; do not claim latest full suite passed. Actual game runtime untested.
 
 - Final focused Rust rerun after backend toggle guard passed 6/6. Whitespace check passed. No real game/save files modified and no new APK binary built for this follow-up.
+
+- Release v1.15.2 authorized by the user. Starting checkout was clean at d084c7b and matched remote main; v1.15.2 did not exist remotely or locally.
+- Updated Tauri, npm/Cargo package versions, corresponding lockfile entries and Android HTTP user-agent to 1.15.2; added release notes.
+- Fresh release verification passed: all versions/locked Cargo metadata match, Tauri dependency checks, three Node preset regressions, frontend build and cargo test --locked --lib (163/163). The earlier Windows native test abort did not recur in this release run.
+- Next action: commit release metadata and atomically push main plus annotated v1.15.2. See ignored release-publish.log for publication/remote verification results.

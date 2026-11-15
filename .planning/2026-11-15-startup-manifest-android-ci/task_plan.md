@@ -40,3 +40,8 @@ Spec: User requests in this chat; findings.md records investigation evidence.
 - [x] Apply narrow VLog/HQoL/save-ui/Replay/LCStatsTracker exclusions, preserve normal user preferences, disable legacy LCF across presets.
 - [x] Run focused Rust/Node/browser checks and update documentation; full-suite native abort recorded in progress.md.
 
+## Release v1.15.2
+- [x] Confirm clean checkout, remote main and absence of the release tag; update application/package versions and release notes.
+- [x] Verify version consistency, locked metadata, frontend build and regression tests (163 Rust tests passed).
+- Publication: user authorized a release commit, annotated v1.15.2 and main/tag push. Execution and remote-ref verification are recorded in release-publish.log.
+
