@@ -13,7 +13,7 @@ async (page) => {
     ` }));
     await tab.addInitScript(() => {
       localStorage.clear();
-      localStorage.setItem('selectedRunMode', 'smhq');
+      localStorage.setItem('selectedRunMode', 'diomedes');
       window.__presetCalls = [];
       const hq = { dev: 'HQ', name: 'QuotaTools', enabled: true, tags: [] };
       const diomedes = { dev: 'DiomedesLC', name: 'Diomedes', enabled: true, tags: ['Diomedes'] };
@@ -29,7 +29,7 @@ async (page) => {
         unregisterCallback: key => callbacks.delete(key), convertFileSrc: path => path,
         invoke: async (command, args) => {
           if (command === 'plugin:event|listen') { listeners.set(args.event, args.handler); return args.handler; }
-          if (command === 'get_selected_run_mode') return 'lcf';
+          if (command === 'get_selected_run_mode') return 'diomedes';
           if (command === 'get_selected_version') return 73;
           if (command === 'get_manifest') return { version: 1, mods: [hq, diomedes, lcf,...blocked], manifests: { 73: 'old', 81: 'latest' } };
           if (command === 'get_events') return { events: [] };
@@ -68,47 +68,17 @@ async (page) => {
         }
       };
     });
-    await tab.setViewportSize({width: 1280, height: 720});
+    await tab.setViewportSize({width:1280,height:720});
     await tab.goto('http://127.0.0.1:1421');
-    await tab.getByRole('button', {name: 'HQ Run', exact: true}).waitFor();
-    if (await tab.locator('[data-launcher-mod-row]').filter({hasText: 'LCF'}).count()) throw new Error('LCF remains in HQ mod list');
-    await tab.getByRole('button', {name: 'Select run mode', exact: true}).click();
-    if (await tab.getByRole('menuitem', {name: /LCF/}).count()) throw new Error('LCF is selectable');
-    await tab.getByRole('menuitem', {name: 'Diomedes', exact: true}).click();
-    await tab.waitForFunction(() => window.__presetCalls.some(c => c.command === 'prepare_preset' && c.args.preset === 'diomedes' && c.args.version === 81));
-    await tab.locator('[data-launcher-mod-row]').filter({hasText: 'Diomedes'}).first().waitFor();
-    await tab.locator('[data-launcher-mod-row]').filter({hasText: 'QuotaTools'}).waitFor();
-    for (const name of ['Replay','LCStatsTracker','HQoL','VLog','LCBetterSaves']) {
-      const toggle = tab.getByRole('switch',{name:`Enable ${name}`,exact:true});
-      if (await toggle.getAttribute('aria-checked') !== 'false' || !await toggle.isDisabled()) throw new Error(`${name} must remain disabled in Diomedes`);
+    await tab.getByRole('button',{name:'HQ Run',exact:true}).waitFor();
+    await tab.locator('[data-launcher-mod-row]').filter({hasText:'QuotaTools'}).waitFor();
+    for (const name of ['LCF','Diomedes']) {
+      if (await tab.locator('[data-launcher-mod-row]').filter({hasText:name}).count()) throw new Error(`${name} remains in the normal mod list`);
     }
-    if (await tab.getByRole('switch',{name:'Enable QuotaTools',exact:true}).getAttribute('aria-checked') !== 'true') throw new Error('Base mod was disabled');
-    if (await tab.locator('[data-launcher-mod-row]').filter({hasText: 'LCF'}).count()) throw new Error('LCF remains in Diomedes mod list');
-    if (await tab.evaluate(() => localStorage.getItem('selectedRunMode')) !== 'diomedes') throw new Error('Diomedes selection not persisted');
-    await tab.getByRole('button', {name: 'Diomedes', exact: true}).click();
-    await tab.getByRole('button', {name: 'Select run mode', exact: true}).waitFor({state:'visible'});
-    if (await tab.getByRole('button', {name:'Cancelling...',exact:true}).count()) throw new Error('Launch failure left a stuck prepare dialog');
-    await tab.getByRole('button', {name: 'Select run mode', exact: true}).click();
-    await tab.getByRole('menuitem', {name: 'HQ Run', exact: true}).click();
-    await tab.locator('[data-launcher-mod-row]').filter({hasText: 'QuotaTools'}).waitFor();
-    await tab.evaluate(() => { window.__cancelNextPrepare = true; });
-    await tab.getByRole('button', {name:'Select run mode',exact:true}).click();
-    await tab.getByRole('menuitem', {name:'Diomedes',exact:true}).click();
-    await tab.getByRole('button', {name:'Cancel',exact:true}).click();
-    await tab.getByRole('button', {name:'HQ Run',exact:true}).waitFor();
-    await tab.getByRole('button', {name:'Cancel',exact:true}).waitFor({state:'hidden'});
-    await tab.evaluate(() => { window.__updatesEnabled = true; window.__updateFailure = true; });
-    await tab.getByRole('button', {name:'Select run mode',exact:true}).click();
-    await tab.getByRole('menuitem', {name:'Diomedes',exact:true}).click();
-    await tab.locator('button[title="Check for updates"]').click();
-    await tab.getByRole('button', {name:'Update',exact:true}).click();
-    await tab.getByRole('button', {name:'Close',exact:true}).last().click();
-    if (await tab.getByRole('button', {name:'Cancel',exact:true}).count()) throw new Error('General update opened a prepare dialog');
-    await tab.evaluate(() => { window.__updateFailure = false; });
-    await tab.locator('button[title="Check for updates"]').click();
-    await tab.getByRole('button', {name:'Update',exact:true}).click();
-    await tab.getByRole('button', {name:'Close',exact:true}).last().click();
+    await tab.getByRole('button',{name:'Select run mode',exact:true}).click();
+    if (await tab.getByRole('menuitem',{name:/LCF|Diomedes/}).count()) throw new Error('Retired mode remains selectable');
+    if (await tab.evaluate(()=>localStorage.getItem('selectedRunMode')) !== 'hq') throw new Error('Diomedes preference was not migrated to HQ');
     if (errors.length) throw new Error(errors.join('\n'));
-    return 'LauncherPage passed: LCF fallback/hiding, latest-game Diomedes persistence/isolation, launch failure recovery, real prepare cancellation, update failure/success without stuck preset dialogs.';
+    return 'Retired Diomedes: local/backend selection restores HQ, both hidden modes absent from menu and mod list, base mods remain visible.';
   } finally { await tab.close(); }
 }

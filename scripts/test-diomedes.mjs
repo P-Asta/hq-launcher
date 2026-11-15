@@ -9,5 +9,5 @@ assert.equal(getPresetSummarySpec("diomedes")?.name, "Diomedes");
 assert.equal(normalizeStoredRunMode("lcf"), "hq", "backend LCF preference falls back to HQ");
 globalThis.localStorage = { getItem: () => "lcf" };
 assert.equal(getInitialRunMode(), "hq", "local LCF preference falls back to HQ");
-assert.equal(normalizeStoredRunMode("diomedes"), "diomedes");
+assert.equal(normalizeStoredRunMode("diomedes"), "hq");
 console.log("Diomedes latest-game constraint, launch mapping and summary passed.");

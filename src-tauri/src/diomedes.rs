@@ -2,6 +2,29 @@
 use crate::{mod_config::ModEntry, thunderstore::PackageListing};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+/// Retire only the preset's own payload; dependencies may be shared with HQ.
+pub fn remove_retired_mod(game_root: &std::path::Path) -> Result<(), String> {
+    let game_root = game_root.canonicalize().map_err(|error| error.to_string())?;
+    for section in ["plugins", "patchers"] {
+        let root = game_root.join("BepInEx").join(section);
+        if !root.exists() { continue; }
+        for entry in std::fs::read_dir(&root).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            if !entry.file_name().to_string_lossy().eq_ignore_ascii_case("DiomedesLC-Diomedes") { continue; }
+            let path = entry.path();
+            let actual = path.canonicalize().map_err(|error| error.to_string())?;
+            if !actual.starts_with(&game_root)
+                || actual.parent() != Some(root.canonicalize().map_err(|error| error.to_string())?.as_path())
+                || !actual.file_name().is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("DiomedesLC-Diomedes"))
+                || entry.file_type().map_err(|error| error.to_string())?.is_symlink() {
+                return Err("Refusing to remove a redirected Diomedes mod directory".into());
+            }
+            std::fs::remove_dir_all(path).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 pub fn is_excluded_mod(spec: &ModEntry) -> bool {
     let key = format!("{}::{}", spec.dev.to_lowercase(), spec.name.to_lowercase());
     matches!(key.as_str(), "hqhqteam::vlog" | "hqhqteam::hqol" | "pooble::lcbettersaves" | "timewaste::overworkedui" | "asta::lcf" | "asta::evlog" | "asta::replay" | "mikuoreo::lcstatstracker")
@@ -160,6 +183,29 @@ pub fn shared_pins_to_restore(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retired_mod_cleanup_preserves_shared_packages_settings_and_saves() {
+        let root = std::env::temp_dir().join(format!("hq-retire-diomedes-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        for section in ["plugins", "patchers"] {
+            for package in ["DiomedesLC-Diomedes", "Shared-Library"] {
+                let directory = root.join("BepInEx").join(section).join(package);
+                std::fs::create_dir_all(&directory).unwrap();
+                std::fs::write(directory.join("mod.dll"), "payload").unwrap();
+            }
+        }
+        std::fs::write(root.join("save.dat"), "save").unwrap();
+        std::fs::create_dir_all(root.join("BepInEx/config")).unwrap();
+        std::fs::write(root.join("BepInEx/config/diomedes.cfg"), "custom").unwrap();
+        remove_retired_mod(&root).unwrap();
+        remove_retired_mod(&root).unwrap();
+        for section in ["plugins", "patchers"] {
+            assert!(!root.join("BepInEx").join(section).join("DiomedesLC-Diomedes").exists());
+            assert!(root.join("BepInEx").join(section).join("Shared-Library/mod.dll").exists());
+        }
+        assert_eq!(std::fs::read_to_string(root.join("save.dat")).unwrap(), "save");
+        assert_eq!(std::fs::read_to_string(root.join("BepInEx/config/diomedes.cfg")).unwrap(), "custom");
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn selective_exclusions_keep_base_mods_and_disable_save_group_and_lcf() {
         for (dev, name) in [("HQHQTeam", "VLog"), ("HQHQTeam", "HQoL"), ("asta", "LCF"), ("Pooble", "LCBetterSaves"), ("timewaste", "OverworkedUI")] {

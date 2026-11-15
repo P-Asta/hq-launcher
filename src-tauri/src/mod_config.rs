@@ -380,7 +380,7 @@ impl RemoteManifest {
     fn into_fetch_result(self) -> ManifestFetchResult {
         let manifests = self.manifests.clone();
         let preset_tag_constraints = self.preset_tag_constraints.clone();
-        let mut cfg = ModsConfig { mods: self.mods };
+        let mut cfg = ModsConfig { mods: self.mods.into_iter().filter(|m| !(m.dev.eq_ignore_ascii_case("DiomedesLC") && m.name.eq_ignore_ascii_case("Diomedes"))).collect() };
         let _ = normalize_aliases(&mut cfg);
         (
             self.version,

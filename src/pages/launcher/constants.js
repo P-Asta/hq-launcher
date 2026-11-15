@@ -77,7 +77,6 @@ export const RUN_MODE_VALUES = [
   "wesley_smhq",
   "wesley_eclipsed",
   "wesley_practice",
-  "diomedes",
 ];
 
 export const DISCORD_DOWNLOAD_URL = "https://asta.rs/hq-launcher/";
@@ -108,15 +107,6 @@ export const RUN_OPTIONS = [
         preset: "eclipsed_hq",
         practice: false,
         title: "HQ run with EclipsedOnly enabled",
-      },
-      {
-        value: "diomedes",
-        label: "Diomedes",
-        buttonLabel: "Diomedes",
-        preset: "diomedes",
-        practice: false,
-        title:
-          "Diomedes preset: latest game version and latest Thunderstore packages",
       },
       {
         value: "practice",

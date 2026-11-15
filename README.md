@@ -45,18 +45,11 @@ When a practice run is selected, HQ Launcher prepares the compatible practice se
 
 ## Diomedes preset
 
-Select **Diomedes** in the run menu after installing the latest game version
-listed by the launcher. This preset is limited to that version and follows the
-catalog when a newer game version is added. Selecting it opens the installation
-progress window and installs the requested Diomedes packages with their latest
-Thunderstore versions and dependencies. The package identities live in
-`src-tauri/src/variable.rs`; they are not pinned to the sample version numbers.
-
-Mod updates replace old package payloads, including obsolete patcher files.
-Existing game files, saves and user configuration remain in place. Diomedes uses
-the normal base mods and their saved preferences, while VLog, HQoL, save UI,
-Replay and LCStatsTracker are disabled for this preset. Switching back to an HQ preset restores that
-preset's mod selection. LCF is hidden from the run menu and normal mod lists.
+Diomedes and LCF are hidden from the run menu and normal mod lists. A saved
+Diomedes selection now restores HQ. At startup, the launcher removes only the
+`DiomedesLC-Diomedes` package from installed versions' plugin/patcher folders.
+Shared dependencies, game files, saves and user configuration are preserved.
+HQ's normal version pins and mod preferences apply when preparing or launching HQ.
 
 ## Installation
 

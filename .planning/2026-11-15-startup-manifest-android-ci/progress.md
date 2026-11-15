@@ -44,3 +44,8 @@
 - Updated Tauri, npm/Cargo package versions, corresponding lockfile entries and Android HTTP user-agent to 1.15.2; added release notes.
 - Fresh release verification passed: all versions/locked Cargo metadata match, Tauri dependency checks, three Node preset regressions, frontend build and cargo test --locked --lib (163/163). The earlier Windows native test abort did not recur in this release run.
 - Next action: commit release metadata and atomically push main plus annotated v1.15.2. See ignored release-publish.log for publication/remote verification results.
+
+- User requested retiring Diomedes and a subsequent version bump/commit. Version metadata/locks/Android user-agent set to 1.15.3. Saved Diomedes selection migrates to HQ; startup removes only exact DiomedesLC-Diomedes plugin/patcher folders after canonical-path checks, preserving dependencies/config/saves. Failed removal is logged for retry at next startup.
+- Hidden modes absent from menu/normal mod rows; direct prepare/launch/update paths reject Diomedes and common remote manifest conversion excludes its main package to prevent reinstall by ordinary installs/sync.
+- Validation: cleanup/policy Rust tests 7/7 and common manifest-filter test 1/1 passed (filter RED->GREEN verified); Node preset checks, frontend build, version consistency, Playwright migration/hiding fixture and diff whitespace checks passed. Independent read-only review approved fixes.
+- Full Rust suite aborted in existing native/cache HTTP tests with Windows 0xc0000409/ucrtbase.dll; no full-suite success is claimed for 1.15.3. No actual user game files modified during development. Commit/push result: retire-publish.log.

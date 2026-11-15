@@ -45,3 +45,7 @@ Spec: User requests in this chat; findings.md records investigation evidence.
 - [x] Verify version consistency, locked metadata, frontend build and regression tests (163 Rust tests passed).
 - Publication: user authorized a release commit, annotated v1.15.2 and main/tag push. Execution and remote-ref verification are recorded in release-publish.log.
 
+
+## Retire Diomedes and release 1.15.3
+- [x] Hide Diomedes selection; migrate saved selection to HQ and remove the DiomedesLC-Diomedes payload only, preserving shared packages/config/saves.
+- [x] Test cleanup and UI, bump 1.15.3. Commit/push execution is recorded in retire-publish.log.

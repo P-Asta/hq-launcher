@@ -1572,9 +1572,7 @@ async fn effective_mods_config_for_run_mode(
     let (_remote_manifest_version, mods_cfg, _chain_config, manifests, preset_tag_constraints) =
         ModsConfig::fetch_manifest(client).await?;
     if run_mode.eq_ignore_ascii_case("diomedes") {
-        diomedes::validate_version(version, &manifests)?;
-        let packages = thunderstore::refresh_community_packages_with_cancel(client, &thunderstore_cache_path(app)?, None).await?;
-        return Ok(ModsConfig { mods: diomedes::resolve_mods(&variable::get_diomedes_mod_list(), &packages)? });
+        return Err("The Diomedes preset is no longer available. Select HQ instead.".into());
     }
     let (preset, practice) = preset_and_practice_for_run_mode(run_mode);
     let tags = preset_tags_for_name(&preset);
@@ -1587,7 +1585,8 @@ async fn effective_mods_config_for_run_mode(
     let mut selected_tagged: Vec<mod_config::ModEntry> = vec![];
 
     for m in mods_cfg.mods {
-        if m.dev.eq_ignore_ascii_case("asta") && m.name.eq_ignore_ascii_case("lcf") {
+        if (m.dev.eq_ignore_ascii_case("asta") && m.name.eq_ignore_ascii_case("lcf"))
+            || (m.dev.eq_ignore_ascii_case("DiomedesLC") && m.name.eq_ignore_ascii_case("Diomedes")) {
             continue; // Legacy LCF is added explicitly only for its own preset below.
         }
         let has_run_mode_affinity = mod_has_run_mode_affinity(&m);
@@ -1808,6 +1807,7 @@ async fn run_mode_tagged_mod_ids(
     let base_ids: HashSet<_> = mods_cfg.mods.iter().filter(|m| !mod_has_run_mode_affinity(m)).map(|m| normalize_mod_key(&m.dev, &m.name)).collect();
     let mut seen: HashSet<String> = HashSet::new();
     let mut tagged_ids: Vec<(String, String)> = variable::get_lcf_mod_list().into_iter().map(|m| (m.dev, m.name)).collect();
+    tagged_ids.push(("DiomedesLC".into(), "Diomedes".into()));
     for m in mods_cfg.mods {
         if !mod_has_run_mode_affinity(&m) {
             continue;
@@ -9393,7 +9393,11 @@ fn get_game_storage_settings(
 
 #[tauri::command]
 fn get_selected_run_mode(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    storage::selected_run_mode(&app)
+    let selected = storage::selected_run_mode(&app)?;
+    if selected.as_deref() == Some("diomedes") {
+        return storage::set_selected_run_mode(&app, "hq".into()).map(Some);
+    }
+    Ok(selected)
 }
 
 #[tauri::command]
@@ -9417,7 +9421,6 @@ fn set_selected_run_mode(app: tauri::AppHandle, run_mode: String) -> Result<Stri
             | "wesley_eclipsed"
             | "wesley_practice"
             | "lcf"
-            | "diomedes"
     ) {
         return Err(format!("invalid run mode: {run_mode}"));
     }
@@ -10195,9 +10198,7 @@ async fn apply_mod_updates(
         }
 
         if run_mode_name.eq_ignore_ascii_case("diomedes") {
-            prepare_diomedes_for_version(&app, version, None, "Update Mods").await?;
-            apply_native_overlay_update_step(&app, 3, &game_root).await;
-            return Ok(());
+            return Err("The Diomedes preset is no longer available. Select HQ instead.".into());
         }
 
         let mods_cfg = exclude_disabled_mod_switches_from_updates(
@@ -12484,8 +12485,7 @@ async fn launch_game_preset(
 
     let (dir, exe_path, exe_dir) = resolve_game_launch_paths(&app, version)?;
     if preset.eq_ignore_ascii_case("diomedes") {
-        if practice || has_event { return Err("Diomedes cannot be combined with practice or events".into()); }
-        apply_installed_diomedes_for_launch(&app, version).await?;
+        return Err("The Diomedes preset is no longer available. Select HQ instead.".into());
     } else {
         let restore_mode = if practice { format!("{preset}_practice") } else { preset.clone() };
         restore_hq_shared_pins(&app, version, &restore_mode, None).await?;
@@ -12640,9 +12640,7 @@ async fn prepare_preset_for_version(
     cancel: Arc<AtomicBool>,
 ) -> Result<bool, String> {
     if preset.eq_ignore_ascii_case("diomedes") {
-        if practice { return Err("Diomedes does not support practice mode".into()); }
-        prepare_diomedes_for_version(app, version, Some(cancel), "Preset Mods").await?;
-        return Ok(true);
+        return Err("The Diomedes preset is no longer available. Select HQ instead.".into());
     }
     let restore_mode = if practice && preset.eq_ignore_ascii_case("hq") { "practice".into() } else if practice { format!("{preset}_practice") } else { preset.to_string() };
     restore_hq_shared_pins(app, version, &restore_mode, Some(cancel.clone())).await?;
@@ -13389,7 +13387,7 @@ async fn get_manifest() -> Result<ManifestDto, String> {
     let client = reqwest::Client::new();
     let (version, mut cfg, chain_config, manifests, preset_tag_constraints) =
         mod_config::ModsConfig::fetch_manifest(&client).await?;
-    cfg.mods.extend(variable::get_diomedes_mod_list());
+    cfg.mods.retain(|m| !(m.dev.eq_ignore_ascii_case("DiomedesLC") && m.name.eq_ignore_ascii_case("Diomedes")));
     Ok(ManifestDto {
         version,
         chain_config,
@@ -14246,6 +14244,15 @@ pub fn run() {
         .setup(|app| {
             // File logging (AppDataDir/logs/hq-launcher.log)
             logger::init(&app.handle()).map_err(|e| tauri::Error::Setup(e.into()))?;
+            if let Ok(versions) = list_installed_versions(app.handle().clone()) {
+                for version in versions {
+                    if let Ok(root) = version_dir(app.handle(), version) {
+                        if let Err(error) = diomedes::remove_retired_mod(&root) {
+                            log::warn!("Failed to remove retired Diomedes mod from v{version}: {error}");
+                        }
+                    }
+                }
+            }
             if let Ok(app_data) = app.path().app_data_dir() {
                 mod_config::init_manifest_cache(&app_data);
             }

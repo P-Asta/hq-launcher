@@ -110,7 +110,7 @@ export function modAppliesToTag(mod, activeTag) {
 const RUN_MODE_TAGS = new Set(["brutal", "wesley", "smhq", "eclipsed", "c.moons", "diomedes"]);
 
 export function modHasRunModeAffinity(mod) {
-  if (modKeyLower(mod) === "asta::lcf") return true;
+  if (["asta::lcf", "diomedeslc::diomedes"].includes(modKeyLower(mod))) return true;
   const modTags = Array.isArray(mod?.tags) ? mod.tags : [];
   if (modTags.some((tag) => RUN_MODE_TAGS.has(String(tag).toLowerCase()))) {
     return true;

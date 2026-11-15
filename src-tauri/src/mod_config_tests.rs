@@ -6,6 +6,17 @@ use std::sync::atomic::AtomicUsize;
 
 const MANIFEST: &str = r#"{"version":7,"chain_config":[["Example"]],"mods":[],"manifests":{"81":"depot-81"},"practice_mods":[{"name":"Practice","dev":"Test","version_config":{"81":"1.0.0"}}]}"#;
 
+#[test]
+fn retired_diomedes_is_not_returned_for_install_or_manifest_sync() {
+    let mut manifest: RemoteManifest = serde_json::from_str(MANIFEST).unwrap();
+    for (dev,name) in [("DiomedesLC","Diomedes"),("Shared","Library")] {
+        manifest.mods.push(serde_json::from_value(serde_json::json!({"dev":dev,"name":name})).unwrap());
+    }
+    let (_, config, _, _, _) = manifest.into_fetch_result();
+    assert_eq!(config.mods.len(), 1);
+    assert_eq!(config.mods[0].name, "Library");
+}
+
 struct Server {
     url: String,
     hits: Arc<AtomicUsize>,

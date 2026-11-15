@@ -1,6 +1,10 @@
 # Version (YYYY-MM-DD)
 - Content
 
+# 1.15.3 (2026-11-15)
+- Hid the Diomedes preset and restore saved Diomedes selections to HQ.
+- Remove the retired Diomedes plugin/patcher payload at startup, preserving shared dependencies, configuration and saves.
+
 # 1.15.2 (2026-11-15)
 - Fixed startup manifest requests blocking the async runtime and added last-good local manifest fallback when downloads fail.
 - Added the Diomedes preset for the latest supported game version, with current mod dependencies and installation progress.
